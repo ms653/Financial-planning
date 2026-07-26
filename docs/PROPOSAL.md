@@ -90,6 +90,11 @@ Sources: [OpenBankingTracker — UK Open Banking APIs 2026](https://openbankingt
 - **Stock analysis workbench** — fundamentals lookup, DCF calculator, relative valuation, quality/balance-sheet checklist, watchlist.
 - **Scenario planning** — side-by-side "what-if" comparisons (early retirement, house purchase, major expense) reusing the Monte Carlo engine.
 - **Reporting** — exportable household financial statement; tax-lot detail for GIA holdings specifically, tracked against the £3,000 CGT allowance and £500 dividend allowance (ISA/pension holdings need no such tracking, since they're tax-free/tax-deferred respectively).
+- **Cash Allocation Advisor** — "where should my next £X go" recommendation, in two parts:
+  - **Contribution waterfall** — a priority-ordered decision tree over the household's actual accounts: emergency fund topped up → any *unmatched* employer pension contribution captured (an instant, effectively-guaranteed return — always first) → high-interest debt (credit cards, personal loans — anything with a rate that beats realistic investment returns) cleared → LISA if eligible and under-45 (25% government bonus) → remaining ISA allowance → further pension contributions (tax relief) → GIA. Uses live account data (remaining ISA/LISA/pension annual allowance, current debt balances/rates) rather than generic advice.
+  - **Debt-vs-save comparator** — for lower-rate debt where the answer isn't obvious (mortgage overpayment vs. investing being the classic UK case), don't hardcode a verdict — show the numbers side by side: current debt interest rate, mortgage Early Repayment Charge limits (most UK mortgages only allow ~10%/year penalty-free overpayment — check before recommending a lump sum), and expected investment return range (with the same UK-calibrated conservatism used in the retirement engine, not an optimistic US-style assumption) net of the LISA bonus or pension tax relief where relevant. Frame it as "here's the trade-off," since which side wins depends on risk tolerance and current mortgage rates, not a fixed rule.
+  - For **multiple debts**, support both avalanche (highest interest first — mathematically optimal) and snowball (smallest balance first — psychological wins) ordering as a user-selectable toggle, since the "right" choice is behavioral, not financial.
+  - Needs new fields on the `debt` account type: interest rate, and (for mortgages specifically) Early Repayment Charge terms/limits — not currently in the Phase 0/1 data model, add to Phase 1 scope.
 
 ### P3 — Stretch
 - **Mobile-lite companion** — read-only dashboard + quick manual entry, via a responsive PWA, reachable from phone/iPad over Tailscale when away from the laptop.
@@ -112,10 +117,11 @@ Reuse the pattern already proven in the sibling Warhammer-app repo, minus the CM
 ```
 household
  └─ person (1..n)
-     └─ account (cash | gia | isa | sipp_pension | property | debt)
+     └─ account (cash | gia | isa | lisa | sipp_pension | property | debt)
          └─ tax_wrapper (isa | pension | gia | none)   -- drives tax treatment in reporting
          └─ holding (for gia/isa/sipp accounts)
          └─ balance_snapshot (time series)
+         └─ debt_terms (debt accounts only: interest_rate, mortgage_erc_limit_pct, mortgage_erc_period_end)  -- feeds the Cash Allocation Advisor
 household
  └─ retirement_scenario (assumptions JSONB — spending, inflation, State Pension age/amount per person, PCLS timing, wrapper withdrawal order)
  └─ stock_analysis (per ticker: DCF inputs, relative valuation inputs, checklist state)
@@ -144,11 +150,12 @@ No separate native app. The same Next.js app is a responsive PWA (installable ma
 | Phase | Scope |
 |---|---|
 | 0 | Repo scaffold, docker-compose, DB schema, passphrase auth gate, automated backup (pg_dump + encrypted off-machine copy) |
-| 1 | Household/people/accounts (with tax-wrapper flag: ISA/pension/GIA/none), manual net worth dashboard |
+| 1 | Household/people/accounts (with tax-wrapper flag: ISA/LISA/pension/GIA/none, plus debt interest rate + mortgage ERC terms), manual net worth dashboard |
 | 2 | UK Open Banking sync spike (evaluate Moneyhub personal-access terms first; fall back to manual-entry-only if impractical) |
 | 3 | Portfolio tracking + market data provider (FMP/Finnhub, or EODHD/Twelve Data if LSE coverage is needed) |
 | 4 | Retirement Monte Carlo engine (UK-calibrated 3.0–3.5% starting withdrawal rate as default, State Pension modeled as an income floor, flat effective-tax assumption, geometric-mean/bootstrapped returns, validated against a known UK calculator) + scenario comparison |
 | 5 | Stock analysis workbench (DCF / relative valuation / checklist) |
+| 5.5 | Cash Allocation Advisor (contribution waterfall + debt-vs-save comparator + avalanche/snowball debt ordering) — depends on Phase 1 debt/allowance fields and Phase 4's UK-calibrated return assumptions |
 | 6 | PWA manifest, mobile-lite views, Tailscale access + HTTPS cert documented |
 | 7 | Visual design pass |
 | 8 (later, optional) | Wrapper-aware withdrawal sequencing (ISA vs. pension vs. GIA drawdown order, PCLS timing optimization, CGT/dividend-allowance-aware GIA drawdown) — explicit maintenance burden as UK tax rules and allowances change most tax years |
