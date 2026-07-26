@@ -1,11 +1,15 @@
 # Deployment & Operations
 
-Phase 0 runbook: how to stand this up, expose it over Tailscale, back it up, and deploy
-changes to it. Scope matches PROPOSAL.md's Phase 0 row — there is no application
-functionality yet beyond the passphrase gate and a placeholder authenticated page.
+How to stand this up, expose it over Tailscale (so it's reachable from a phone as well
+as the laptop it runs on), back it up, and deploy changes to it. Written as a Phase 0
+runbook; it still applies unchanged now that Phase 1 (household/accounts/net worth
+dashboard) is built on top — nothing about how the app is deployed or reached changed,
+only what's behind the login gate. See `docs/STATUS.md` for what that is.
 
 Everything here assumes the app runs on **your own laptop** (or, later, an always-on
-mini-PC — see PROPOSAL.md's Mobile/tablet access section for that upgrade path).
+mini-PC — see PROPOSAL.md's Mobile/tablet access section for that upgrade path). A
+phone or tablet never runs the app itself — it just reaches the laptop's instance over
+Tailscale, per §2 below.
 
 ---
 
@@ -307,13 +311,17 @@ of any kind, per the proposal's Security notes.
 
 ---
 
-## 6. What Phase 0 does *not* include
+## 6. What this deployment does *not* include yet
 
-Guarding against a reasonable misreading of this document:
+Guarding against a reasonable misreading of this document — this is about
+functionality, not deployment mechanics, which are unchanged since Phase 0:
 
-- No household, people, accounts, or balances — Phase 1.
-- No net worth dashboard, portfolio, retirement engine, market data — Phases 1–3.
+- Household, people, accounts, balances, and the net worth dashboard **are** built
+  (Phase 1) — logging in for the first time lands you in Guided Setup, not an empty
+  page.
+- No portfolio tracking, retirement engine, or market data yet — Phases 2–3.
 - No PWA manifest, service worker, or offline layer — Phase 6. The app is usable from a
-  phone browser over Tailscale today, but nothing is cached and nothing works offline.
+  phone browser over Tailscale today (§2), but nothing is cached and nothing works
+  offline — no Tailscale connection on the phone means no access, full stop.
 - No per-user accounts, no signup, no password reset. One shared household passphrase is
   the design, not a placeholder.

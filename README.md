@@ -5,9 +5,14 @@ household. Net worth tracking, portfolio analysis, UK-calibrated retirement Mont
 modelling, and a cash allocation advisor — all running on your own hardware, reachable
 only over Tailscale, with nothing leaving the machine except market-data lookups.
 
-**Current state: Phase 0 complete.** Scaffold, database, CI, auth, HTTPS, and backup
-tooling are in place. There is no application functionality yet beyond the passphrase
-gate and a placeholder authenticated page.
+**Current state: Phase 1 complete.** Scaffold, database, CI, auth, HTTPS, and backup
+tooling are in place (Phase 0), plus the household/people/accounts data model and a
+real net worth dashboard (Phase 1) — Guided Setup, Net Worth Dashboard, Accounts
+List/Add/Edit/Detail, and a minimal Settings screen. Logging in for the first time
+lands you in Guided Setup, not a placeholder page. See
+[`docs/STATUS.md`](docs/STATUS.md) for exactly what's built and what isn't yet
+(portfolio tracking, retirement modelling, and the rest of the roadmap below are
+still ahead).
 
 ## Documentation
 
@@ -40,11 +45,21 @@ docker compose up -d             # then the app
 curl -s http://127.0.0.1:3000/api/health
 ```
 
-Then <http://127.0.0.1:3000>, which redirects to the passphrase gate.
+Then <http://127.0.0.1:3000>, which redirects to the passphrase gate — that's the
+**laptop** side done.
 
 > Serving over plain HTTP locally? Set `COOKIE_SECURE=false` in `.env` — otherwise the
 > browser discards the `Secure` session cookie and login appears to fail. Setting up
-> Tailscale Serve (DEPLOYMENT.md §2) is the better answer.
+> Tailscale Serve (next) is the better answer.
+
+**On your phone:** the app only needs to run in one place — your laptop (or a mini-PC,
+see PROPOSAL.md's Mobile/tablet access section) — and every device reaches that same
+instance over Tailscale. There's nothing separate to install on the phone beyond the
+Tailscale app itself. Follow [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) §2 to turn on
+Tailscale Serve (HTTPS) once; after that, opening `https://<your-machine>.<your
+tailnet>.ts.net` from a phone with Tailscale connected gets you the same passphrase
+gate and the same data. Do this before relying on the app day to day — logging in over
+plain `http://127.0.0.1:3000` only works from the laptop itself.
 
 ## Development
 
@@ -93,7 +108,7 @@ Full spec and rationale: `docs/PROPOSAL.md` → Security notes.
 
 ## Roadmap
 
-Phase 0 ✅ scaffold, auth, CI, backup · Phase 1 household/accounts + net worth dashboard ·
+Phase 0 ✅ scaffold, auth, CI, backup · Phase 1 ✅ household/accounts + net worth dashboard ·
 Phase 2 portfolio + market data · Phase 3 retirement Monte Carlo · Phase 4 stock analysis
 workbench · Phase 4.5 cash allocation advisor · Phase 4.6 scenario planning ·
 Phase 4.7 reporting · Phase 5 UK Open Banking spike · Phase 6 PWA + offline ·
