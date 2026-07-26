@@ -14,7 +14,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
-    "passphrase:hash": "tsx scripts/hash-passphrase.ts"
+    "passphrase:hash": "tsx scripts/hash-passphrase.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

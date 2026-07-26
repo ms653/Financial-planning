@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-26
+Last updated: 2026-07-26 (Phase 1)
 
 ## Done
 
@@ -9,6 +9,39 @@ Last updated: 2026-07-26
 - **`docs/design-mockup.html`** — visual design direction ("ledger & brass" palette), demonstrates the stale/computing/offline state machine live.
 - **Phase 0 implementation** — merged to `main`. Next.js 14 + TypeScript + Tailwind scaffold, Drizzle schema/migrations against Postgres, Docker Compose, GitHub Actions CI, `deploy.sh` runbook, passphrase auth (argon2id, signed sessions, brute-force lockout, CSRF), Tailscale Serve HTTPS, and backup tooling with an in-app staleness indicator. New docs: `docs/DEPLOYMENT.md`, `docs/RESTORE_TEST.md`.
 - **Phase 0 code review** (independent model, real source pasted for review, ~84k tokens, 17 searches verifying load-bearing security claims) — see below. Fixes applied and merged.
+- **Phase 1 implementation** — household/people/accounts data model and the manual net worth dashboard. Details below.
+
+## Phase 1 — what shipped
+
+Data model (`src/lib/db/schema.ts`, migration `drizzle/0001_household_people_accounts.sql`, generated not hand-written): `household`, `person`, `pension_contribution`, `account`, `holding`, `balance_snapshot`, `debt_terms`. All money `NUMERIC(14,2)`; nullable `account.person_id` with `household_id` as the fallback owner for joint accounts; ISA split into `cash_isa`/`ss_isa`/`lisa`; `ON DELETE RESTRICT` on every ownership edge; `balance_snapshot` carries both the `(account_id, captured_at DESC)` index and the unique `(account_id, snapshot_date)` constraint.
+
+Screens: Guided Setup (`/setup`), Net Worth Dashboard (`/`), Accounts List (`/accounts`), Add/Edit Account (`/accounts/new`, `/accounts/[id]/edit`), Account Detail (`/accounts/[id]`), and a deliberately minimal `/settings` for people, income, pension contributions and backup status.
+
+345 tests pass (Phase 0's 108 plus 237 new), including two `*.integration.test.ts` suites that run against a real Postgres — one asserting schema/migration properties the database alone can answer, one driving the Server Actions through the whole setup-to-dashboard journey. Both skip without `TEST_DATABASE_URL`; CI now runs a Postgres service and sets it.
+
+### Judgment calls worth knowing about
+
+- **Debt balances are stored negative; the form asks for a positive "amount outstanding".** Net worth is then a plain sum with no per-type sign rule for a future query to forget. The alternative — storing what the user typed — would let someone enter 376500 for a mortgage and see it as an asset.
+- **`tax_wrapper` is derived from the account type, never entered.** The mapping is total and fixed, and the design spec's form lists no wrapper field. Asking would invite a Cash ISA tagged `none`, which would drop out of every wrapper-aware calculation from Phase 4.5 on.
+- **`debt_terms.current_balance` is written by the same action that writes the (negative) snapshot**, so the two cannot drift.
+- **The Add/Edit form has no balance field on edit.** That screen is scoped to static details; balances append a dated snapshot through "Update balance". Two ways to change one figure, one of which rewrites history, is what the append-only model exists to avoid.
+- **Asset-class breakdown shows property gross with debt as its own negative class**, unlike the mockup's "Property equity" row (which nets the mortgage off *and* lists it separately, so its figures don't sum to its own hero total). Every breakdown now sums exactly to net worth, which is asserted.
+- **`pension_contribution.amount` is annual**, matching `person.annual_gross_income`. The proposal says "per contribution: amount" without naming a period. No `frequency` column was invented.
+- **`overpayment_allowance_balance_basis` is an enum** (`original_balance` | `current_balance` | `annual_opening_balance`) — the proposal names the column but not its values; these are what UK mortgage terms actually say, and Phase 4.5 has to branch on it.
+- **Client forms use `src/lib/ui/useActionForm.ts`, not `useFormState`.** Same reason Phase 0's `PassphraseForm` avoided it: it isn't exported by the declared `react-dom@18.3.1`, only by Next's vendored canary. It also makes every form untestable outside a Next server. Trade-off: these forms need JavaScript, where `<form action={…}>` would have degraded to a plain POST.
+- **Loading skeletons are `<Suspense>` boundaries inside the pages, not `loading.tsx` files.** A route-level loading file forces the whole route to stream, which downgrades `redirect('/setup')` and `notFound()` from real 307/404 responses to instructions only a JS-capable client can act on. Verified: first login with no household returns a genuine 307 from `/`, `/accounts` and `/settings`, and an unknown account id returns 404.
+
+### Deliberately not built (and why)
+
+- **No connectivity badge**, though the design spec puts one in the chrome of every screen: its Connected/Offline/Syncing states need the service worker and write queue from Phase 6 behind them. One reporting "Connected" unconditionally would look like a working indicator while saying nothing. The dashboard carries a real "balances last updated" line from the newest snapshot instead, escalating in weight as it ages.
+- **No optimistic UI or write queue** on balance updates — Phase 6. A plain server round trip is correct now; a "pending sync" badge with no queue behind it would be theatre.
+- **No current-value or gain/loss columns on holdings.** There is no price source until Phase 2, whose provider choice carries a blocking GBX-vs-GBP verification task. Empty columns headed "Current value" would imply knowledge the app doesn't have.
+- Portfolio, Retirement Planner, Stocks, Advisor and Reports remain unbuilt; the sidebar reserves their slots and names the phase, per the spec's "reserved but greyed out".
+
+### Not verified in this pass
+
+- **The Playwright E2E spec (`e2e/setup-and-dashboard.spec.ts`) has never been executed.** `cdn.playwright.dev` is blocked in the environment it was written in, so no browser could be downloaded. It is committed and `npm run test:e2e` is wired up; run it once locally. Its server-side equivalent (`src/lib/household/flow.integration.test.ts`) does run and does pass, so the journey is covered — but clicks, focus management in the balance drawer, and the streamed-vs-HTTP redirect behaviour in a real browser are not.
+- Docker Compose and Tailscale Serve, same as Phase 0.
 
 ## Phase 0 code review — findings and fixes
 
@@ -29,11 +62,14 @@ Two findings from the review turned out to be artifacts of condensing the code f
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`.
-2. Phase 1 per the Phased Delivery table: household/people/accounts data model (`date_of_birth`, nullable `person_id` with household fallback for joint accounts, Cash ISA/S&S ISA/LISA as distinct sub-types, `NUMERIC` money, currency column), manual net worth dashboard.
-3. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
+2. **Run the Playwright E2E once** (`npm run test:e2e` — see `playwright.config.ts` for the required env). It has never been executed; the browser download was blocked in the environment Phase 1 was built in.
+3. Phase 2 per the Phased Delivery table: portfolio tracking plus a market-data provider, starting with the **blocking verification task** — confirm the provider returns the LSE GBP line rather than a USD cross-listing, and confirm whether it labels prices in pence (GBX) or pounds. The proposal names this the single most likely correctness bug in that phase.
+4. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
-## Notes for Phase 1
+## Notes for Phase 2
 
-- Schema is deliberately one table (`backup_run`) — the reasoning is in `src/lib/db/schema.ts`. Phase 1 adds the household model there and runs `npm run db:generate`; CI fails if a schema change lands without a committed migration.
-- `src/lib/auth/csrf.ts` (`sameOriginGuard`) is implemented and tested but unused — Phase 0 has no mutating route handlers. The first one (Phase 3's simulation-run endpoints) must call it; Server Action CSRF protection does not extend to route handlers.
-- `scripts/restore-test.sh` carries a `TODO(phase-1)` for asserting account/balance row counts once those tables exist.
+- `src/lib/auth/csrf.ts` (`sameOriginGuard`) is still implemented, tested and unused — Phase 1 added no route handlers, only Server Actions (which carry Next's own Origin/Host check). The first mutating route handler must call it; that protection does not extend to route handlers.
+- `holding` has no price, valuation or last-fetched column yet, by design — Phase 2 chooses the provider and therefore the cache shape. `account.currency` and `balance_snapshot.currency` already exist for the GBX/GBP and USD-holdings cases to live in.
+- **Money never touches a float.** `src/lib/money.ts` parses to integer pence as `bigint` and back to NUMERIC strings; `numeric` columns come out of node-postgres as strings and stay that way. A `numericToPence`/`formatMoney` pair exists for every display path — new code should go through it rather than `Number(row.amount)`.
+- **Watch out for `db.execute` with raw SQL**: unlike a typed `select()`, it returns the driver's raw values, so a `timestamptz` arrives as a *string*, not a `Date`. That mismatch typechecked happily and threw at render time during Phase 1 (`capturedAt.getTime is not a function`). `getAccountsWithBalances` converts explicitly and a regression test asserts it.
+- Both `*.integration.test.ts` suites share one scratch database and drop its schema, so `fileParallelism` is off in `vitest.config.ts`. A new DB-backed test file can rely on that.

@@ -99,9 +99,47 @@ if docker exec "${SCRATCH_CONTAINER}" psql -tAX -U postgres -d "${SCRATCH_DB}" \
   log "backup_run rows restored: ${ROWS}"
 fi
 
-# From Phase 1 onward, add the checks that actually matter to the household here:
-# a non-zero account count, and a net worth total that matches what the live app shows.
-# TODO(phase-1): assert account/balance_snapshot row counts once those tables exist.
+# The checks that actually matter to the household: that the financial data itself came back,
+# not merely that the schema did. A dump whose `account` table restored empty would pass every
+# check above and still be a failed backup.
+#
+# Conditional on the table existing, so this still passes against an older artefact taken before
+# Phase 1's migration — a restore test that fails on a valid historical dump would train its user
+# to ignore it.
+if docker exec "${SCRATCH_CONTAINER}" psql -tAX -U postgres -d "${SCRATCH_DB}" \
+    -c "select to_regclass('public.account');" | grep -q account; then
+  ACCOUNTS="$(docker exec "${SCRATCH_CONTAINER}" psql -tAX -U postgres -d "${SCRATCH_DB}" \
+    -c 'select count(*) from account;')"
+  [ "${ACCOUNTS}" -gt 0 ] || fail 'restored database has no accounts — the dump is not usable'
+  log "accounts restored: ${ACCOUNTS}"
+
+  SNAPSHOTS="$(docker exec "${SCRATCH_CONTAINER}" psql -tAX -U postgres -d "${SCRATCH_DB}" \
+    -c 'select count(*) from balance_snapshot;')"
+  [ "${SNAPSHOTS}" -gt 0 ] || fail 'restored database has no balance snapshots — net worth history is missing'
+  log "balance snapshots restored: ${SNAPSHOTS}"
+
+  PEOPLE="$(docker exec "${SCRATCH_CONTAINER}" psql -tAX -U postgres -d "${SCRATCH_DB}" \
+    -c 'select count(*) from person;')"
+  [ "${PEOPLE}" -gt 0 ] || fail 'restored database has no people'
+  log "people restored: ${PEOPLE}"
+
+  # Net worth from the restored dump: the latest snapshot per live account, summed. Printed for
+  # comparison rather than asserted against a fixed figure. The arithmetic is exact here (the
+  # column is NUMERIC), so a mismatch against the running app means the dump is genuinely stale
+  # rather than a rounding artefact.
+  NET_WORTH="$(docker exec "${SCRATCH_CONTAINER}" psql -tAX -U postgres -d "${SCRATCH_DB}" -c "
+    select coalesce(sum(latest.amount), 0)
+      from account a
+      join lateral (
+        select amount from balance_snapshot s
+         where s.account_id = a.id
+         order by s.snapshot_date desc, s.captured_at desc
+         limit 1
+      ) latest on true
+     where a.archived = false;")"
+  log "net worth in the restored dump: ${NET_WORTH}"
+  printf '  Compare that against the figure the app shows on its dashboard.\n'
+fi
 
 printf '\n\033[32m[restore-test] PASSED — %s restores cleanly into a scratch container\033[0m\n' "${ARTEFACT}"
 printf 'Record the date in docs/RESTORE_TEST.md.\n'
