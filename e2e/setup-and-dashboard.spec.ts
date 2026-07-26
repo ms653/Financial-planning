@@ -61,13 +61,21 @@ test('guided setup builds a household and the dashboard shows real figures', asy
   await page.getByRole('button', { name: 'Continue' }).click();
 
   // Step 2 — people. Date of birth is required, so this also proves the field is wired.
+  //
+  // `exact: true` on the person's Name field is load-bearing, not tidiness. Playwright matches
+  // an accessible name as a case-insensitive *substring* by default, so a bare
+  // `getByLabel('Name')` also matches step 1's "Household name" and step 3's "Account name".
+  // Those never coexist with this field, so it isn't a strict-mode violation — it just types
+  // into whichever form happens to be mounted, which during the step-1→step-2 transition is
+  // the wrong one. Matching exactly makes the locator resolve only to the person field, so
+  // `fill` waits for the people step rather than racing it.
   await expect(page.getByRole('heading', { name: /who’s in the household/i })).toBeVisible();
-  await page.getByLabel('Name').fill('Alex');
+  await page.getByLabel('Name', { exact: true }).fill('Alex');
   await page.getByLabel('Date of birth').fill('1985-04-12');
   await page.getByRole('button', { name: 'Add person' }).click();
   await expect(page.getByText('Alex')).toBeVisible();
 
-  await page.getByLabel('Name').fill('Jordan');
+  await page.getByLabel('Name', { exact: true }).fill('Jordan');
   await page.getByLabel('Date of birth').fill('1987-09-30');
   await page.getByRole('button', { name: /add (another )?person/i }).click();
   await expect(page.getByText('Jordan')).toBeVisible();
@@ -86,8 +94,9 @@ test('guided setup builds a household and the dashboard shows real figures', asy
   await expect(page.getByText('Vanguard S&S ISA')).toBeVisible();
   await expect(page.getByText('£54,110')).toBeVisible();
 
-  // A joint account: selecting both people is what makes it joint.
-  await page.getByRole('button', { name: 'Cash' }).click();
+  // A joint account: selecting both people is what makes it joint. Exact again — the type
+  // picker legitimately offers both "Cash" and "Cash ISA", so a substring match is ambiguous.
+  await page.getByRole('button', { name: 'Cash', exact: true }).click();
   await page.getByLabel('Account name').fill('Joint current account');
   await page.getByRole('checkbox', { name: 'Alex' }).check();
   await page.getByRole('checkbox', { name: 'Jordan' }).check();
@@ -198,7 +207,7 @@ test('a non-debt account refuses a negative balance', async ({ page }) => {
   await seedThroughSetup(page);
 
   await page.goto('/accounts/new');
-  await page.getByRole('button', { name: 'Cash' }).click();
+  await page.getByRole('button', { name: 'Cash', exact: true }).click();
   await page.getByLabel('Current balance').fill('-100');
   await page.getByLabel('Account name').click();
 
@@ -217,12 +226,14 @@ async function seedThroughSetup(page: import('@playwright/test').Page) {
   await page.getByLabel('Household name').fill('The Elm Grove household');
   await page.getByRole('button', { name: 'Continue' }).click();
 
-  await page.getByLabel('Name').fill('Alex');
+  // Exact — see the note in the main test: `getByLabel('Name')` would also match "Household
+  // name" and "Account name", and would fill whichever of those is mounted at the time.
+  await page.getByLabel('Name', { exact: true }).fill('Alex');
   await page.getByLabel('Date of birth').fill('1985-04-12');
   await page.getByRole('button', { name: 'Add person' }).click();
   await expect(page.getByText('Alex')).toBeVisible();
 
-  await page.getByLabel('Name').fill('Jordan');
+  await page.getByLabel('Name', { exact: true }).fill('Jordan');
   await page.getByLabel('Date of birth').fill('1987-09-30');
   await page.getByRole('button', { name: /add (another )?person/i }).click();
   await expect(page.getByText('Jordan')).toBeVisible();
@@ -236,7 +247,7 @@ async function seedThroughSetup(page: import('@playwright/test').Page) {
   await page.getByRole('button', { name: 'Add account' }).click();
   await expect(page.getByText('Vanguard S&S ISA')).toBeVisible();
 
-  await page.getByRole('button', { name: 'Cash' }).click();
+  await page.getByRole('button', { name: 'Cash', exact: true }).click();
   await page.getByLabel('Account name').fill('Joint current account');
   await page.getByRole('checkbox', { name: 'Alex' }).check();
   await page.getByRole('checkbox', { name: 'Jordan' }).check();

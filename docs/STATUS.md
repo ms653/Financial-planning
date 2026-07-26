@@ -40,8 +40,22 @@ Screens: Guided Setup (`/setup`), Net Worth Dashboard (`/`), Accounts List (`/ac
 
 ### Not verified in this pass
 
-- **The Playwright E2E spec (`e2e/setup-and-dashboard.spec.ts`) has never been executed.** `cdn.playwright.dev` is blocked in the environment it was written in, so no browser could be downloaded. It is committed and `npm run test:e2e` is wired up; run it once locally. Its server-side equivalent (`src/lib/household/flow.integration.test.ts`) does run and does pass, so the journey is covered — but clicks, focus management in the balance drawer, and the streamed-vs-HTTP redirect behaviour in a real browser are not.
 - Docker Compose and Tailscale Serve, same as Phase 0.
+
+### Playwright E2E: now executed, and it found a real bug
+
+`e2e/setup-and-dashboard.spec.ts` had never been run when Phase 1 was written (`cdn.playwright.dev` was blocked, so no browser could be downloaded). It has since been run against a real Postgres and a real Chromium: **5 of its 6 tests failed on first execution**, and the cause was a genuine defect in Guided Setup that nothing else in the suite could see.
+
+**The bug: Guided Setup advanced its own steps on the user's behalf.** The step was chosen as "the furthest step the data allows". But both the people step and the accounts step are steps a household stays on while adding several things, and every write in setup is followed by `revalidatePath('/setup')` — so:
+
+- adding the first person made `personCount > 0` and re-rendered the page onto the account-type picker. A second household member could not be added at all, and the step's own "Next: add an account" link was unreachable dead code.
+- adding the first account made `getSetupState().complete` true, which redirected `/setup` to the dashboard — so the running list, "+ Add another" and "Finish setup" (steps 5 and 6 of the spec's flow) could never be reached.
+
+Neither is visible to the server-side integration test, which calls the actions in sequence and asserts on rows: the rows were always correct. The defect was entirely in which step the page then renders — which is exactly the half only a browser can see, and exactly why the note this replaces mattered. Fixed by separating the two notions the original conflated — the data *caps* which step you may be on, the user decides when to leave one — in `src/lib/household/setupStep.ts`, now pure and unit-tested so this class of bug stops being browser-only.
+
+Two of the spec's own locators were also wrong, and worth knowing when writing more: Playwright matches an accessible name as a case-insensitive **substring** by default, so `getByLabel('Name')` also matched "Household name" and "Account name" (it typed into whichever form was mounted, which mid-transition was the wrong one), and `getByRole('button', { name: 'Cash' })` was ambiguous between the "Cash" and "Cash ISA" type tiles. Both now pass `exact: true`.
+
+All 6 tests now pass, verified over two consecutive full runs plus a `--repeat-each=3` run (18/18) to rule out the flakiness the first failures suggested. Still unexercised: any browser other than Chromium, and any mobile viewport.
 
 ## Phase 0 code review — findings and fixes
 
@@ -62,7 +76,7 @@ Two findings from the review turned out to be artifacts of condensing the code f
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`.
-2. **Run the Playwright E2E once** (`npm run test:e2e` — see `playwright.config.ts` for the required env). It has never been executed; the browser download was blocked in the environment Phase 1 was built in.
+2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner.
 3. Phase 2 per the Phased Delivery table: portfolio tracking plus a market-data provider, starting with the **blocking verification task** — confirm the provider returns the LSE GBP line rather than a USD cross-listing, and confirm whether it labels prices in pence (GBX) or pounds. The proposal names this the single most likely correctness bug in that phase.
 4. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
