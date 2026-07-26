@@ -1,7 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { useFormState, useFormStatus } from 'react-dom';
+import { useCallback, useState } from 'react';
 import {
   PENSION_METHOD_LABELS,
   validatePensionContribution,
@@ -9,6 +8,7 @@ import {
 } from '@/lib/accounts/validation';
 import { pensionContributionMethod, type PensionContributionMethodValue } from '@/lib/db/schema';
 import type { ActionResult } from '@/lib/household/actions';
+import { formErrorOf, serverErrorsOf, useActionForm } from '@/lib/ui/useActionForm';
 
 /**
  * One household member on the Settings screen: their details, and their pension contributions.
@@ -35,13 +35,10 @@ export interface PersonPanelData {
   }>;
 }
 
-const EMPTY_STATE: ActionResult = { ok: true };
-
 const inputClass =
   'w-full min-h-[44px] rounded-lg border border-line-strong bg-paper px-3 text-sm text-content outline-none transition focus:border-brass';
 
-function Saving({ label }: { label: string }) {
-  const { pending } = useFormStatus();
+function Saving({ label, pending }: { label: string; pending: boolean }) {
   return (
     <button
       type="submit"
@@ -79,32 +76,28 @@ export function PersonPanel({
     employerAmount: '0',
   });
 
-  const [detailsState, detailsAction] = useFormState(
-    async (_previous: ActionResult, formData: FormData) => {
-      const result = await updateAction(formData);
-      if (result.ok) setEditing(false);
-      return result;
-    },
-    EMPTY_STATE,
-  );
+  const onDetailsSaved = useCallback(() => setEditing(false), []);
+  const {
+    state: detailsState,
+    pending: detailsPending,
+    onSubmit: onDetailsSubmit,
+  } = useActionForm(updateAction, { onSuccess: onDetailsSaved });
 
-  const [contributionState, contributionFormAction] = useFormState(
-    async (_previous: ActionResult, formData: FormData) => {
-      const result = await addContributionAction(formData);
-      if (result.ok) {
-        setContribution({ amount: '', method: '', employerAmount: '0' });
-        setAddingContribution(false);
-      }
-      return result;
-    },
-    EMPTY_STATE,
-  );
+  const onContributionAdded = useCallback(() => {
+    setContribution({ amount: '', method: '', employerAmount: '0' });
+    setAddingContribution(false);
+  }, []);
+  const {
+    state: contributionState,
+    pending: contributionPending,
+    onSubmit: onContributionSubmit,
+  } = useActionForm(addContributionAction, { onSuccess: onContributionAdded });
 
   const detailsValidation = validatePerson(details);
   const contributionValidation = validatePensionContribution(contribution);
 
-  const detailsErrors = detailsState.ok ? {} : detailsState.errors;
-  const contributionErrors = contributionState.ok ? {} : contributionState.errors;
+  const detailsErrors = serverErrorsOf(detailsState);
+  const contributionErrors = serverErrorsOf(contributionState);
 
   return (
     <div className="rounded-card border border-line bg-paper-sunken/40 p-4">
@@ -128,12 +121,12 @@ export function PersonPanel({
       </div>
 
       {editing ? (
-        <form action={detailsAction} className="mt-4 space-y-4 border-t border-line pt-4">
+        <form onSubmit={onDetailsSubmit} className="mt-4 space-y-4 border-t border-line pt-4">
           <input type="hidden" name="personId" value={person.id} />
 
-          {!detailsState.ok && detailsState.formError ? (
+          {formErrorOf(detailsState) ? (
             <div role="alert" className="rounded-lg border border-clay/50 bg-clay-bg px-3 py-2 text-sm text-clay">
-              {detailsState.formError}
+              {formErrorOf(detailsState)}
             </div>
           ) : null}
 
@@ -199,7 +192,7 @@ export function PersonPanel({
           </div>
 
           <div className="flex items-center gap-3">
-            <Saving label="Save" />
+            <Saving label="Save" pending={detailsPending} />
             <button
               type="button"
               onClick={() => setEditing(false)}
@@ -260,12 +253,12 @@ export function PersonPanel({
         )}
 
         {addingContribution ? (
-          <form action={contributionFormAction} className="mt-3 space-y-3">
+          <form onSubmit={onContributionSubmit} className="mt-3 space-y-3">
             <input type="hidden" name="personId" value={person.id} />
 
-            {!contributionState.ok && contributionState.formError ? (
+            {formErrorOf(contributionState) ? (
               <div role="alert" className="rounded-lg border border-clay/50 bg-clay-bg px-3 py-2 text-sm text-clay">
-                {contributionState.formError}
+                {formErrorOf(contributionState)}
               </div>
             ) : null}
 
@@ -350,7 +343,7 @@ export function PersonPanel({
             <div className="flex items-center gap-3">
               <button
                 type="submit"
-                disabled={!contributionValidation.ok}
+                disabled={!contributionValidation.ok || contributionPending}
                 className="inline-flex min-h-[44px] items-center rounded-lg border border-line-strong px-4 text-sm font-medium text-content-muted transition enabled:hover:border-brass enabled:hover:text-content disabled:cursor-not-allowed disabled:opacity-45"
               >
                 Add contribution

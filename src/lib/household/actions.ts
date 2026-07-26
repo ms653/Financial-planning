@@ -38,8 +38,9 @@ import { numericToPence, penceToNumeric } from '@/lib/money';
  *
  * Shape conventions:
  *  - Actions take `FormData` and return a serialisable `ActionResult`, so forms can render
- *    inline field errors via `useFormState` and keep everything the user typed on failure —
- *    DESIGN_SPEC.md is explicit that a failed save must never clear the form.
+ *    inline field errors and keep everything the user typed on failure — DESIGN_SPEC.md is
+ *    explicit that a failed save must never clear the form. Client forms call these through
+ *    `src/lib/ui/useActionForm.ts`; see that file for why not `useFormState`.
  *  - Validation is delegated wholly to src/lib/accounts/validation.ts. Nothing here decides
  *    what a valid balance is; this file decides what rows to write.
  *  - Anything that writes more than one table does so in a transaction, because a debt

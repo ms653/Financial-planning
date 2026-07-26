@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
-import { useFormState, useFormStatus } from 'react-dom';
+import { useCallback, useState } from 'react';
 import { validateHolding } from '@/lib/accounts/validation';
 import type { ActionResult } from '@/lib/household/actions';
+import { formErrorOf, serverErrorsOf, useActionForm } from '@/lib/ui/useActionForm';
 
 /**
  * Holdings for an investment account.
@@ -31,10 +31,7 @@ export interface HoldingView {
   costBasis: string;
 }
 
-const EMPTY_STATE: ActionResult = { ok: true };
-
-function AddButton({ disabled }: { disabled: boolean }) {
-  const { pending } = useFormStatus();
+function AddButton({ disabled, pending }: { disabled: boolean; pending: boolean }) {
   return (
     <button
       type="submit"
@@ -61,21 +58,15 @@ export function HoldingsPanel({
   const [adding, setAdding] = useState(false);
   const [values, setValues] = useState({ ticker: '', quantity: '', costBasis: '' });
   const [touched, setTouched] = useState<Record<string, boolean>>({});
-  const [state, formAction] = useFormState(
-    async (_previous: ActionResult, formData: FormData) => {
-      const result = await addAction(formData);
-      if (result.ok) {
-        setValues({ ticker: '', quantity: '', costBasis: '' });
-        setTouched({});
-        setAdding(false);
-      }
-      return result;
-    },
-    EMPTY_STATE,
-  );
+  const onSuccess = useCallback(() => {
+    setValues({ ticker: '', quantity: '', costBasis: '' });
+    setTouched({});
+    setAdding(false);
+  }, []);
+  const { state, pending, onSubmit } = useActionForm(addAction, { onSuccess });
 
   const validation = validateHolding(values);
-  const serverErrors = state.ok ? {} : state.errors;
+  const serverErrors = serverErrorsOf(state);
   const liveErrors = validation.ok ? {} : validation.errors;
   const errorFor = (field: string) =>
     serverErrors[field] ?? (touched[field] ? liveErrors[field] : undefined);
@@ -152,12 +143,12 @@ export function HoldingsPanel({
       ) : null}
 
       {adding ? (
-        <form action={formAction} className="mt-5 border-t border-line pt-5">
+        <form onSubmit={onSubmit} className="mt-5 border-t border-line pt-5">
           <input type="hidden" name="accountId" value={accountId} />
 
-          {!state.ok && state.formError ? (
+          {formErrorOf(state) ? (
             <div role="alert" className="mb-4 rounded-lg border border-clay/50 bg-clay-bg px-3 py-2 text-sm text-clay">
-              {state.formError}
+              {formErrorOf(state)}
             </div>
           ) : null}
 
@@ -226,7 +217,7 @@ export function HoldingsPanel({
           </div>
 
           <div className="mt-4 flex items-center gap-3">
-            <AddButton disabled={!validation.ok} />
+            <AddButton disabled={!validation.ok} pending={pending} />
             <button
               type="button"
               onClick={() => setAdding(false)}

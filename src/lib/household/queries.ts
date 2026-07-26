@@ -174,11 +174,17 @@ export async function getAccountsWithBalances(
   // satisfy this straight from the (account_id, captured_at DESC) index and stop at the first
   // row per account; the alternative — a window function over the whole snapshot table — sorts
   // the household's entire balance history in order to discard nearly all of it.
+  //
+  // Note the `captured_at` type. Drizzle's *typed* `select()` maps a `timestamptz` column to a
+  // JS `Date`, but `execute()` with raw SQL hands back whatever the driver produced — for
+  // timestamps, a string like '2026-07-26 13:18:26.618+00'. Declaring it as `Date` here compiles
+  // happily and then throws `capturedAt.getTime is not a function` at render time. It is typed as
+  // a string and converted explicitly below, so the boundary is visible rather than assumed.
   const latest = await db.execute<{
     account_id: number;
     amount: string;
     snapshot_date: string;
-    captured_at: Date;
+    captured_at: string;
   }>(sql`
     select distinct on (${balanceSnapshots.accountId})
            ${balanceSnapshots.accountId} as account_id,
@@ -204,7 +210,7 @@ export async function getAccountsWithBalances(
       ownerName: row.personId === null ? null : row.ownerName,
       latestAmount: snapshot?.amount ?? null,
       latestSnapshotDate: snapshot?.snapshot_date ?? null,
-      latestCapturedAt: snapshot?.captured_at ?? null,
+      latestCapturedAt: snapshot ? new Date(snapshot.captured_at) : null,
     };
   });
 }

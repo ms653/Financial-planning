@@ -1,7 +1,6 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useFormState, useFormStatus } from 'react-dom';
 import Link from 'next/link';
 import { ACCOUNT_TYPES, LISA_NOTE, accountTypeMeta } from '@/lib/accounts/types';
 import {
@@ -12,6 +11,7 @@ import {
 } from '@/lib/accounts/validation';
 import { overpaymentAllowanceBasis, type AccountTypeValue } from '@/lib/db/schema';
 import type { ActionResult } from '@/lib/household/actions';
+import { formErrorOf, serverErrorsOf, useActionForm } from '@/lib/ui/useActionForm';
 
 /**
  * Add/Edit Account, per DESIGN_SPEC.md's screen spec.
@@ -68,8 +68,6 @@ type FormValues = {
   ercPeriodEnd: string;
 };
 
-const EMPTY_STATE: ActionResult = { ok: true };
-
 function Field({
   label,
   htmlFor,
@@ -103,8 +101,15 @@ function Field({
 const inputClass =
   'w-full min-h-[44px] rounded-lg border border-line-strong bg-paper px-3 text-sm text-content outline-none transition focus:border-brass';
 
-function SubmitButton({ label, disabled }: { label: string; disabled: boolean }) {
-  const { pending } = useFormStatus();
+function SubmitButton({
+  label,
+  disabled,
+  pending,
+}: {
+  label: string;
+  disabled: boolean;
+  pending: boolean;
+}) {
   return (
     <button
       type="submit"
@@ -133,10 +138,7 @@ export function AccountForm({
   cancelHref: string;
 }) {
   const isEdit = initial !== undefined;
-  const [serverState, formAction] = useFormState(
-    async (_previous: ActionResult, formData: FormData) => action(formData),
-    EMPTY_STATE,
-  );
+  const { state: serverState, pending, onSubmit } = useActionForm(action);
 
   const [type, setType] = useState<AccountTypeValue | ''>(initial?.type ?? '');
   const [ownerIds, setOwnerIds] = useState<number[]>(initial?.ownerIds ?? []);
@@ -164,8 +166,8 @@ export function AccountForm({
   }, [values, type, ownerIds, isEdit]);
 
   const liveErrors: FieldErrors = validation.ok ? {} : validation.errors;
-  const serverErrors: FieldErrors = serverState.ok ? {} : serverState.errors;
-  const formError = serverState.ok ? undefined : serverState.formError;
+  const serverErrors: FieldErrors = serverErrorsOf(serverState);
+  const formError = formErrorOf(serverState);
 
   /** Show an error once the field has been blurred, or immediately if the server sent one. */
   function errorFor(field: keyof FormValues | 'type' | 'ownerIds'): string | undefined {
@@ -190,7 +192,7 @@ export function AccountForm({
   }
 
   return (
-    <form action={formAction} className="space-y-7">
+    <form onSubmit={onSubmit} className="space-y-7">
       {isEdit ? <input type="hidden" name="accountId" value={initial.accountId} /> : null}
 
       {/* Save failed: banner at the top, form values all retained. */}
@@ -211,6 +213,10 @@ export function AccountForm({
             <button
               key={option.value}
               type="button"
+              // Explicit label: without it the accessible name is the decorative initial, the
+              // label and the blurb run together ("C Cash Current account, savings…"), which is
+              // both noisy to hear and ambiguous between "Cash" and "Cash ISA".
+              aria-label={option.label}
               aria-pressed={type === option.value}
               onClick={() => {
                 setType(option.value);
@@ -466,7 +472,7 @@ export function AccountForm({
           ) : null}
 
           <div className="flex flex-wrap items-center gap-3 border-t border-line pt-5">
-            <SubmitButton label={submitLabel} disabled={!validation.ok} />
+            <SubmitButton label={submitLabel} disabled={!validation.ok} pending={pending} />
             <Link
               href={cancelHref}
               className="inline-flex min-h-[44px] items-center px-2 text-sm text-content-muted transition hover:text-content"

@@ -1,9 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { useFormState, useFormStatus } from 'react-dom';
 import { validateHouseholdName, validatePerson } from '@/lib/accounts/validation';
 import type { ActionResult } from '@/lib/household/actions';
+import { formErrorOf, serverErrorsOf, useActionForm } from '@/lib/ui/useActionForm';
 
 /**
  * The forms behind Guided Setup's first two steps.
@@ -14,13 +14,18 @@ import type { ActionResult } from '@/lib/household/actions';
  * inline messages and whether submit is enabled, and the Server Action re-validates.
  */
 
-const EMPTY_STATE: ActionResult = { ok: true };
-
 const inputClass =
   'w-full min-h-[44px] rounded-lg border border-line-strong bg-paper px-3 text-sm text-content outline-none transition focus:border-brass';
 
-function SubmitButton({ label, disabled }: { label: string; disabled?: boolean }) {
-  const { pending } = useFormStatus();
+function SubmitButton({
+  label,
+  disabled,
+  pending,
+}: {
+  label: string;
+  disabled?: boolean;
+  pending: boolean;
+}) {
   return (
     <button
       type="submit"
@@ -46,20 +51,17 @@ export function HouseholdForm({
 }: {
   action: (formData: FormData) => Promise<ActionResult>;
 }) {
-  const [state, formAction] = useFormState(
-    async (_previous: ActionResult, formData: FormData) => action(formData),
-    EMPTY_STATE,
-  );
+  const { state, pending, onSubmit } = useActionForm(action);
   const [name, setName] = useState('');
   const [touched, setTouched] = useState(false);
 
   const validation = validateHouseholdName({ name });
-  const serverErrors = state.ok ? {} : state.errors;
+  const serverErrors = serverErrorsOf(state);
   const error = serverErrors.name ?? (touched && !validation.ok ? validation.errors.name : undefined);
 
   return (
-    <form action={formAction} className="space-y-4">
-      <FormBanner message={state.ok ? undefined : state.formError} />
+    <form onSubmit={onSubmit} className="space-y-4">
+      <FormBanner message={formErrorOf(state)} />
 
       <div>
         <label htmlFor="household-name" className="block text-sm font-medium text-content">
@@ -85,7 +87,7 @@ export function HouseholdForm({
         ) : null}
       </div>
 
-      <SubmitButton label="Continue" disabled={!validation.ok} />
+      <SubmitButton label="Continue" disabled={!validation.ok} pending={pending} />
     </form>
   );
 }
@@ -97,15 +99,20 @@ export function PersonForm({
   action: (formData: FormData) => Promise<ActionResult>;
   submitLabel?: string;
 }) {
-  const [state, formAction] = useFormState(
-    async (_previous: ActionResult, formData: FormData) => action(formData),
-    EMPTY_STATE,
-  );
   const [values, setValues] = useState({ name: '', dateOfBirth: '', annualGrossIncome: '' });
   const [touched, setTouched] = useState<Record<string, boolean>>({});
 
+  // Clear the form on success so the next person starts blank — the running list above shows
+  // what has already been added.
+  const { state, pending, onSubmit } = useActionForm(action, {
+    onSuccess: () => {
+      setValues({ name: '', dateOfBirth: '', annualGrossIncome: '' });
+      setTouched({});
+    },
+  });
+
   const validation = validatePerson(values);
-  const serverErrors = state.ok ? {} : state.errors;
+  const serverErrors = serverErrorsOf(state);
   const liveErrors = validation.ok ? {} : validation.errors;
   const errorFor = (field: string) =>
     serverErrors[field] ?? (touched[field] ? liveErrors[field] : undefined);
@@ -114,14 +121,9 @@ export function PersonForm({
     setValues((current) => ({ ...current, [field]: value }));
   }
 
-  // Cleared after a successful add so the next person starts from a blank form. Keyed on the
-  // action result rather than tracked separately, which is what makes the running list in the
-  // step above work without extra state.
-  const key = state.ok ? 'clean' : 'errored';
-
   return (
-    <form action={formAction} key={key} className="space-y-4">
-      <FormBanner message={state.ok ? undefined : state.formError} />
+    <form onSubmit={onSubmit} className="space-y-4">
+      <FormBanner message={formErrorOf(state)} />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
@@ -195,7 +197,7 @@ export function PersonForm({
         ) : null}
       </div>
 
-      <SubmitButton label={submitLabel} disabled={!validation.ok} />
+      <SubmitButton label={submitLabel} disabled={!validation.ok} pending={pending} />
     </form>
   );
 }

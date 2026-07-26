@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { useFormState, useFormStatus } from 'react-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { validateBalanceUpdate } from '@/lib/accounts/validation';
 import type { AccountTypeValue } from '@/lib/db/schema';
 import type { ActionResult } from '@/lib/household/actions';
+import { formErrorOf, serverErrorsOf, useActionForm } from '@/lib/ui/useActionForm';
 
 /**
  * "Update balance", as an in-page drawer.
@@ -24,10 +24,7 @@ import type { ActionResult } from '@/lib/household/actions';
  * and a "pending sync" indicator that never had a queue would be theatre.
  */
 
-const EMPTY_STATE: ActionResult = { ok: true };
-
-function SubmitButton({ disabled }: { disabled: boolean }) {
-  const { pending } = useFormStatus();
+function SubmitButton({ disabled, pending }: { disabled: boolean; pending: boolean }) {
   return (
     <button
       type="submit"
@@ -55,18 +52,12 @@ export function UpdateBalanceDrawer({
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState({ amount: '', snapshotDate: today });
   const [touched, setTouched] = useState<Record<string, boolean>>({});
-  const [state, formAction] = useFormState(
-    async (_previous: ActionResult, formData: FormData) => {
-      const result = await action(formData);
-      if (result.ok) {
-        setOpen(false);
-        setValues({ amount: '', snapshotDate: today });
-        setTouched({});
-      }
-      return result;
-    },
-    EMPTY_STATE,
-  );
+  const onSuccess = useCallback(() => {
+    setOpen(false);
+    setValues({ amount: '', snapshotDate: today });
+    setTouched({});
+  }, [today]);
+  const { state, pending, onSubmit } = useActionForm(action, { onSuccess });
 
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -74,7 +65,7 @@ export function UpdateBalanceDrawer({
 
   const isDebt = accountType === 'debt';
   const validation = validateBalanceUpdate(values, accountType);
-  const serverErrors = state.ok ? {} : state.errors;
+  const serverErrors = serverErrorsOf(state);
   const liveErrors = validation.ok ? {} : validation.errors;
   const errorFor = (field: string) =>
     serverErrors[field] ?? (touched[field] ? liveErrors[field] : undefined);
@@ -150,12 +141,12 @@ export function UpdateBalanceDrawer({
             </h2>
             <p className="mt-1 text-xs text-content-faint">{accountName}</p>
 
-            <form action={formAction} className="mt-5 space-y-4">
+            <form onSubmit={onSubmit} className="mt-5 space-y-4">
               <input type="hidden" name="accountId" value={accountId} />
 
-              {!state.ok && state.formError ? (
+              {formErrorOf(state) ? (
                 <div role="alert" className="rounded-lg border border-clay/50 bg-clay-bg px-3 py-2 text-sm text-clay">
-                  {state.formError}
+                  {formErrorOf(state)}
                 </div>
               ) : null}
 
@@ -213,7 +204,7 @@ export function UpdateBalanceDrawer({
               </div>
 
               <div className="flex items-center gap-3 pt-1">
-                <SubmitButton disabled={!validation.ok} />
+                <SubmitButton disabled={!validation.ok} pending={pending} />
                 <button
                   type="button"
                   onClick={() => setOpen(false)}

@@ -1,10 +1,11 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { AccountLedger } from '@/components/accounts/AccountLedger';
 import { BreakdownPanel, type BreakdownSliceView } from '@/components/networth/BreakdownPanel';
 import { NetWorthHero } from '@/components/networth/NetWorthHero';
-import { EmptyState, ErrorState } from '@/components/ui/States';
+import { DashboardSkeleton, EmptyState, ErrorState } from '@/components/ui/States';
 import { formatMoney } from '@/lib/money';
 import {
   breakdown,
@@ -36,13 +37,21 @@ import {
  *
  * All four states are here:
  *  - *Default*: below.
- *  - *Loading*: `loading.tsx` alongside this file, which Next renders while this server
- *    component awaits — skeletons for the figure, chart and rows, not a full-page spinner.
+ *  - *Loading*: the `<Suspense>` boundary around `<DashboardBody>` — skeletons for the figure,
+ *    chart and rows, not a full-page spinner.
  *  - *Empty*: the genuinely-zero-accounts case. Reaching it should be impossible because a
  *    household with no accounts is redirected to Guided Setup, but the spec asks for it
  *    anyway, and "shouldn't happen" states are exactly the ones that look broken when they do.
  *  - *Error*: query failed with the backend up. Distinct from empty on purpose — showing "no
  *    accounts yet" for a failed query would tell a household its financial data is gone.
+ *
+ * **Why the skeleton is a Suspense boundary and not a `loading.tsx`.** A `loading.tsx` makes the
+ * whole route stream immediately, which means the `redirect('/setup')` below can no longer be an
+ * HTTP redirect — Next has to deliver it inside the RSC stream for the client router to act on.
+ * That works in a browser but returns 200 for a route that should be a 307, and it made the
+ * first-login redirect (the single most important navigation in the app) depend on client-side
+ * JavaScript. Awaiting the cheap setup check *before* returning any JSX keeps that a real
+ * redirect, and putting only the expensive queries inside Suspense keeps the skeleton.
  */
 
 // Never cached: this is the household's live financial position.
@@ -59,14 +68,44 @@ export default async function DashboardPage({
   // rather than to an empty dashboard. This is the redirect the design spec's first-time
   // setup flow requires, and it lives here rather than in middleware because middleware runs
   // in the edge runtime, where node-postgres can't reach the database at all.
+  //
+  // Awaited before any JSX is returned, so this is a real 307 and not a streamed instruction.
   if (setup.householdId === null || setup.personCount === 0) {
     redirect('/setup');
   }
-  const householdId = setup.householdId;
 
-  const range: TrendRange = isTrendRange(searchParams.range ?? '') ? (searchParams.range as TrendRange) : '6M';
-  const breakdownMode: BreakdownMode = isBreakdownMode(searchParams.breakdown ?? '')
-    ? (searchParams.breakdown as BreakdownMode)
+  return (
+    <AppShell pathname="/">
+      <PageHeading />
+      <Suspense fallback={<DashboardSkeleton />}>
+        <DashboardBody
+          householdId={setup.householdId}
+          rangeParam={searchParams.range}
+          breakdownParam={searchParams.breakdown}
+        />
+      </Suspense>
+    </AppShell>
+  );
+}
+
+/**
+ * Everything that needs a query. Split out so the shell and heading paint immediately and only
+ * this region shows a skeleton.
+ */
+async function DashboardBody({
+  householdId,
+  rangeParam,
+  breakdownParam,
+}: {
+  householdId: number;
+  rangeParam: string | undefined;
+  breakdownParam: string | undefined;
+}) {
+  // Unrecognised parameters fall back to the defaults rather than erroring: these come from the
+  // URL, so a stale or hand-edited link should still show a dashboard.
+  const range: TrendRange = isTrendRange(rangeParam ?? '') ? (rangeParam as TrendRange) : '6M';
+  const breakdownMode: BreakdownMode = isBreakdownMode(breakdownParam ?? '')
+    ? (breakdownParam as BreakdownMode)
     : 'person';
 
   const now = new Date();
@@ -84,28 +123,22 @@ export default async function DashboardPage({
   } catch (error) {
     console.error('[dashboard] failed to load net worth', error);
     return (
-      <AppShell pathname="/">
-        <PageHeading />
-        <ErrorState
-          title="Couldn’t load your net worth right now"
-          detail="Your data is safe — this was a problem reading it."
-          retryHref={`/?range=${range}&breakdown=${breakdownMode}`}
-        />
-      </AppShell>
+      <ErrorState
+        title="Couldn’t load your net worth right now"
+        detail="Your data is safe — this was a problem reading it."
+        retryHref={`/?range=${range}&breakdown=${breakdownMode}`}
+      />
     );
   }
 
   if (accounts.length === 0) {
     return (
-      <AppShell pathname="/">
-        <PageHeading />
-        <EmptyState
-          title="No accounts yet"
-          body="Add your first account to see your net worth."
-          ctaLabel="Add account"
-          ctaHref="/accounts/new"
-        />
-      </AppShell>
+      <EmptyState
+        title="No accounts yet"
+        body="Add your first account to see your net worth."
+        ctaLabel="Add account"
+        ctaHref="/accounts/new"
+      />
     );
   }
 
@@ -139,42 +172,38 @@ export default async function DashboardPage({
   }, null);
 
   return (
-    <AppShell pathname="/">
-      <PageHeading />
+    <div className="space-y-5">
+      <NetWorthHero
+        totalPence={total}
+        series={series}
+        delta={trendDelta(series)}
+        range={range}
+        breakdownMode={breakdownMode}
+        latestCapturedAt={latestCapturedAt}
+        now={now}
+      />
 
-      <div className="space-y-5">
-        <NetWorthHero
-          totalPence={total}
-          series={series}
-          delta={trendDelta(series)}
-          range={range}
-          breakdownMode={breakdownMode}
-          latestCapturedAt={latestCapturedAt}
-          now={now}
-        />
+      <BreakdownPanel slices={slices} initialMode={breakdownMode} />
 
-        <BreakdownPanel slices={slices} initialMode={breakdownMode} />
+      <section
+        aria-labelledby="accounts-heading"
+        className="rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6"
+      >
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 id="accounts-heading" className="font-serif text-lg text-content">
+            Accounts
+          </h2>
+          <Link
+            href="/accounts/new"
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-line-strong px-3 text-xs font-medium text-content-muted transition hover:border-brass hover:text-content"
+          >
+            <span aria-hidden="true">+</span> Add account
+          </Link>
+        </div>
 
-        <section
-          aria-labelledby="accounts-heading"
-          className="rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6"
-        >
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <h2 id="accounts-heading" className="font-serif text-lg text-content">
-              Accounts
-            </h2>
-            <Link
-              href="/accounts/new"
-              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-line-strong px-3 text-xs font-medium text-content-muted transition hover:border-brass hover:text-content"
-            >
-              <span aria-hidden="true">+</span> Add account
-            </Link>
-          </div>
-
-          <AccountLedger groups={groups} now={now} />
-        </section>
-      </div>
-    </AppShell>
+        <AccountLedger groups={groups} now={now} />
+      </section>
+    </div>
   );
 }
 

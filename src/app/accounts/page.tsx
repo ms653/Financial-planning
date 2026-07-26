@@ -1,8 +1,9 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { AccountLedger } from '@/components/accounts/AccountLedger';
-import { EmptyState, ErrorState } from '@/components/ui/States';
+import { EmptyState, ErrorState, SkeletonRows } from '@/components/ui/States';
 import { formatMoney } from '@/lib/money';
 import { groupAccountsByOwner, netWorthPence } from '@/lib/networth/breakdown';
 import { getAccountsWithBalances, getPeople, getSetupState } from '@/lib/household/queries';
@@ -18,6 +19,10 @@ import { getAccountsWithBalances, getPeople, getSetupState } from '@/lib/househo
  * "filterable back in" via `?archived=1` — the spec's wording. They're a separate section
  * rather than mixed into the owner groups, so an old transferred ISA can't be mistaken for a
  * live one at a glance.
+ *
+ * The loading state is a `<Suspense>` boundary rather than a `loading.tsx`, for the reason
+ * documented on the dashboard: a route-level loading file forces streaming, which turns the
+ * setup redirect below from a 307 into an instruction only a browser with JavaScript can act on.
  */
 
 export const dynamic = 'force-dynamic';
@@ -28,10 +33,26 @@ export default async function AccountsPage({
   searchParams: { archived?: string };
 }) {
   const setup = await getSetupState();
+  // Awaited before any JSX, so this stays a real redirect.
   if (setup.householdId === null || setup.personCount === 0) redirect('/setup');
-  const householdId = setup.householdId;
 
-  const showArchived = searchParams.archived === '1';
+  return (
+    <AppShell pathname="/accounts">
+      <Heading />
+      <Suspense fallback={<SkeletonRows rows={5} label="Loading your accounts" />}>
+        <AccountsBody householdId={setup.householdId} showArchived={searchParams.archived === '1'} />
+      </Suspense>
+    </AppShell>
+  );
+}
+
+async function AccountsBody({
+  householdId,
+  showArchived,
+}: {
+  householdId: number;
+  showArchived: boolean;
+}) {
   const now = new Date();
 
   let all: Awaited<ReturnType<typeof getAccountsWithBalances>>;
@@ -43,12 +64,7 @@ export default async function AccountsPage({
     ]);
   } catch (error) {
     console.error('[accounts] failed to load accounts', error);
-    return (
-      <AppShell pathname="/accounts">
-        <Heading />
-        <ErrorState retryHref="/accounts" detail="Your data is safe — this was a problem reading it." />
-      </AppShell>
-    );
+    return <ErrorState retryHref="/accounts" detail="Your data is safe — this was a problem reading it." />;
   }
 
   const live = all.filter((account) => !account.archived);
@@ -56,14 +72,11 @@ export default async function AccountsPage({
 
   if (all.length === 0) {
     return (
-      <AppShell pathname="/accounts">
-        <Heading />
-        <EmptyState
-          title="No accounts yet — add your first one to get started"
-          ctaLabel="+ Add account"
-          ctaHref="/accounts/new"
-        />
-      </AppShell>
+      <EmptyState
+        title="No accounts yet — add your first one to get started"
+        ctaLabel="+ Add account"
+        ctaHref="/accounts/new"
+      />
     );
   }
 
@@ -71,9 +84,7 @@ export default async function AccountsPage({
   const archivedGroups = groupAccountsByOwner(archived, people);
 
   return (
-    <AppShell pathname="/accounts">
-      <Heading />
-
+    <>
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-content-muted">
           {live.length} {live.length === 1 ? 'account' : 'accounts'} ·{' '}
@@ -125,7 +136,7 @@ export default async function AccountsPage({
           )}
         </div>
       ) : null}
-    </AppShell>
+    </>
   );
 }
 

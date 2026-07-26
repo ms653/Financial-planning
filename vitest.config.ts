@@ -17,6 +17,16 @@ export default defineConfig({
     globals: true,
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     /*
+     * Test files run one at a time.
+     *
+     * The two `*.integration.test.ts` files share a single scratch Postgres, and each starts by
+     * dropping and recreating its schema. Run in parallel, one file wipes the schema out from
+     * under the other — which showed up as a confusing spread of failures in unrelated
+     * assertions rather than as an obvious conflict. The alternative (a database per file) is
+     * more machinery than a suite this size needs; the whole run is a few seconds either way.
+     */
+    fileParallelism: false,
+    /*
      * Playwright's E2E specs live in e2e/ and are run by `npm run test:e2e`. Excluded here
      * because Playwright's `test` export and Vitest's collide, and a Vitest run that tried
      * to collect them would fail confusingly rather than usefully.
