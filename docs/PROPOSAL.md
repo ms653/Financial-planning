@@ -118,7 +118,7 @@ Reuse the pattern already proven in the sibling Warhammer-app repo, minus the CM
 - **Next.js 14 App Router** — server components by default, `'use client'` only where interactive state is needed (calculators, what-if sliders). Pinned specifically to match the sibling Warhammer-app repo's patterns for reuse — by the time this is built, newer major versions exist; staying on 14 is a deliberate reuse-over-currency choice, not an oversight, and not a goal to chase the latest version.
 - **Postgres**, running locally via Docker — no need for hosted Supabase; this is a single-household, local-first tool, not a multi-tenant SaaS.
 - **Tailwind CSS** for styling scaffolding now, refined later in the design pass.
-- **Zustand** for the retirement-scenario and stock-analysis-workbench in-memory state (mirrors the existing army-builder store pattern).
+- **Zustand** for retirement-scenario and stock-analysis-workbench **UI/input state only** (mirrors the existing army-builder store pattern) — the actual computation (Monte Carlo simulation, DCF, Cash Allocation Advisor logic) runs **server-side** via Next.js Server Actions/API routes, not in the browser. This is a deliberate choice, not an implementation detail: it's what guarantees full mobile parity (Section 4/5 mobile access) — a phone sends inputs and receives results identically to a laptop, since it never has to run thousands of simulation iterations client-side.
 - **Vitest + Testing Library**, **Playwright** for E2E — same as the sibling project.
 
 ### Data model (high level)
@@ -175,12 +175,13 @@ No separate native app. The same Next.js app is a responsive PWA (installable ma
 
 ---
 
-## Open questions for you
-1. **Account sync** — given UK Open Banking providers don't have SimpleFIN's cheap personal-use pricing, and the sync spike is now sequenced late (Phase 5, after the core features), are you fine with manual entry being the primary way you'll use the app through most of the build?
-2. Any specific account types to plan for now (e.g. non-UK accounts/assets from before moving, employee share schemes/RSUs, crypto) that would affect the account model in Phase 0–1?
-3. Household size — just the two of you, or should the person model allow for more (e.g. dependents tracked but not full users)?
-4. Is the "laptop must be on for phone access" limitation (Section 5, mobile/tablet access) acceptable for now, or should we plan for an always-on mini-PC/NAS from the start instead of as a later upgrade?
-5. Is the household's portfolio mostly UK/LSE-listed, mostly US/global funds (common even inside a SIPP/ISA), or a mix? This determines whether FMP/Finnhub's coverage is sufficient or whether EODHD/Twelve Data's LSE-specific data is actually needed (Section 3).
+## Open Questions — Resolved
+
+1. **Account sync**: manual entry is fine as the primary mode. Enable Banking (Section 3) is a research candidate, not a confirmed-working integration — Phase 5 is where it actually gets tried, not assumed.
+2. **Account types**: no non-UK accounts. Just ISA, pension, bank account, house — all already in scope for Phase 0–1, no changes needed to the account model.
+3. **Household size**: no cap needed. `person (1..n)` was already unbounded in the data model (Section 5) — this was confirming existing design, not changing it.
+4. **Mobile capability vs. reachability**: nothing should be feature-restricted on mobile — the Monte Carlo engine, DCF calculator, and Cash Allocation Advisor all need to run **server-side**, with the phone only sending inputs and displaying results, so a phone is exactly as capable as a laptop for every calculation. This wasn't fully pinned down before (the tech-stack's Zustand mention was ambiguous about where computation happens) — now made explicit in Section 5. The one real constraint remains **reachability**, not capability: when the backend is reachable (laptop on, Tailscale connected) you get 100% of the app; when it isn't, you get 0%, not a degraded subset. Touch-friendly input design for things like Monte Carlo assumption sliders is a Phase 7 (visual design pass) concern, not a missing-feature one.
+5. **Portfolio mix**: mostly ETFs via Vanguard. Two implications for Section 3's data-source choice: (a) **Portfolio tracking (Phase 2) mainly needs ETF price/NAV data, not deep company fundamentals** — a lighter requirement than originally scoped for, since fundamentals-heavy providers (FMP) matter more for the Stock Analysis Workbench (Phase 4) evaluating individual stock picks than for valuing an existing ETF-heavy portfolio. (b) **Vanguard ETFs bought by UK investors (e.g. VUSA, VWRL) are typically LSE-listed even though the underlying exposure is US/global** — so "mostly ETFs, not individual UK stocks" does **not** mean LSE coverage is unnecessary; it means the LSE coverage need is for a small number of ETF tickers rather than broad UK equity coverage. Verify FMP/Finnhub/EODHD/Twelve Data specifically against Vanguard's actual ETF list at Phase 2 kickoff, not against LSE coverage generally.
 
 ---
 
