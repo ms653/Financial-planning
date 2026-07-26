@@ -135,11 +135,23 @@ const timestamps = {
  * a hardcoded `1` would be a genuinely nasty thing to unpick if this ever grew a second
  * household or was restored from a dump with different sequence values.
  */
-export const households = pgTable('household', {
-  id: serial('id').primaryKey(),
-  name: text('name').notNull(),
-  ...timestamps,
-});
+export const households = pgTable(
+  'household',
+  {
+    id: serial('id').primaryKey(),
+    name: text('name').notNull(),
+    ...timestamps,
+  },
+  (table) => ({
+    // `createHousehold`'s "refuse to create a second one" check is app-level
+    // check-then-insert, which two concurrent first-time-setup submissions can both pass.
+    // This index is the database backstop: a unique index on a constant expression allows
+    // at most one row in the whole table, so the second concurrent insert fails loudly
+    // (caught and treated as "already done") instead of silently creating a second
+    // household that later queries could nondeterministically pick.
+    singleton: uniqueIndex('household_singleton').on(sql`(true)`),
+  }),
+);
 
 export const pensionContributionMethod = pgEnum('pension_contribution_method', [
   'relief_at_source',

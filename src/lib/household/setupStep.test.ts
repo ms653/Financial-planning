@@ -45,6 +45,17 @@ describe('resolveSetupStep', () => {
     it('sends a complete household to the dashboard', () => {
       expect(resolveSetupStep(state(1, 2, 3), undefined)).toBe('done');
     });
+
+    it('clamps the default to furthest when accounts exist without a person', () => {
+      // Not reachable through Guided Setup itself (the account form requires an owner), but
+      // the schema doesn't forbid a joint account with no person at all, and the accounts
+      // CRUD screens can create one. Without the clamp, an unqualified visit would render
+      // the account picker while `?step=accounts` for the same state is refused as
+      // "skipping ahead" — self-contradictory.
+      expect(resolveSetupStep({ householdId: 1, personCount: 0, accountCount: 1, complete: false }, undefined)).toBe(
+        'people',
+      );
+    });
   });
 
   describe('with a step requested', () => {

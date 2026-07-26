@@ -62,8 +62,19 @@ export function resolveSetupStep(
   const furthest: SetupStep =
     setup.householdId === null ? 'household' : setup.personCount === 0 ? 'people' : 'accounts';
 
-  const defaultStep: SetupStep =
+  const earliestIncomplete: SetupStep =
     setup.householdId === null ? 'household' : setup.accountCount === 0 ? 'people' : 'accounts';
+
+  // `earliestIncomplete` is keyed on `accountCount`, not `personCount`, so adding one person
+  // doesn't advance the flow — see the module comment. That formula assumes `personCount > 0`
+  // whenever `accountCount > 0`, true through this UI (the account form requires an owner) but
+  // not enforced by the schema (a joint account needs no person at all). If it's ever false,
+  // `earliestIncomplete` would land past `furthest` — clamped here so the default is always at
+  // least as reachable as an explicit `?step=` request for the same state.
+  const defaultStep: SetupStep =
+    SETUP_STEP_ORDER.indexOf(earliestIncomplete) > SETUP_STEP_ORDER.indexOf(furthest)
+      ? furthest
+      : earliestIncomplete;
 
   if (
     requestedStep !== null &&

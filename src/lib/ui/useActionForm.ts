@@ -65,6 +65,14 @@ export function useActionForm(
       void (async () => {
         try {
           const result = await action(formData);
+          // A Server Action that redirects on success (e.g. `createAccountThenReturn`,
+          // `updateAccountThenReturn`) returns nothing on that path — Next performs the
+          // navigation itself and the awaited call resolves `undefined` rather than
+          // rejecting with the redirect digest. Without this guard, `result.ok` throws,
+          // and the generic "couldn't save" banner can flash during a save that actually
+          // succeeded. There is nothing to set state to here: the redirect is already
+          // under way.
+          if (result === undefined) return;
           setState(result);
           if (result.ok) onSuccess?.();
         } catch (error) {

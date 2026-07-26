@@ -219,6 +219,26 @@ describe.skipIf(!connectionString)('Phase 1 end-to-end flow', () => {
       expect(rows[0]!.count).toBe('1');
     });
 
+    it('stays a singleton under two concurrent submissions, not just sequential ones', async () => {
+      // The sequential test above can't exercise the race the app-level check-then-insert
+      // is vulnerable to: two requests that both read "no household yet" before either
+      // writes. Firing both without awaiting between them reproduces that ordering, and the
+      // `household_singleton` unique index (not the app-level check) is what's actually
+      // relied on to keep this at one row.
+      const [first, second] = await Promise.all([
+        actions.createHousehold(form({ name: 'Race A' })),
+        actions.createHousehold(form({ name: 'Race B' })),
+      ]);
+
+      // Both requests report success — the loser of the race is told "already done" rather
+      // than shown an error, since from the household's point of view setup did complete.
+      expect(first.ok).toBe(true);
+      expect(second.ok).toBe(true);
+
+      const { rows } = await pool.query<{ count: string }>('select count(*) from household');
+      expect(rows[0]!.count).toBe('1');
+    });
+
     it('rejects a person with no date of birth, and writes nothing', async () => {
       await actions.createHousehold(form({ name: 'Test household' }));
       const result = await actions.addPerson(form({ name: 'Alex', dateOfBirth: '' }));
@@ -559,12 +579,12 @@ describe.skipIf(!connectionString)('Phase 1 end-to-end flow', () => {
       expect(detail!.taxWrapper).toBe('gia');
     });
 
-    it('keeps debt terms when the type changes away from debt, so a mistake is recoverable', async () => {
+    it('refuses to change a debt account to a non-debt type, since its history is signed the other way', async () => {
       const { householdId, alex } = await completeGuidedSetup();
       const accounts = await queries.getAccountsWithBalances(householdId);
       const mortgage = accounts.find((account) => account.type === 'debt')!;
 
-      await actions.updateAccount(
+      const result = await actions.updateAccount(
         form({
           accountId: String(mortgage.id),
           name: 'Mortgage — 14 Elm Grove',
@@ -573,12 +593,35 @@ describe.skipIf(!connectionString)('Phase 1 end-to-end flow', () => {
         }),
       );
 
-      // Row retained (hidden by the UI, not deleted) per the design spec's edge case.
+      expect(result.ok).toBe(false);
+
+      // Nothing changed: type, debt_terms row, and the signed snapshot are all untouched.
+      const detail = await queries.getAccountDetail(householdId, mortgage.id);
+      expect(detail!.type).toBe('debt');
       const { rows } = await pool.query<{ count: string }>(
         'select count(*) from debt_terms where account_id = $1',
         [mortgage.id],
       );
       expect(rows[0]!.count).toBe('1');
+    });
+
+    it('refuses to change a non-debt account to debt, for the same reason', async () => {
+      const { householdId, alex } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+
+      const result = await actions.updateAccount(
+        form({
+          accountId: String(isa.id),
+          name: 'Vanguard S&S ISA',
+          type: 'debt',
+          ownerIds: [String(alex.id)],
+        }),
+      );
+
+      expect(result.ok).toBe(false);
+      const detail = await queries.getAccountDetail(householdId, isa.id);
+      expect(detail!.type).toBe('ss_isa');
     });
   });
 

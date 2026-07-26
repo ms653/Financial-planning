@@ -120,8 +120,8 @@ async function AccountsBody({
                 </Link>
               </div>
               <p className="mb-4 text-xs text-content-faint">
-                Excluded from your totals. Their history is kept and still counts towards past
-                points on your net worth trend.
+                Excluded from your totals and from your net worth trend. Their balance history
+                is kept here if you need to look back at it.
               </p>
               <AccountLedger groups={archivedGroups} now={now} showGroupTotals={false} />
             </div>

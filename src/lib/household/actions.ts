@@ -114,6 +114,16 @@ export async function createHousehold(formData: FormData): Promise<ActionResult>
     }
     await getDb().insert(households).values({ name: parsed.value.name });
   } catch (error) {
+    // Two concurrent first-time-setup submissions can both pass the check above; the
+    // `household_singleton` unique index lets only one insert land. The loser hitting that
+    // constraint isn't a failure from the user's point of view — the household now exists,
+    // just not from this request — so it's treated the same as the already-done check.
+    // node-postgres surfaces this as a DatabaseError with SQLSTATE 23505 (unique_violation)
+    // and the offending index name on `.constraint`.
+    const pgError = error as { code?: string; constraint?: string };
+    if (pgError.code === '23505' && pgError.constraint === 'household_singleton') {
+      return { ok: true };
+    }
     return logAndWrap('createHousehold', error);
   }
 
@@ -248,7 +258,22 @@ export async function deletePensionContribution(formData: FormData): Promise<Act
   try {
     // A planning assumption someone typed by mistake, not financial history — this is the
     // one delete in Phase 1, and it is safe precisely because nothing derives from it yet.
-    await getDb().delete(pensionContributions).where(eq(pensionContributions.id, contributionId));
+    const householdId = await requireHouseholdId();
+    const db = getDb();
+    // Scoped by household, joining through the owning person, matching every other
+    // mutation in this file. With exactly one household ever, a forged id could only ever
+    // reach a row this household already owns — but the scoping is what makes that true by
+    // construction rather than by the current threat model, and it keeps the pattern
+    // uniform for whichever future change relies on it.
+    const [owned] = await db
+      .select({ id: pensionContributions.id })
+      .from(pensionContributions)
+      .innerJoin(people, eq(pensionContributions.personId, people.id))
+      .where(and(eq(pensionContributions.id, contributionId), eq(people.householdId, householdId)))
+      .limit(1);
+    if (!owned) return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+
+    await db.delete(pensionContributions).where(eq(pensionContributions.id, contributionId));
   } catch (error) {
     return logAndWrap('deletePensionContribution', error);
   }
@@ -331,11 +356,23 @@ export async function createAccount(formData: FormData): Promise<ActionResult> {
  * No balance here — that's the "Update balance" flow, which appends a snapshot. See the
  * note on `validateAccountEdit`.
  *
- * Changing the type away from `debt` leaves any existing `debt_terms` row in place rather
- * than deleting it. DESIGN_SPEC.md's edge case asks for a confirmation that those fields
- * "will be hidden (not deleted, in case they switch back)", so the row is retained and
- * simply stops being rendered. It is also what keeps a mistaken type change from destroying
- * mortgage terms someone typed off their paperwork.
+ * Changing the type **across the asset/liability boundary** (e.g. `cash` → `debt`, or
+ * `debt` → anything else) is refused outright, rather than allowed with the old `debt_terms`
+ * row left in place. Every stored `balance_snapshot` for the account was signed at write
+ * time under the *old* type's convention — a liability negative, an asset positive — and
+ * there is no snapshot column recording which convention applied. Silently relabelling the
+ * type would leave the whole history signed under a convention its new type no longer
+ * matches: net worth would double-count the balance in the new type's direction, and the
+ * asset-class breakdown would show a liability as a positive slice or vice versa.
+ * Re-creating the account (a fresh row, its own signed history from the point it's added) is
+ * the correct fix for "I picked the wrong type," not an in-place edit.
+ *
+ * This is a deliberate narrowing of DESIGN_SPEC.md's edge case, which described the switch
+ * as allowed with terms "hidden (not deleted, in case they switch back)". That wording
+ * covers what happens to the *form fields*; it doesn't resolve what happens to the *signed
+ * balance history*, and there's no correct answer to that within a single in-place edit — so
+ * the edit is refused instead of shipping a switch that quietly corrupts net worth. A type
+ * change that stays on the same side of the boundary (e.g. Cash ISA → GIA) is unaffected.
  */
 export async function updateAccount(formData: FormData): Promise<ActionResult> {
   const accountId = Number.parseInt(String(formData.get('accountId') ?? ''), 10);
@@ -350,6 +387,22 @@ export async function updateAccount(formData: FormData): Promise<ActionResult> {
   try {
     const householdId = await requireHouseholdId();
     const db = getDb();
+
+    const [existing] = await db
+      .select({ type: accounts.type })
+      .from(accounts)
+      .where(and(eq(accounts.id, accountId), eq(accounts.householdId, householdId)))
+      .limit(1);
+    if (!existing) return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+
+    if (isLiabilityType(existing.type) !== isLiabilityType(input.type)) {
+      return {
+        ok: false,
+        errors: {},
+        formError:
+          'An account can’t change between debt and non-debt types — its balance history was recorded the other way. Archive this account and add a new one instead.',
+      };
+    }
 
     await db.transaction(async (tx) => {
       await tx
@@ -473,14 +526,22 @@ export async function updateBalance(formData: FormData): Promise<ActionResult> {
 
       // Keep debt_terms.current_balance in step with the snapshot series, so Phase 4.5
       // can't read a stale figure. Positive there, negative in the snapshot.
+      //
+      // Upsert, not a plain update: `createAccount` only inserts a `debt_terms` row when
+      // terms were provided at creation, so a debt account can legitimately have none yet.
+      // A plain UPDATE against that account matches zero rows and silently no-ops, leaving
+      // `current_balance` absent even though a real snapshot exists — this closes that gap
+      // by creating the row (with everything but the balance left null) the first time a
+      // balance is recorded for a debt account that has no terms yet.
       if (isLiabilityType(account.type)) {
+        const currentBalance = penceToNumeric(-numericToPence(parsed.value.amount));
         await tx
-          .update(debtTerms)
-          .set({
-            currentBalance: penceToNumeric(-numericToPence(parsed.value.amount)),
-            updatedAt: sql`now()`,
-          })
-          .where(eq(debtTerms.accountId, accountId));
+          .insert(debtTerms)
+          .values({ accountId, currentBalance })
+          .onConflictDoUpdate({
+            target: debtTerms.accountId,
+            set: { currentBalance, updatedAt: sql`now()` },
+          });
       }
     });
   } catch (error) {
@@ -537,19 +598,35 @@ export async function addHolding(formData: FormData): Promise<ActionResult> {
 
 export async function deleteHolding(formData: FormData): Promise<ActionResult> {
   const holdingId = Number.parseInt(String(formData.get('holdingId') ?? ''), 10);
-  const accountId = Number.parseInt(String(formData.get('accountId') ?? ''), 10);
   if (!Number.isInteger(holdingId)) {
     return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
   }
 
+  let accountId: number;
   try {
     // A holding is current composition, not history: removing one you no longer hold is
     // the correct operation, unlike an account, whose history the trend chart still needs.
-    await getDb().delete(holdings).where(eq(holdings.id, holdingId));
+    //
+    // Scoped by household, joining through the owning account, matching every other
+    // mutation in this file — see the note on `deletePensionContribution`. This also
+    // resolves the real `accountId` from the holding itself rather than trusting the
+    // form's copy of it, so the revalidated path is always the one that actually changed.
+    const householdId = await requireHouseholdId();
+    const db = getDb();
+    const [owned] = await db
+      .select({ accountId: holdings.accountId })
+      .from(holdings)
+      .innerJoin(accounts, eq(holdings.accountId, accounts.id))
+      .where(and(eq(holdings.id, holdingId), eq(accounts.householdId, householdId)))
+      .limit(1);
+    if (!owned) return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+    accountId = owned.accountId;
+
+    await db.delete(holdings).where(eq(holdings.id, holdingId));
   } catch (error) {
     return logAndWrap('deleteHolding', error);
   }
 
-  if (Number.isInteger(accountId)) revalidatePath(`/accounts/${accountId}`);
+  revalidatePath(`/accounts/${accountId}`);
   return { ok: true };
 }

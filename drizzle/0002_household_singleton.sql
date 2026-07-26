@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "household_singleton" ON "household" USING btree ((true));
