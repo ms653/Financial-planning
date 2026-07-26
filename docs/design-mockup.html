@@ -1,0 +1,804 @@
+<title>Household Finance — Design Direction</title>
+<style>
+  :root {
+    --ink-950: #14201c;
+    --ink-800: #24332c;
+    --ink-700: #33453b;
+    --paper: #f1f1ea;
+    --paper-raised: #fbfbf7;
+    --paper-sunken: #e7e6dd;
+    --brass: #b08d3e;
+    --brass-strong: #8f7130;
+    --sage: #5e7c63;
+    --sage-bg: #e3e9e2;
+    --clay: #a85c42;
+    --clay-bg: #f0e0d8;
+    --text-on-paper: #1c241f;
+    --text-muted: #4b554e;
+    --text-faint: #7c8580;
+    --line: rgba(20, 32, 28, 0.12);
+    --line-strong: rgba(20, 32, 28, 0.22);
+    --text-on-ink: #e9e8de;
+    --text-on-ink-muted: #9aa79d;
+    --shadow-card: 0 1px 2px rgba(20, 32, 28, 0.06), 0 6px 20px rgba(20, 32, 28, 0.06);
+    --radius-card: 14px;
+    --radius-chip: 999px;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Georgia", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #171f1a;
+    --paper-raised: #1f2921;
+    --paper-sunken: #121912;
+    --text-on-paper: #eae8de;
+    --text-muted: #a9b3ac;
+    --text-faint: #77837c;
+    --line: rgba(233, 232, 222, 0.1);
+    --line-strong: rgba(233, 232, 222, 0.18);
+    --brass: #cba756;
+    --sage: #8bb193;
+    --sage-bg: #223028;
+    --clay: #d38668;
+    --clay-bg: #3a2a23;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #171f1a;
+      --paper-raised: #1f2921;
+      --paper-sunken: #121912;
+      --text-on-paper: #eae8de;
+      --text-muted: #a9b3ac;
+      --text-faint: #77837c;
+      --line: rgba(233, 232, 222, 0.1);
+      --line-strong: rgba(233, 232, 222, 0.18);
+      --brass: #cba756;
+      --sage: #8bb193;
+      --sage-bg: #223028;
+      --clay: #d38668;
+      --clay-bg: #3a2a23;
+      --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    background: var(--paper);
+    color: var(--text-on-paper);
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--brass);
+    outline-offset: 2px;
+  }
+  h1, h2, h3 { text-wrap: balance; margin: 0; }
+  .tabular { font-variant-numeric: tabular-nums; }
+  .visually-hidden {
+    position: absolute;
+    width: 1px; height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .app {
+    display: grid;
+    grid-template-columns: 248px 1fr;
+    min-height: 100vh;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    background: var(--ink-950);
+    color: var(--text-on-ink);
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    padding: 24px 18px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 8px 14px;
+    border-bottom: 1px solid rgba(233,232,222,0.1);
+  }
+  .brand-mark {
+    width: 30px; height: 30px;
+    border-radius: 7px;
+    background: linear-gradient(155deg, var(--brass), var(--brass-strong));
+    display: grid; place-items: center;
+    color: var(--ink-950);
+    font-family: var(--serif);
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .brand-label {
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-on-ink-muted);
+  }
+  .brand-name {
+    font-family: var(--serif);
+    font-size: 16px;
+    line-height: 1.1;
+  }
+
+  nav.primary-nav { display: flex; flex-direction: column; gap: 2px; }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 9px 12px;
+    border-radius: 9px;
+    color: var(--text-on-ink-muted);
+    text-decoration: none;
+    font-size: 14px;
+    background: none;
+    border: none;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .nav-item:hover { background: rgba(233,232,222,0.06); color: var(--text-on-ink); }
+  .nav-item[aria-current="page"] {
+    background: rgba(176,141,62,0.16);
+    color: #f1e3c2;
+  }
+  .nav-item[aria-current="page"] .nav-dot { background: var(--brass); }
+  .nav-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(233,232,222,0.28); flex-shrink: 0; }
+  .nav-item[disabled] { opacity: 0.38; cursor: default; }
+  .nav-item[disabled]:hover { background: none; color: var(--text-on-ink-muted); }
+  .nav-soon {
+    margin-left: auto;
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-on-ink-muted);
+  }
+
+  .sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 12px; }
+  .household-chip {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 11px;
+    border-radius: 10px;
+    background: rgba(233,232,222,0.05);
+    border: 1px solid rgba(233,232,222,0.08);
+  }
+  .avatars { display: flex; }
+  .avatar {
+    width: 26px; height: 26px; border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 10.5px; font-weight: 600;
+    color: var(--ink-950);
+    border: 2px solid var(--ink-950);
+  }
+  .avatar:not(:first-child) { margin-left: -8px; }
+  .household-name { font-size: 12.5px; color: var(--text-on-ink); line-height: 1.3; }
+  .household-sub { font-size: 10.5px; color: var(--text-on-ink-muted); }
+
+  .connectivity {
+    display: flex; align-items: center; gap: 7px;
+    padding: 8px 11px;
+    font-size: 11.5px;
+    color: var(--text-on-ink-muted);
+  }
+  .connectivity-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sage); flex-shrink: 0; }
+  .connectivity-dot.offline { background: var(--clay); }
+
+  /* ---------- Content shell ---------- */
+  .content { padding: 34px 44px 60px; max-width: 1180px; }
+  .page-head {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    margin-bottom: 26px; gap: 20px; flex-wrap: wrap;
+  }
+  .eyebrow {
+    font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-faint); margin-bottom: 6px; display: block;
+  }
+  .page-title { font-family: var(--serif); font-size: 27px; font-weight: 500; }
+  .sync-note { font-size: 12.5px; color: var(--text-faint); display: flex; align-items: center; gap: 6px; }
+  .sync-note svg { flex-shrink: 0; }
+
+  .card {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+  }
+
+  /* ---------- Net worth hero ---------- */
+  .hero-card { padding: 30px 34px 22px; margin-bottom: 22px; }
+  .hero-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; flex-wrap: wrap; }
+  .hero-figure-label { font-size: 12.5px; color: var(--text-muted); margin-bottom: 6px; }
+  .hero-figure {
+    font-family: var(--serif);
+    font-size: 46px;
+    line-height: 1;
+    letter-spacing: -0.01em;
+  }
+  .hero-figure .pence { color: var(--text-faint); font-size: 0.55em; }
+  .hero-delta { margin-top: 8px; font-size: 13px; color: var(--sage); display: flex; align-items: center; gap: 5px; }
+  .hero-range {
+    display: flex; gap: 2px; background: var(--paper-sunken);
+    padding: 3px; border-radius: var(--radius-chip);
+    align-self: flex-start;
+  }
+  .range-btn {
+    border: none; background: none; padding: 6px 13px;
+    font-size: 12.5px; border-radius: var(--radius-chip);
+    color: var(--text-muted); cursor: pointer; font-family: var(--sans);
+  }
+  .range-btn[aria-pressed="true"] { background: var(--paper-raised); color: var(--text-on-paper); box-shadow: 0 1px 3px rgba(20,32,28,0.12); }
+
+  .trend-wrap { margin-top: 18px; }
+  svg.trend { width: 100%; height: 132px; display: block; }
+
+  /* ---------- Breakdown ---------- */
+  .breakdown-card { padding: 24px 30px 26px; margin-bottom: 22px; }
+  .breakdown-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
+  .section-title { font-family: var(--serif); font-size: 18px; }
+  .segmented { display: flex; gap: 2px; background: var(--paper-sunken); padding: 3px; border-radius: var(--radius-chip); }
+  .seg-btn { border: none; background: none; padding: 6px 14px; font-size: 12.5px; border-radius: var(--radius-chip); color: var(--text-muted); cursor: pointer; font-family: var(--sans); }
+  .seg-btn[aria-pressed="true"] { background: var(--paper-raised); color: var(--text-on-paper); box-shadow: 0 1px 3px rgba(20,32,28,0.12); }
+
+  .stack-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin-bottom: 16px; border: 1px solid var(--line); }
+  .stack-seg { height: 100%; }
+
+  .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 20px; }
+  .legend-row { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+  .legend-label { color: var(--text-muted); flex: 1; }
+  .legend-value { font-weight: 600; }
+
+  /* ---------- Accounts ledger ---------- */
+  .ledger-card { padding: 8px 0 6px; }
+  .ledger-head { padding: 18px 30px 14px; display: flex; justify-content: space-between; align-items: center; }
+  .owner-group { border-top: 1px solid var(--line); padding: 16px 30px; }
+  .owner-group:first-of-type { border-top: none; }
+  .owner-label { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 10px; }
+  .acct-row {
+    display: grid;
+    grid-template-columns: 28px 1fr auto auto;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 4px;
+    border-radius: 9px;
+  }
+  .acct-row:hover { background: var(--paper-sunken); }
+  .acct-icon {
+    width: 28px; height: 28px; border-radius: 8px;
+    display: grid; place-items: center;
+    font-size: 12px; font-weight: 700;
+    color: var(--paper-raised);
+  }
+  .acct-name-wrap { display: flex; flex-direction: column; gap: 2px; }
+  .acct-name { font-size: 14px; }
+  .acct-meta { font-size: 11.5px; color: var(--text-faint); }
+  .wrapper-badge {
+    font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 5px; font-weight: 600;
+  }
+  .acct-balance { font-size: 14.5px; font-weight: 600; text-align: right; }
+  .acct-balance.negative { color: var(--clay); }
+
+  .add-account-btn {
+    display: flex; align-items: center; gap: 6px;
+    background: none; border: 1px dashed var(--line-strong);
+    color: var(--text-muted); font-size: 12.5px;
+    padding: 7px 13px; border-radius: var(--radius-chip);
+    cursor: pointer; font-family: var(--sans);
+  }
+  .add-account-btn:hover { border-color: var(--brass); color: var(--brass-strong); }
+
+  /* ---------- Retirement view ---------- */
+  .planner-grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 22px; align-items: start; }
+  @media (max-width: 980px) { .planner-grid { grid-template-columns: 1fr; } }
+
+  .result-card { padding: 28px 32px 22px; }
+  .stale-banner {
+    display: none;
+    align-items: center; gap: 10px;
+    background: var(--clay-bg); color: var(--clay);
+    border: 1px solid color-mix(in srgb, var(--clay) 35%, transparent);
+    padding: 10px 15px; border-radius: 10px;
+    font-size: 13px; margin-bottom: 18px;
+  }
+  .stale-banner.visible { display: flex; }
+  .stale-banner button {
+    margin-left: auto; background: var(--clay); color: var(--paper-raised);
+    border: none; padding: 6px 13px; border-radius: var(--radius-chip);
+    font-size: 12px; cursor: pointer; font-family: var(--sans); font-weight: 600;
+  }
+
+  .success-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 4px; flex-wrap: wrap; }
+  .success-figure { font-family: var(--serif); font-size: 42px; }
+  .success-band {
+    font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700;
+    padding: 4px 10px; border-radius: var(--radius-chip);
+    background: var(--sage-bg); color: var(--sage);
+  }
+  .success-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 18px; }
+
+  .fanchart-wrap { position: relative; }
+  canvas#fanchart { width: 100%; height: 300px; display: block; }
+  .computing-overlay {
+    position: absolute; inset: 0;
+    display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+    background: color-mix(in srgb, var(--paper-raised) 92%, transparent);
+    border-radius: 10px;
+  }
+  .computing-overlay.visible { display: flex; }
+  .spinner {
+    width: 30px; height: 30px; border-radius: 50%;
+    border: 3px solid var(--line-strong); border-top-color: var(--brass);
+    animation: spin 0.9s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .computing-text { font-size: 13px; color: var(--text-muted); text-align: center; max-width: 240px; }
+
+  .result-actions { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+  .btn-primary {
+    background: var(--brass); color: var(--ink-950);
+    border: none; padding: 10px 18px; border-radius: var(--radius-chip);
+    font-size: 13.5px; font-weight: 700; cursor: pointer; font-family: var(--sans);
+  }
+  .btn-primary:hover { background: var(--brass-strong); }
+  .btn-primary:disabled { opacity: 0.5; cursor: default; }
+  .btn-secondary {
+    background: none; color: var(--text-on-paper);
+    border: 1px solid var(--line-strong); padding: 10px 18px; border-radius: var(--radius-chip);
+    font-size: 13.5px; cursor: pointer; font-family: var(--sans);
+  }
+  .btn-secondary:hover { border-color: var(--text-muted); }
+
+  .assumptions-card { padding: 24px 26px; }
+  .assumptions-card h3 { font-family: var(--serif); font-size: 16px; margin-bottom: 16px; }
+  .assumption-row {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 10px 0; border-top: 1px solid var(--line);
+    font-size: 13px;
+  }
+  .assumption-row:first-of-type { border-top: none; padding-top: 0; }
+  .assumption-label { color: var(--text-muted); }
+  .assumption-value { font-weight: 600; text-align: right; }
+  .advanced-note {
+    margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--text-faint); line-height: 1.5;
+  }
+
+  .demo-note {
+    margin-top: 20px; padding: 14px 16px;
+    background: var(--sage-bg); border: 1px solid color-mix(in srgb, var(--sage) 30%, transparent);
+    border-radius: 10px; font-size: 12px; color: var(--text-muted); line-height: 1.5;
+  }
+  .demo-note strong { color: var(--text-on-paper); }
+</style>
+
+<div class="app">
+  <aside class="sidebar" aria-label="Primary">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">HF</span>
+      <div>
+        <span class="brand-label">Household</span>
+        <div class="brand-name">Finance</div>
+      </div>
+    </div>
+
+    <nav class="primary-nav" aria-label="Sections">
+      <button class="nav-item" data-view="networth" aria-current="page"><span class="nav-dot"></span>Net Worth</button>
+      <button class="nav-item" data-view="none"><span class="nav-dot"></span>Accounts</button>
+      <button class="nav-item" data-view="none"><span class="nav-dot"></span>Portfolio</button>
+      <button class="nav-item" data-view="retirement"><span class="nav-dot"></span>Retirement Planner</button>
+      <button class="nav-item" disabled><span class="nav-dot"></span>Advisor <span class="nav-soon">Soon</span></button>
+      <button class="nav-item" disabled><span class="nav-dot"></span>Reports <span class="nav-soon">Soon</span></button>
+      <button class="nav-item" data-view="none"><span class="nav-dot"></span>Settings</button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="household-chip">
+        <div class="avatars" aria-hidden="true">
+          <span class="avatar" style="background:#cba756">A</span>
+          <span class="avatar" style="background:#8bb193">J</span>
+        </div>
+        <div>
+          <div class="household-name">Alex &amp; Jordan</div>
+          <div class="household-sub">2 members</div>
+        </div>
+      </div>
+      <div class="connectivity">
+        <span class="connectivity-dot" aria-hidden="true"></span>
+        Connected · synced 2 min ago
+      </div>
+    </div>
+  </aside>
+
+  <main class="content">
+
+    <!-- ============ NET WORTH VIEW ============ -->
+    <section id="view-networth">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">Overview</span>
+          <h1 class="page-title">Net worth</h1>
+        </div>
+        <div class="sync-note">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          Updated 2 minutes ago
+        </div>
+      </div>
+
+      <div class="card hero-card">
+        <div class="hero-top">
+          <div>
+            <div class="hero-figure-label">Household total</div>
+            <div class="hero-figure tabular">£412,308<span class="pence">.40</span></div>
+            <div class="hero-delta"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>+£8,240 (2.0%) over 6 months</div>
+          </div>
+          <div class="hero-range" role="group" aria-label="Chart time range">
+            <button class="range-btn" aria-pressed="false">1M</button>
+            <button class="range-btn" aria-pressed="true">6M</button>
+            <button class="range-btn" aria-pressed="false">1Y</button>
+            <button class="range-btn" aria-pressed="false">All</button>
+          </div>
+        </div>
+        <div class="trend-wrap">
+          <svg class="trend" viewBox="0 0 760 132" preserveAspectRatio="none" role="img" aria-label="Net worth trend, rising from £383,400 six months ago to £412,308 today">
+            <defs>
+              <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="var(--brass)" stop-opacity="0.28"/>
+                <stop offset="100%" stop-color="var(--brass)" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <g stroke="var(--line)" stroke-width="1">
+              <line x1="0" y1="22" x2="760" y2="22"/>
+              <line x1="0" y1="62" x2="760" y2="62"/>
+              <line x1="0" y1="102" x2="760" y2="102"/>
+            </g>
+            <path d="M0,96 L110,90 L220,98 L330,78 L440,70 L550,52 L660,38 L760,20 L760,132 L0,132 Z" fill="url(#trendFill)"/>
+            <path d="M0,96 L110,90 L220,98 L330,78 L440,70 L550,52 L660,38 L760,20" fill="none" stroke="var(--brass)" stroke-width="2.25" stroke-linejoin="round" stroke-linecap="round"/>
+            <circle cx="760" cy="20" r="4.5" fill="var(--brass)"/>
+          </svg>
+        </div>
+      </div>
+
+      <div class="card breakdown-card">
+        <div class="breakdown-head">
+          <h2 class="section-title">Breakdown</h2>
+          <div class="segmented" role="group" aria-label="Breakdown by">
+            <button class="seg-btn" data-breakdown="person" aria-pressed="true">By person</button>
+            <button class="seg-btn" data-breakdown="asset" aria-pressed="false">By asset class</button>
+            <button class="seg-btn" data-breakdown="wrapper" aria-pressed="false">By tax wrapper</button>
+          </div>
+        </div>
+        <div class="stack-bar" id="stackBar" aria-hidden="true"></div>
+        <div class="legend" id="legend"></div>
+      </div>
+
+      <div class="card ledger-card">
+        <div class="ledger-head">
+          <h2 class="section-title">Accounts</h2>
+          <button class="add-account-btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            Add account
+          </button>
+        </div>
+
+        <div class="owner-group">
+          <div class="owner-label">Alex</div>
+          <div class="acct-row">
+            <span class="acct-icon" style="background:#5e7c63">S</span>
+            <div class="acct-name-wrap"><span class="acct-name">Vanguard SIPP</span><span class="acct-meta">Updated yesterday</span></div>
+            <span class="wrapper-badge" style="background:var(--sage-bg); color:var(--sage)">Pension</span>
+            <span class="acct-balance tabular">£186,420</span>
+          </div>
+          <div class="acct-row">
+            <span class="acct-icon" style="background:#b08d3e">S</span>
+            <div class="acct-name-wrap"><span class="acct-name">Vanguard S&amp;S ISA</span><span class="acct-meta">Updated yesterday</span></div>
+            <span class="wrapper-badge" style="background:var(--sage-bg); color:var(--sage)">ISA</span>
+            <span class="acct-balance tabular">£54,110</span>
+          </div>
+          <div class="acct-row">
+            <span class="acct-icon" style="background:#8b9c8e">C</span>
+            <div class="acct-name-wrap"><span class="acct-name">Cash ISA</span><span class="acct-meta">Updated 3 days ago</span></div>
+            <span class="wrapper-badge" style="background:var(--sage-bg); color:var(--sage)">ISA</span>
+            <span class="acct-balance tabular">£11,300</span>
+          </div>
+        </div>
+
+        <div class="owner-group">
+          <div class="owner-label">Jordan</div>
+          <div class="acct-row">
+            <span class="acct-icon" style="background:#5e7c63">S</span>
+            <div class="acct-name-wrap"><span class="acct-name">Workplace pension</span><span class="acct-meta">Updated 1 week ago</span></div>
+            <span class="wrapper-badge" style="background:var(--sage-bg); color:var(--sage)">Pension</span>
+            <span class="acct-balance tabular">£97,860</span>
+          </div>
+          <div class="acct-row">
+            <span class="acct-icon" style="background:#b08d3e">S</span>
+            <div class="acct-name-wrap"><span class="acct-name">Freetrade S&amp;S ISA</span><span class="acct-meta">Updated 2 days ago</span></div>
+            <span class="wrapper-badge" style="background:var(--sage-bg); color:var(--sage)">ISA</span>
+            <span class="acct-balance tabular">£22,940</span>
+          </div>
+        </div>
+
+        <div class="owner-group">
+          <div class="owner-label">Joint</div>
+          <div class="acct-row">
+            <span class="acct-icon" style="background:#7c8580">C</span>
+            <div class="acct-name-wrap"><span class="acct-name">Joint current account</span><span class="acct-meta">Updated today</span></div>
+            <span class="wrapper-badge" style="background:var(--paper-sunken); color:var(--text-muted)">—</span>
+            <span class="acct-balance tabular">£6,180</span>
+          </div>
+          <div class="acct-row">
+            <span class="acct-icon" style="background:#c9a876">P</span>
+            <div class="acct-name-wrap"><span class="acct-name">Home — 14 Elm Grove</span><span class="acct-meta">Estimated value, updated Jan</span></div>
+            <span class="wrapper-badge" style="background:var(--paper-sunken); color:var(--text-muted)">Property</span>
+            <span class="acct-balance tabular">£410,000</span>
+          </div>
+          <div class="acct-row">
+            <span class="acct-icon" style="background:#a85c42">M</span>
+            <div class="acct-name-wrap"><span class="acct-name">Mortgage — 14 Elm Grove</span><span class="acct-meta">4.1% · updated Jan</span></div>
+            <span class="wrapper-badge" style="background:var(--clay-bg); color:var(--clay)">Debt</span>
+            <span class="acct-balance tabular negative">−£376,500</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ RETIREMENT VIEW ============ -->
+    <section id="view-retirement" hidden>
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">Retirement planner</span>
+          <h1 class="page-title">Baseline scenario</h1>
+        </div>
+        <div class="sync-note" id="retSyncNote">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          Computed 4 hours ago
+        </div>
+      </div>
+
+      <div class="planner-grid">
+        <div class="card result-card">
+          <div class="stale-banner" id="staleBanner">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+            These results are from before your last change.
+            <button id="reRunBtn">Re-run to update</button>
+          </div>
+
+          <div class="success-head">
+            <span class="success-figure tabular" id="successFigure">84%</span>
+            <span class="success-band" id="successBand">On track</span>
+          </div>
+          <div class="success-sub" id="successSub">In 8,400 of 10,000 simulated futures, your money outlasted your plan.</div>
+
+          <div class="fanchart-wrap">
+            <canvas id="fanchart" width="700" height="300" role="img" aria-describedby="fanchartSummary"></canvas>
+            <div class="computing-overlay" id="computingOverlay">
+              <div class="spinner" aria-hidden="true"></div>
+              <div class="computing-text">Running 10,000 simulations — this usually takes a few seconds.</div>
+            </div>
+          </div>
+          <p class="visually-hidden" id="fanchartSummary">Projected portfolio value from age 62 to 95. Median outcome £940,000 at age 90, tapering to £610,000 by 95. 10th percentile £180,000 at age 90. 90th percentile £1,850,000 at age 90.</p>
+
+          <div class="result-actions">
+            <button class="btn-primary" id="runBtn">Run simulation</button>
+            <button class="btn-secondary">Adjust assumptions</button>
+            <button class="btn-secondary">Compare</button>
+          </div>
+
+          <div class="demo-note">
+            <strong>Design demo:</strong> this panel shows the stale → computing → updated state machine flagged in the interaction spec. Use the buttons below to walk through it.
+            <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn-secondary" id="demoStaleBtn" style="padding:7px 13px; font-size:12px;">1. Simulate an assumption change</button>
+              <button class="btn-secondary" id="demoResetBtn" style="padding:7px 13px; font-size:12px;">Reset demo</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="assumptions-card card">
+          <h3>Assumptions</h3>
+          <div class="assumption-row"><span class="assumption-label">Alex retires</span><span class="assumption-value tabular">Age 62</span></div>
+          <div class="assumption-row"><span class="assumption-label">Jordan retires</span><span class="assumption-value tabular">Age 64</span></div>
+          <div class="assumption-row"><span class="assumption-label">State Pension from</span><span class="assumption-value tabular">Age 67</span></div>
+          <div class="assumption-row"><span class="assumption-label">Annual spending</span><span class="assumption-value tabular">£38,000</span></div>
+          <div class="assumption-row"><span class="assumption-label">Inflation</span><span class="assumption-value tabular">2.5%</span></div>
+          <div class="assumption-row"><span class="assumption-label">Safe withdrawal rate</span><span class="assumption-value tabular">3.3%</span></div>
+          <div class="advanced-note">
+            <strong style="color:var(--text-muted)">Advanced —</strong> PCLS timing and wrapper withdrawal order use a fixed, editable sequence in this version rather than an optimizer.
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  // ---------- Nav / view switching ----------
+  const navButtons = document.querySelectorAll('.nav-item[data-view]');
+  const views = { networth: document.getElementById('view-networth'), retirement: document.getElementById('view-retirement') };
+  navButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.view;
+      if (!views[target]) return;
+      navButtons.forEach(b => b.removeAttribute('aria-current'));
+      btn.setAttribute('aria-current', 'page');
+      Object.entries(views).forEach(([key, el]) => { el.hidden = key !== target; });
+    });
+  });
+
+  // ---------- Breakdown toggle ----------
+  const breakdowns = {
+    person: [
+      { label: 'Alex', value: 251830, color: 'var(--brass)' },
+      { label: 'Jordan', value: 120800, color: 'var(--sage)' },
+      { label: 'Joint', value: 39680, color: '#8b9c8e' },
+    ],
+    asset: [
+      { label: 'Pensions', value: 284280, color: 'var(--sage)' },
+      { label: 'Investments (ISA/GIA)', value: 88350, color: 'var(--brass)' },
+      { label: 'Property equity', value: 33500, color: '#c9a876' },
+      { label: 'Cash', value: 17480, color: '#8b9c8e' },
+      { label: 'Mortgage', value: -376500, color: 'var(--clay)' },
+    ],
+    wrapper: [
+      { label: 'Pension', value: 284280, color: 'var(--sage)' },
+      { label: 'ISA', value: 88350, color: 'var(--brass)' },
+      { label: 'No wrapper (property, cash, debt)', value: -325820, color: 'var(--clay)' },
+    ],
+  };
+
+  function renderBreakdown(key) {
+    const data = breakdowns[key];
+    const positives = data.filter(d => d.value > 0);
+    const total = positives.reduce((s, d) => s + d.value, 0);
+    const stackBar = document.getElementById('stackBar');
+    const legend = document.getElementById('legend');
+    stackBar.innerHTML = positives.map(d =>
+      `<div class="stack-seg" style="width:${(d.value/total*100).toFixed(2)}%; background:${d.color}"></div>`
+    ).join('');
+    legend.innerHTML = data.map(d =>
+      `<div class="legend-row"><span class="legend-swatch" style="background:${d.color}"></span><span class="legend-label">${d.label}</span><span class="legend-value tabular">${d.value < 0 ? '−' : ''}£${Math.abs(d.value).toLocaleString('en-GB')}</span></div>`
+    ).join('');
+  }
+  document.querySelectorAll('.seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.seg-btn').forEach(b => b.setAttribute('aria-pressed', 'false'));
+      btn.setAttribute('aria-pressed', 'true');
+      renderBreakdown(btn.dataset.breakdown);
+    });
+  });
+  renderBreakdown('person');
+
+  document.querySelectorAll('.range-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.range-btn').forEach(b => b.setAttribute('aria-pressed', 'false'));
+      btn.setAttribute('aria-pressed', 'true');
+    });
+  });
+
+  // ---------- Fan chart (Canvas) ----------
+  function drawFanChart(shift) {
+    shift = shift || 0;
+    const canvas = document.getElementById('fanchart');
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 700, cssH = 300;
+    canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const styles = getComputedStyle(document.documentElement);
+    const brass = styles.getPropertyValue('--brass').trim();
+    const line = styles.getPropertyValue('--line').trim();
+    const textFaint = styles.getPropertyValue('--text-faint').trim();
+
+    const padL = 54, padR = 16, padT = 14, padB = 26;
+    const w = cssW - padL - padR, h = cssH - padT - padB;
+    const years = 33; // age 62 to 95
+    const maxVal = 2000000;
+
+    // gridlines + y labels
+    ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.font = '11px ' + getComputedStyle(document.body).fontFamily;
+    ctx.fillStyle = textFaint;
+    [0, 500000, 1000000, 1500000, 2000000].forEach(v => {
+      const y = padT + h - (v / maxVal) * h;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + w, y); ctx.stroke();
+      ctx.fillText('£' + (v / 1000) + 'k', 4, y + 4);
+    });
+    [62, 70, 80, 90, 95].forEach(age => {
+      const x = padL + ((age - 62) / (years)) * w;
+      ctx.fillText(String(age), x - 6, padT + h + 18);
+    });
+
+    function pointsFor(fn) {
+      const pts = [];
+      for (let i = 0; i <= years; i++) {
+        const t = i / years;
+        pts.push({ x: padL + t * w, y: padT + h - (fn(t) / maxVal) * h });
+      }
+      return pts;
+    }
+    const wobble = (t) => Math.sin(t * 9 + shift) * 0.02 * (0.3 + t);
+    const median = (t) => Math.max(0, (900000 * Math.sin(t * Math.PI * 0.62) * 1.35 + 620000 * (1 - t) * 0.35) * (1 + wobble(t) + shift * 0.04));
+    const p90 = (t) => median(t) * (1 + 0.55 * t + 0.15);
+    const p10 = (t) => Math.max(0, median(t) * (1 - 0.7 * t - 0.05));
+
+    const topPts = pointsFor(p90);
+    const botPts = pointsFor(p10);
+    const medPts = pointsFor(median);
+
+    ctx.beginPath();
+    ctx.moveTo(topPts[0].x, topPts[0].y);
+    topPts.forEach(p => ctx.lineTo(p.x, p.y));
+    for (let i = botPts.length - 1; i >= 0; i--) ctx.lineTo(botPts[i].x, botPts[i].y);
+    ctx.closePath();
+    ctx.fillStyle = brass + '2e';
+    ctx.fill();
+
+    ctx.beginPath();
+    medPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.strokeStyle = brass; ctx.lineWidth = 2.25; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.stroke();
+
+    const endMed = medPts[medPts.length - 1];
+    ctx.beginPath(); ctx.arc(endMed.x, endMed.y, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = brass; ctx.fill();
+  }
+  drawFanChart(0);
+  window.addEventListener('resize', () => drawFanChart(0));
+
+  // ---------- State machine demo: stale -> computing -> updated ----------
+  const staleBanner = document.getElementById('staleBanner');
+  const computingOverlay = document.getElementById('computingOverlay');
+  const runBtn = document.getElementById('runBtn');
+  const reRunBtn = document.getElementById('reRunBtn');
+  const demoStaleBtn = document.getElementById('demoStaleBtn');
+  const demoResetBtn = document.getElementById('demoResetBtn');
+  const successFigure = document.getElementById('successFigure');
+  const successSub = document.getElementById('successSub');
+  const successBand = document.getElementById('successBand');
+  const retSyncNote = document.getElementById('retSyncNote');
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function goStale() {
+    staleBanner.classList.add('visible');
+  }
+  function runSimulation() {
+    staleBanner.classList.remove('visible');
+    computingOverlay.classList.add('visible');
+    runBtn.disabled = true;
+    const delay = reducedMotion ? 200 : 1900;
+    setTimeout(() => {
+      computingOverlay.classList.remove('visible');
+      runBtn.disabled = false;
+      successFigure.textContent = '88%';
+      successSub.textContent = 'In 8,800 of 10,000 simulated futures, your money outlasted your plan.';
+      retSyncNote.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg> Computed just now';
+      drawFanChart(0.6);
+    }, delay);
+  }
+  demoStaleBtn.addEventListener('click', goStale);
+  runBtn.addEventListener('click', runSimulation);
+  reRunBtn.addEventListener('click', runSimulation);
+  demoResetBtn.addEventListener('click', () => {
+    staleBanner.classList.remove('visible');
+    computingOverlay.classList.remove('visible');
+    successFigure.textContent = '84%';
+    successBand.textContent = 'On track';
+    successSub.textContent = 'In 8,400 of 10,000 simulated futures, your money outlasted your plan.';
+    retSyncNote.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg> Computed 4 hours ago';
+    drawFanChart(0);
+  });
+</script>
