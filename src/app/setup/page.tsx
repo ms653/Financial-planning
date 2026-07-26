@@ -5,6 +5,7 @@ import { HouseholdForm, PersonForm } from '@/components/setup/SetupSteps';
 import { AccountTypeIcon } from '@/components/ui/Badges';
 import { addPerson, createAccount, createHousehold, finishSetup } from '@/lib/household/actions';
 import { getAccountsWithBalances, getPeople, getSetupState } from '@/lib/household/queries';
+import { SETUP_STEP_ORDER, resolveSetupStep, type SetupStep } from '@/lib/household/setupStep';
 import { accountTypeMeta } from '@/lib/accounts/types';
 import { formatNumeric } from '@/lib/money';
 import { todayIso } from '@/lib/accounts/validation';
@@ -25,13 +26,17 @@ import { todayIso } from '@/lib/accounts/validation';
  * A household either exists or doesn't; there either are people or aren't. That makes every
  * step idempotent and refresh-safe: reloading mid-setup, or coming back tomorrow, resumes
  * exactly where the data says you are rather than restarting or resuming into a half-built
- * state. `?step=` only ever moves *backwards* to a step the data has already satisfied, so it
- * can't be used to skip ahead.
+ * state.
+ *
+ * The rule itself lives in `src/lib/household/setupStep.ts`, pure and unit-tested — it is
+ * subtler than it looks (the data *caps* which step you may be on; the user decides when to
+ * leave one), and having it inline here is what let a version that skipped past steps 3 and 5
+ * ship unnoticed. See that file for the full argument.
  */
 
 export const dynamic = 'force-dynamic';
 
-type Step = 'household' | 'people' | 'accounts';
+type Step = SetupStep;
 
 const STEPS: readonly { value: Step; label: string }[] = [
   { value: 'household', label: 'Household' },
@@ -46,22 +51,11 @@ export default async function SetupPage({
 }) {
   const setup = await getSetupState();
 
-  // Setup is done: the spec scopes this screen to "a household exists with zero
-  // people/accounts", so once there's both, this route stops being reachable.
-  if (setup.complete) redirect('/');
-
-  const furthest: Step =
-    setup.householdId === null ? 'household' : setup.personCount === 0 ? 'people' : 'accounts';
-
-  // Requested step is honoured only if the data already supports it — so "back to people" works
-  // while jumping to "accounts" before adding anyone does not.
-  const requested = searchParams.step;
-  const stepOrder: Step[] = ['household', 'people', 'accounts'];
-  const step: Step =
-    requested && stepOrder.includes(requested as Step) &&
-    stepOrder.indexOf(requested as Step) <= stepOrder.indexOf(furthest)
-      ? (requested as Step)
-      : furthest;
+  const resolved = resolveSetupStep(setup, searchParams.step);
+  // Nothing left to do here, and nobody asked to be on a particular step.
+  if (resolved === 'done') redirect('/');
+  const step: Step = resolved;
+  const stepOrder = SETUP_STEP_ORDER;
 
   const people = setup.householdId === null ? [] : await getPeople(setup.householdId);
   const accounts = setup.householdId === null ? [] : await getAccountsWithBalances(setup.householdId);
