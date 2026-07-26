@@ -288,6 +288,16 @@ misconfigured hash) and never the submitted value.
 Existing sessions survive — the hash isn't part of the session signature. To force
 everyone to re-enter it, rotate `SESSION_SECRET` at the same time.
 
+**Lost or stolen device — what to do.** Session tokens are stateless: there is no
+server-side session list, so logging out only clears the cookie on the device you're
+using, and a token copied off a lost device stays valid for up to 30 days (rolling —
+active use pushes that window out further, not in). The only kill switch is rotating
+`SESSION_SECRET` (`openssl rand -base64 48`, update `.env`, `docker compose up -d`) —
+this immediately invalidates every existing session on every device, including your
+own, so everyone re-enters the passphrase on next load. Do this the moment a device
+with the app installed/bookmarked is lost or compromised; don't wait for a scheduled
+passphrase rotation.
+
 **Restarting clears brute-force lockouts.** The counter is in-memory by design
 (PROPOSAL.md). Acceptable here: only enrolled Tailscale devices can reach the port, and
 anyone who can restart the container has already won.

@@ -52,6 +52,13 @@ export async function login(formData: FormData): Promise<LoginResult> {
     };
   }
 
+  // An empty submission is not counted as a failed attempt: it carries no guess, and
+  // counting it would let a stray Enter keypress consume the household's allowance.
+  // Checked before reserving a slot below, for the same reason.
+  if (passphrase.length === 0) {
+    return { ok: false, kind: 'invalid', message: 'Enter your passphrase.' };
+  }
+
   let storedHash: string;
   let secret: string;
   try {
@@ -70,10 +77,31 @@ export async function login(formData: FormData): Promise<LoginResult> {
     };
   }
 
+  // Reserve the attempt BEFORE the expensive argon2id verify below, not after — checking
+  // status() and only recording a failure afterward leaves a window between the two
+  // where concurrent requests all read "not locked" before any of them records anything.
+  // A handful of parallel guesses would each cost a full argon2id verify (~19 MiB,
+  // ~100ms) before the limiter ever caught up, turning "5 guesses per 60s" into
+  // "5 * however-many-requests-fit-in-100ms". Reserving synchronously, before the only
+  // await in this path, closes that: a burst of N concurrent requests increments the
+  // counter N times immediately, so the 6th one in the same burst is already locked out.
+  // Released via recordSuccess() below if the passphrase turns out to be correct, or if
+  // the hash turns out to be misconfigured (not a real guess, shouldn't cost an attempt).
+  const reserved = loginRateLimiter.recordFailure(GLOBAL_LOGIN_KEY);
+  if (reserved.locked) {
+    return {
+      ok: false,
+      kind: 'locked',
+      message: lockoutMessage(reserved.retryAfterMs),
+      retryAfterSeconds: Math.ceil(reserved.retryAfterMs / 1000),
+    };
+  }
+
   const verification = await verifyPassphrase(passphrase, storedHash);
 
   if (!verification.ok) {
     if (verification.reason === 'misconfigured-hash') {
+      loginRateLimiter.recordSuccess(GLOBAL_LOGIN_KEY); // release the reservation — not a guess
       console.error(
         '[auth] APP_PASSPHRASE_HASH is not a valid argon2id hash. Generate one with `npm run passphrase:hash`.',
       );
@@ -85,13 +113,8 @@ export async function login(formData: FormData): Promise<LoginResult> {
       };
     }
 
-    // An empty submission is not counted as a failed attempt: it carries no guess, and
-    // counting it would let a stray Enter keypress consume the household's allowance.
-    if (verification.reason === 'empty-input') {
-      return { ok: false, kind: 'invalid', message: 'Enter your passphrase.' };
-    }
-
-    const status = loginRateLimiter.recordFailure(GLOBAL_LOGIN_KEY);
+    // The reservation above already recorded this attempt; status() reflects it.
+    const status = loginRateLimiter.status(GLOBAL_LOGIN_KEY);
     if (status.locked) {
       return {
         ok: false,

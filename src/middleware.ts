@@ -25,8 +25,28 @@ function isPublic(pathname: string): boolean {
   return false;
 }
 
+/**
+ * Origin to build redirect URLs against.
+ *
+ * `request.url` reflects whatever Host header the Node process actually received —
+ * under `tailscale serve`, whether that's the tailnet hostname or the backend's own
+ * localhost:3000 depends on proxy behaviour that shouldn't be assumed either way.
+ * Building a redirect straight from `request.url` risks sending a real device to
+ * `http://localhost:3000/…`, unreachable off the host. Prefer the standard
+ * forwarded-proto/host headers — `src/lib/auth/csrf.ts` already establishes that only
+ * our own reverse proxy on loopback can set them in this deployment — and fall back to
+ * the request's own origin when absent (plain local dev).
+ */
+function resolveOrigin(request: NextRequest): string {
+  const forwardedHost = request.headers.get('x-forwarded-host');
+  const forwardedProto = request.headers.get('x-forwarded-proto') ?? 'https';
+  if (forwardedHost) return `${forwardedProto}://${forwardedHost}`;
+  return request.nextUrl.origin;
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+  const origin = resolveOrigin(request);
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
   let secret: string;
@@ -45,13 +65,13 @@ export async function middleware(request: NextRequest) {
     // Already signed in and heading for the login page: send them home instead of
     // showing a gate they've already passed.
     if (pathname === '/login' && verification.valid) {
-      return NextResponse.redirect(new URL('/', request.url));
+      return NextResponse.redirect(new URL('/', origin));
     }
     return NextResponse.next();
   }
 
   if (!verification.valid) {
-    const loginUrl = new URL('/login', request.url);
+    const loginUrl = new URL('/login', origin);
     // Preserve where they were headed. Only relative paths, so this can't be turned
     // into an open redirect (see src/app/login/actions.ts safeRedirectTarget).
     if (pathname !== '/') loginUrl.searchParams.set('next', `${pathname}${search}`);

@@ -9,6 +9,21 @@ FROM node:22-bookworm-slim AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# Fail the build loudly if the base image predates the Node WebCrypto HMAC timing fix
+# (CVE-2026-21713, fixed 22.22.2) — the session token's forgery resistance
+# (src/lib/auth/session.ts) depends on crypto.subtle.verify being constant-time. The
+# `node:22-bookworm-slim` tag is floating and should already be patched by the time this
+# builds, but a stale local layer cache is exactly the failure mode a silent floating
+# tag can't catch — this makes it a build error instead.
+RUN node -e " \
+  const [maj, min, patch] = process.versions.node.split('.').map(Number); \
+  const ok = maj > 22 || (maj === 22 && (min > 22 || (min === 22 && patch >= 2))); \
+  if (!ok) { \
+    console.error('Node ' + process.versions.node + ' predates 22.22.2 (CVE-2026-21713, WebCrypto HMAC timing fix). Update the base image.'); \
+    process.exit(1); \
+  } \
+"
+
 
 # --- Dependencies (all, including dev — needed to build and to run drizzle-kit) ------
 FROM base AS deps

@@ -110,7 +110,14 @@ printf '      few minutes, not a backup — scripts/backup.sh is the backup.\n'
 step 'Run pending Drizzle migrations'
 # One-shot container from the `tools` profile; drizzle-kit is a devDependency and is not
 # in the runtime image. See the migrator stage in Dockerfile.
-docker compose run --rm migrate \
+#
+# --build is not optional here: `docker compose build` in step 2 does NOT build
+# profiled services (Docker Compose skips services outside the active profile set —
+# see docker/compose#8295), so without --build this would reuse whatever migrate image
+# already exists on the host, baked with an OLD drizzle/ directory. drizzle-kit would
+# then report nothing pending and exit 0 — a deploy that "succeeds" while silently
+# skipping the very migration it was run for. --build forces a fresh image every time.
+docker compose run --build --rm migrate \
   || fail "migrations failed. The pre-migration dump is at ${DUMP_FILE} — see docs/DEPLOYMENT.md for the restore procedure."
 
 # --- 5. Up --------------------------------------------------------------------------
