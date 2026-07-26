@@ -79,7 +79,13 @@ describe('verifySessionToken', () => {
   it('rejects a tampered signature', async () => {
     const { token } = await issueSessionToken(SECRET, { clock: clockAt(T0) });
     const [version, payload, signature] = token.split('.') as [string, string, string];
-    const flipped = `${signature.slice(0, -1)}${signature.endsWith('A') ? 'B' : 'A'}`;
+    // Tamper with the FIRST character, not the last. A 32-byte HMAC base64url-encodes to
+    // 43 characters, of which the last carries only 4 significant bits — so flipping 'A'
+    // to 'B' there changes two padding bits, decodes to byte-identical output, and the
+    // signature still verifies. That made this test fail roughly one run in sixteen
+    // (whenever the signature happened to end in 'A') while looking like it tested
+    // tampering. Every bit of the first character is significant.
+    const flipped = `${signature.startsWith('A') ? 'B' : 'A'}${signature.slice(1)}`;
     await expect(
       verifySessionToken(`${version}.${payload}.${flipped}`, SECRET, { clock: clockAt(T0) }),
     ).resolves.toEqual({ valid: false, reason: 'bad-signature' });

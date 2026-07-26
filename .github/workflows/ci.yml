@@ -24,6 +24,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    # Phase 1 added tests that only a real database can answer: that money columns keep
+    # NUMERIC(14,2), that ON DELETE RESTRICT actually refuses to delete a person who owns
+    # accounts, and that the committed migration SQL applies cleanly from an empty schema.
+    # A scratch Postgres is a few lines here and the alternative is those tests being
+    # skipped everywhere, which is worse than not having written them.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: financial_planning_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -41,8 +61,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # TEST_DATABASE_URL is what un-skips the schema integration tests. It points at the
+      # scratch service above, which the tests drop and recreate — never at real data.
       - name: Unit tests
         run: npm run test
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/financial_planning_test
 
       # Guard against a generated migration being left uncommitted: the SQL in drizzle/
       # is what actually runs against the household's data, so it must match the schema
