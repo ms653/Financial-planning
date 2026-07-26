@@ -1,7 +1,24 @@
 node_modules/
-.env
-.env.local
+.next/
 dist/
 build/
 .DS_Store
 *.log
+
+# Secrets — the passphrase hash, session key, and DB password live in these.
+.env
+.env.local
+.env*.local
+
+# Backup artefacts: encrypted dumps of the household's real financial data.
+backups/
+*.dump
+*.sql.age
+*.sql.gz
+*.sql.gz.age
+
+# Test/tooling output
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo

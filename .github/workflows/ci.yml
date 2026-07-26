@@ -1,0 +1,63 @@
+name: CI
+
+# One workflow, three checks, on every push and pull request. No CD: there is nothing
+# for CI to deploy to — deployment is deploy.sh run on the household's own laptop
+# (PROPOSAL.md, Tech stack).
+#
+# The point of CI on this repo is that it computes real retirement and tax numbers, so a
+# regression should be caught before it reaches the household's actual figures.
+
+on:
+  push:
+  pull_request:
+
+# A new push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test
+
+      # Guard against a generated migration being left uncommitted: the SQL in drizzle/
+      # is what actually runs against the household's data, so it must match the schema
+      # file rather than being regenerated at deploy time.
+      - name: Check Drizzle migrations are up to date with the schema
+        run: |
+          npx drizzle-kit generate --name=ci-drift-check
+          # A newly generated migration is an *untracked* file, so `git diff` alone
+          # would miss it — hence `git status --porcelain`, which reports both.
+          if [ -n "$(git status --porcelain -- drizzle)" ]; then
+            echo "::error::src/lib/db/schema.ts has changes with no committed migration. Run 'npm run db:generate' and commit the result."
+            git status --porcelain -- drizzle
+            exit 1
+          fi
+        env:
+          # drizzle-kit reads this for `generate`, but generation is offline — it never
+          # connects. A syntactically valid placeholder keeps the config happy.
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/placeholder
