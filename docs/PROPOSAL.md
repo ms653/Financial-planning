@@ -1,7 +1,7 @@
 # Financial Planning App — Research Brief, Features Proposal & Implementation Plan
 
-Status: reviewed (Sonnet draft, Fable review incorporated — see Section 6)
-Owner: personal/household use only, single deployment
+Status: revised for UK jurisdiction (see Section 7)
+Owner: personal/household use only, single deployment, UK-based household
 
 ---
 
@@ -28,12 +28,18 @@ Sources: [WallStreetZen — Kubera vs Empower](https://www.wallstreetzen.com/blo
 
 **Retirement modeling** — the app should implement, not just display:
 - Monte Carlo simulation over thousands of randomized market-return sequences (matching ProjectionLab's approach), not a single deterministic projection — this is what correctly captures sequence-of-returns risk. The return model must be specified explicitly and validated, not assumed: decide up front whether draws come from a historical bootstrap or a parametric distribution, use **geometric** (not arithmetic) mean returns to avoid silently inflating success rates — a classic and easy-to-miss bug — and be explicit about real (inflation-adjusted) vs. nominal returns throughout. Acceptance criterion for Phase 4: reproduce a known calculator's output (e.g. ProjectionLab or Vanguard's public tool) within a reasonable tolerance on the same inputs, so we know the engine isn't quietly wrong.
-- Trinity-study-informed safe withdrawal rate as a *starting* assumption, but adjustable — Morningstar's Dec 2025 research puts a starting safe rate at **3.9%**, up from 3.7% in 2024, but that figure is conditional (roughly 30–50% equity allocation, 90% success target over a 30-year horizon) — it is not a universal constant. The app should expose the underlying assumptions (equity allocation, horizon, target success rate) as parameters the user can change, not bake 3.9% in as a hardcoded default logic.
+- Trinity-study-informed safe withdrawal rate as a *starting* assumption, but adjustable — and **the US 4%/3.9% figure does not transfer to the UK**. UK-specific research (Blanchett, Buffenoir, Kemp & Watt, Morningstar 2016, using purely UK market data) puts a UK-realistic safe withdrawal rate at **3.0–3.5%**, sometimes cited as closer to 3.7% in more recent commentary — meaningfully lower than the US figure, because UK long-run real equity returns have historically run about 1.3–1.6 percentage points below US returns, alongside higher platform/fund charges. The app should default to a UK-calibrated rate but expose it as an editable parameter (equity allocation, horizon, target success rate), not hardcode either the US or UK number.
 - Target a 85–95% simulation success rate as the "safe" bar, shown as a distribution rather than a single pass/fail.
-- Withdrawal sequencing across account types (taxable / tax-deferred / Roth) and Social Security timing is where Boldin beats ProjectionLab — but it's a much bigger lift than "solvable": it requires modeling tax brackets, capital-gains rates, RMDs, Social Security taxation, and possibly IRMAA, all of which change annually. **Scope this down**: P1 ships a pre-tax Monte Carlo using a flat effective-tax-rate assumption; tax-aware account-ordering logic becomes its own later phase with an explicit note that it needs periodic maintenance as tax rules change — don't present it as a one-time build.
-- **Jurisdiction assumption**: this section assumes US retirement account types (401k/IRA/Roth) and US Social Security. If the household isn't US-based, this section and the account model both need revisiting — see Open Question #0 below.
+- **UK retirement accounts and rules differ substantially from the US model** — this is not a relabeling exercise:
+  - **Workplace pension / SIPP** (defined contribution) — the UK equivalent of a 401k/IRA. Funds are locked until age 55 (rising to 57 in April 2028).
+  - **25% Pension Commencement Lump Sum (PCLS)** — up to 25% of a defined-contribution pot can be withdrawn tax-free, capped at a **Lump Sum Allowance of £268,275** across all pensions combined (this cap starts to bite once total pots exceed roughly £1,073,100). The remaining 75% is taxable at the marginal rate (20%/40%/45%) when drawn, whether taken as a lump sum upfront or via ad-hoc UFPLS withdrawals.
+  - **State Pension** — currently £241.30/week (~£12,548/year) for 2026/27, uprated annually by the "triple lock" (highest of CPI inflation, average earnings growth, or 2.5%). This is a meaningful, near-guaranteed income floor that should be modeled as a scenario input (claimed from State Pension age, currently 66 rising toward 67–68) rather than ignored.
+  - **ISA wrapper (Stocks & Shares ISA / Cash ISA / LISA)** — up to **£20,000/year** per person across all ISA types combined. Gains, interest, and dividends inside an ISA are **entirely tax-free, permanently** — no CGT, no dividend tax, ever, and no need to track cost-basis for tax purposes on ISA holdings. This materially simplifies modeling for ISA-held assets versus a General Investment Account (GIA).
+  - **GIA (General Investment Account)** — any holdings outside a pension/ISA wrapper are subject to **Capital Gains Tax** (currently a £3,000/year tax-free allowance, gains above taxed at your marginal rate) and **dividend tax** (currently a £500/year tax-free dividend allowance, then 10.75%/35.75%+ depending on tax band). Unlike a pension, GIA funds are accessible at any age but get no tax shelter.
+  - There is no UK direct equivalent of Required Minimum Distributions (RMDs) — UK drawdown is flexible with no forced withdrawal schedule, which actually *simplifies* the modeling relative to the US case.
+- Withdrawal sequencing across wrapper types (SIPP/pension vs. ISA vs. GIA) and State Pension timing is still where the real modeling complexity sits — but it's a materially different (and arguably somewhat simpler, given no RMDs and ISA's full tax exemption) problem than the US version. **Scope this down the same way as before**: P1 ships a pre-tax/pre-wrapper Monte Carlo using a flat effective-tax-rate assumption across total drawdown; wrapper-aware sequencing (draw ISA first vs. pension first, PCLS timing, CGT/dividend-allowance-aware GIA drawdown) becomes its own later phase.
 
-Sources: [UngrindFi — Safe Withdrawal Rate 2026](https://ungrindfi.com/blog/safe-withdrawal-rate), [The Poor Swiss — Updated Trinity Study](https://thepoorswiss.com/updated-trinity-study/), [Life by Numbers — Monte Carlo Retirement Calculator](https://www.lifebynumbers.net/us/calculators/monte-carlo-retirement)
+Sources: [RetirementExpert.co.uk — UK Safe Withdrawal Rate 2026](https://retirementexpert.co.uk/pension-drawdown/safe-withdrawal-rate), [PoundSense — Pension Lump Sum Allowance 2026](https://www.poundsense.co.uk/blog/pension-lump-sum-allowance-2026), [TaxFly — Pension Tax-Free Lump Sum 25% Rule 2026/27](https://www.taxfly.co.uk/guides/pension-tax-free-lump-sum-25-percent), [PoundSense — Pension Triple Lock 2026](https://www.poundsense.co.uk/blog/pension-triple-lock-2026), [OakNorth — ISA Season 2026](https://oaknorth.co.uk/blog/isa-season-2026-make-most-20000-allowance/), [Wealthify — Capital Gains Tax Allowance 2026/27](https://www.wealthify.com/blog/how-much-is-the-capital-gains-tax-allowance), [UK Dividend Tax Calculator — Dividends Inside an ISA](https://ukdividendtaxcalculator.co.uk/dividend-tax-and-isa)
 
 **Stock analysis** — "industry standard" means triangulating multiple valuation methods rather than trusting one number:
 - **DCF (discounted cash flow)** — intrinsic value from projected free cash flows; most rigorous but most assumption-sensitive.
@@ -51,18 +57,23 @@ Sources: [Margin Lab — Stock Analysis Template 2026](https://margin-lab.com/bl
 ## 3. Data Sources
 
 **Account aggregation (bank/brokerage balances):**
-- **[SimpleFIN Bridge](https://www.simplefin.org/ecosystem.html)** — $1.50/mo or $15/yr, personal-use pricing, connects up to 25 institutions, daily refresh. This is the aggregator self-hosted tools like Actual Budget standardize on for exactly this use case (private individual, not a fintech company). **Recommended.**
-- Plaid / Yodlee — enterprise-oriented, built for companies onboarding many end users, not priced or designed for a single household. Not recommended here.
+- **SimpleFIN Bridge is US/Canada-only and does not cover UK banks** — the original recommendation doesn't carry over and needs replacing, not relabeling.
+- UK account aggregation runs through the **Open Banking** standard (mandated by the CMA for the 9 largest UK banks, adopted more broadly since). The realistic providers are:
+  - **Moneyhub** — UK-founded Open Finance platform, notably covers pensions and investments as well as bank accounts (not just current/savings accounts), which matters here given SIPPs are a core account type. Worth investigating first for that reason.
+  - **TrueLayer** — strong UK/EU coverage (95%+ of accounts), but positioned and priced for payment initiation/merchant use cases; account-data-only personal use may not be its sweet spot.
+  - **Yapily**, **Plaid** (also operates in UK/EU) — both viable, both enterprise/B2B-first in pricing model.
+  - **Unlike SimpleFIN, none of these UK providers advertise simple, cheap, self-serve personal-use pricing** (SimpleFIN's $1.50/mo personal tier is the exception, not the norm, in this space) — they're built for fintechs onboarding many end users, and typically require a business agreement or sandbox-first evaluation. **This needs direct investigation (contact/sign-up flow, actual personal-use pricing if any) before Phase 2 is planned**, not just a citation from a roundup article.
+- **Recommendation given that uncertainty**: don't gate Phase 1 on account sync working at all. Ship manual entry first (which was already the plan), and treat live UK Open Banking sync as a Phase 2 spike — evaluate Moneyhub's actual personal-access terms first — with manual entry remaining a permanent fallback if sync turns out to be impractical to get affordably as an individual.
 
 **Market & fundamentals data:**
-- **Finnhub** — generous free tier for real-time quotes and basic company data. However, historical OHLC price series and full financial-statement history (income statement, balance sheet, cash flow — exactly what the DCF calculator and "performance vs S&P 500" chart need) are commonly gated behind paid tiers; confirm current free-tier endpoint coverage before relying on it in Phase 3, don't assume it from the marketing page.
-- **Financial Modeling Prep** — purpose-built for deep fundamentals (income statement/balance sheet history, DCF-ready data). Given the gap above, treat FMP as the **primary** source for fundamentals/DCF data, with Finnhub as a supplement for live quotes — not the other way around.
-- Alpha Vantage (25 req/day) and Polygon.io (no free tier) — ruled out as primary: too tight or not free, respectively.
-- Verify exact current pricing/limits directly against each provider's own docs before committing — API tier terms shift often and general "best APIs" roundup articles go stale fast.
+- **Financial Modeling Prep** and **Finnhub** (same recommendation as before — FMP primary for fundamentals/DCF, Finnhub for live quotes) both have solid **global/US** coverage, but **LSE-listed stock coverage should not be assumed** — verify UK ticker coverage specifically before relying on either for FTSE holdings.
+- If the household's portfolio is UK/LSE-heavy (rather than mostly US/global funds held inside a SIPP or ISA, which is common for UK investors and would mean FMP/Finnhub's US-centric coverage is actually fine), **EODHD** and **Twelve Data** both explicitly advertise LSE fundamentals coverage and are worth evaluating as a UK-specific alternative or supplement.
+- Alpha Vantage (25 req/day) and Polygon.io (no free tier) — still ruled out as primary: too tight or not free, respectively.
+- Verify exact current pricing/limits and UK-ticker coverage directly against each provider's own docs before committing — API tier terms and coverage shift often and general "best APIs" roundup articles go stale fast.
 
-Architect this as a pluggable provider interface (one file per provider behind a shared type), the same pattern the sibling Warhammer-app uses for its Sanity client with graceful fallback — so a provider can be swapped or added later without touching calculators or UI.
+Architect this as a pluggable provider interface (one file per provider behind a shared type), the same pattern the sibling Warhammer-app uses for its Sanity client with graceful fallback — so a provider can be swapped or added later without touching calculators or UI. This matters more here than it did in the US-only draft, since UK coverage may genuinely require a different provider mix.
 
-Sources: [APIScout — Best Stock Market APIs 2026](https://apiscout.dev/guides/best-stock-market-financial-apis-2026), [Actual Budget — SimpleFIN Setup](https://actualbudget.org/docs/advanced/bank-sync/simplefin/)
+Sources: [OpenBankingTracker — UK Open Banking APIs 2026](https://openbankingtracker.com/open-banking-apis-uk), [Finexer — Top 12 Open Banking API Providers in the UK 2026](https://blog.finexer.com/top-12-open-banking-providers/), [Twelve Data — London Stock Exchange](https://twelvedata.com/exchanges/XLON), [EODHD — LSE fundamental data](https://eodhd.com/financial-summary/LS4C.F)
 
 ---
 
@@ -70,15 +81,15 @@ Sources: [APIScout — Best Stock Market APIs 2026](https://apiscout.dev/guides/
 
 ### P1 — Foundation
 - **Household model** — a household has multiple people; each person has their own accounts; dashboards roll up to household level and drill down to individual level.
-- **Accounts** — cash, brokerage, retirement (401k/IRA/Roth), property, debt. Manual entry always supported; SimpleFIN sync optional per account.
-- **Net worth dashboard** — trend over time, broken down by person and by asset class.
-- **Portfolio view** — holdings, cost basis, allocation, performance vs. a benchmark (e.g. S&P 500).
-- **Retirement Monte Carlo engine** — editable assumptions (spending, inflation, Social Security timing, account withdrawal order), success-rate output, scenario comparison (e.g. retire at 60 vs 65).
+- **Accounts** — cash, GIA (general investment account/brokerage), ISA (Stocks & Shares / Cash / LISA), SIPP/workplace pension, property, debt. Each account carries a **tax wrapper flag** (ISA / pension / GIA / none) since that determines whether gains/dividends are taxable — this is load-bearing for both the net worth view and later CGT/dividend-allowance-aware reporting. Manual entry always supported; live sync optional per account once a UK aggregation provider is confirmed (see Section 3).
+- **Net worth dashboard** — trend over time, broken down by person, by asset class, and by tax wrapper.
+- **Portfolio view** — holdings, cost basis, allocation, performance vs. a benchmark (e.g. FTSE 100/250 or a global index, depending on what the household actually holds).
+- **Retirement Monte Carlo engine** — editable assumptions (spending, inflation, State Pension claiming age and amount, PCLS timing, wrapper withdrawal order), success-rate output, scenario comparison (e.g. retire at 60 vs 65, before vs after State Pension access age).
 
 ### P2 — Growth
 - **Stock analysis workbench** — fundamentals lookup, DCF calculator, relative valuation, quality/balance-sheet checklist, watchlist.
 - **Scenario planning** — side-by-side "what-if" comparisons (early retirement, house purchase, major expense) reusing the Monte Carlo engine.
-- **Reporting** — exportable household financial statement, tax-lot detail for capital gains awareness.
+- **Reporting** — exportable household financial statement; tax-lot detail for GIA holdings specifically, tracked against the £3,000 CGT allowance and £500 dividend allowance (ISA/pension holdings need no such tracking, since they're tax-free/tax-deferred respectively).
 
 ### P3 — Stretch
 - **Mobile-lite companion** — read-only dashboard + quick manual entry, via a responsive PWA, reachable from phone/iPad over Tailscale when away from the laptop.
@@ -101,22 +112,23 @@ Reuse the pattern already proven in the sibling Warhammer-app repo, minus the CM
 ```
 household
  └─ person (1..n)
-     └─ account (cash | brokerage | retirement | property | debt)
-         └─ holding (for brokerage/retirement accounts)
+     └─ account (cash | gia | isa | sipp_pension | property | debt)
+         └─ tax_wrapper (isa | pension | gia | none)   -- drives tax treatment in reporting
+         └─ holding (for gia/isa/sipp accounts)
          └─ balance_snapshot (time series)
 household
- └─ retirement_scenario (assumptions JSONB, linked to people for SS/withdrawal modeling)
+ └─ retirement_scenario (assumptions JSONB — spending, inflation, State Pension age/amount per person, PCLS timing, wrapper withdrawal order)
  └─ stock_analysis (per ticker: DCF inputs, relative valuation inputs, checklist state)
 ```
 
 ### Local-first architecture
 - Runs via `docker compose up` on your laptop: one container for Postgres, one for the Next.js app.
-- All financial data stays on your machine — nothing leaves except outbound calls to SimpleFIN/Finnhub/FMP for sync.
+- All financial data stays on your machine — nothing leaves except outbound calls to the chosen UK Open Banking provider (Section 3) and market-data providers (FMP/Finnhub or EODHD/Twelve Data) for sync.
 - Auth: a single passphrase gate is sufficient (no need for Supabase magic-link/multi-tenant auth — this isn't a public-signup product). Household members share the one deployment.
 - **Backup is not optional**: all household financial data lives in one Postgres container on one laptop with no redundancy by default. Phase 0 must include an automated `pg_dump` on a schedule plus an encrypted copy shipped off-machine (e.g. to cloud storage, encrypted before upload), and full-disk encryption on the laptop should be a stated prerequisite, not an afterthought.
 
 ### Provider abstraction
-`lib/data-providers/{simplefin,finnhub,fmp}.ts` behind one shared interface per data type (account sync, quotes, fundamentals) — swappable without touching UI or calculator code, same fallback-gracefully pattern the Sanity client already uses in the sibling repo.
+`lib/data-providers/{moneyhub-or-chosen-ob-provider,finnhub,fmp,eodhd}.ts` behind one shared interface per data type (account sync, quotes, fundamentals) — swappable without touching UI or calculator code, same fallback-gracefully pattern the Sanity client already uses in the sibling repo. This is more valuable than it was in the US-only draft: the account-sync provider in particular is unconfirmed pending the Phase 2 spike (Section 3), so the interface needs to work with zero sync providers connected (manual-entry-only) from day one.
 
 ### Mobile/tablet access
 No separate native app. The same Next.js app is a responsive PWA (installable manifest, mobile-friendly layouts for dashboard + quick-entry views). Reached from phone/iPad via **Tailscale** back to the laptop — WireGuard-encrypted point-to-point, no public port exposed, no separate hosting bill.
@@ -124,7 +136,7 @@ No separate native app. The same Next.js app is a responsive PWA (installable ma
 **Known limitation**: this only works while the laptop is on, awake, and running the containers — precisely the moments you're "away" and might most want mobile access are the moments it can fail. PWA install and service workers also require HTTPS, so the `tailscale cert` step needs to be part of setup, not assumed. If this limitation proves annoying in practice, the upgrade path is moving the Docker deployment to an always-on mini-PC or NAS on the home network, with the laptop and phone both as Tailscale clients — worth flagging now so it's not a surprise later, not necessarily worth building for on day one.
 
 ### Security notes
-- Secrets (SimpleFIN token, market data API keys) in `.env.local`, never committed.
+- Secrets (Open Banking provider tokens, market data API keys) in `.env.local`, never committed.
 - No third-party analytics or telemetry given the sensitivity of the data.
 - Passphrase + Tailscale network boundary is the security model; revisit if this ever needs to run somewhere other than your own hardware.
 
@@ -132,23 +144,23 @@ No separate native app. The same Next.js app is a responsive PWA (installable ma
 | Phase | Scope |
 |---|---|
 | 0 | Repo scaffold, docker-compose, DB schema, passphrase auth gate, automated backup (pg_dump + encrypted off-machine copy) |
-| 1 | Household/people/accounts, manual net worth dashboard |
-| 2 | SimpleFIN sync integration |
-| 3 | Portfolio tracking + market data provider (FMP primary for fundamentals, Finnhub for live quotes) |
-| 4 | Retirement Monte Carlo engine (flat effective-tax assumption, geometric-mean/bootstrapped returns, validated against a known calculator) + scenario comparison |
+| 1 | Household/people/accounts (with tax-wrapper flag: ISA/pension/GIA/none), manual net worth dashboard |
+| 2 | UK Open Banking sync spike (evaluate Moneyhub personal-access terms first; fall back to manual-entry-only if impractical) |
+| 3 | Portfolio tracking + market data provider (FMP/Finnhub, or EODHD/Twelve Data if LSE coverage is needed) |
+| 4 | Retirement Monte Carlo engine (UK-calibrated 3.0–3.5% starting withdrawal rate as default, State Pension modeled as an income floor, flat effective-tax assumption, geometric-mean/bootstrapped returns, validated against a known UK calculator) + scenario comparison |
 | 5 | Stock analysis workbench (DCF / relative valuation / checklist) |
 | 6 | PWA manifest, mobile-lite views, Tailscale access + HTTPS cert documented |
 | 7 | Visual design pass |
-| 8 (later, optional) | Tax-aware withdrawal sequencing (bracket-aware account ordering, RMDs, SS taxation) — explicit maintenance burden as tax rules change annually |
+| 8 (later, optional) | Wrapper-aware withdrawal sequencing (ISA vs. pension vs. GIA drawdown order, PCLS timing optimization, CGT/dividend-allowance-aware GIA drawdown) — explicit maintenance burden as UK tax rules and allowances change most tax years |
 
 ---
 
 ## Open questions for you
-0. **Jurisdiction** — is the household US-based? The retirement-account model (401k/IRA/Roth) and Social Security modeling assume US rules; a different country changes Section 2 and the account model materially.
-1. Confirm SimpleFIN Bridge (~$1.50/mo) is an acceptable ongoing cost for bank/brokerage sync, or would you rather start manual-entry-only and add sync later?
-2. Any specific account types to plan for now (e.g. non-US accounts, crypto, private equity/RSUs) that would affect the account model in Phase 0–1?
+1. **Account sync** — given UK Open Banking providers don't have SimpleFIN's cheap personal-use pricing, are you fine starting manual-entry-only for longer than originally planned while Moneyhub's (or another provider's) actual personal-access terms get confirmed?
+2. Any specific account types to plan for now (e.g. non-UK accounts/assets from before moving, employee share schemes/RSUs, crypto) that would affect the account model in Phase 0–1?
 3. Household size — just the two of you, or should the person model allow for more (e.g. dependents tracked but not full users)?
 4. Is the "laptop must be on for phone access" limitation (Section 5, mobile/tablet access) acceptable for now, or should we plan for an always-on mini-PC/NAS from the start instead of as a later upgrade?
+5. Is the household's portfolio mostly UK/LSE-listed, mostly US/global funds (common even inside a SIPP/ISA), or a mix? This determines whether FMP/Finnhub's coverage is sufficient or whether EODHD/Twelve Data's LSE-specific data is actually needed (Section 3).
 
 ---
 
@@ -161,3 +173,15 @@ This proposal was independently reviewed by a second model (Fable) before being 
 - Market data provider order flipped: FMP primary for fundamentals/DCF, Finnhub as a supplement — Finnhub's free-tier depth for historical statements is not guaranteed.
 - Added: jurisdiction as an open question, an explicit backup requirement in Phase 0, and the Tailscale/laptop-as-server availability limitation with its upgrade path.
 - Flagged for you: some of the original research citations (competitive landscape roundups in particular) are SEO/affiliate content rather than primary sources — treat the qualitative comparisons as directionally useful, not gospel, and re-verify anything load-bearing (pricing, API limits) against the vendor's own docs at build time.
+
+---
+
+## 7. Revision Notes (UK jurisdiction pass)
+
+The original draft assumed a US household (401k/IRA/Roth, Social Security, SimpleFIN Bridge for bank sync). Revised throughout for a UK household:
+
+- **Retirement methodology**: US 4%/3.9% safe withdrawal rate replaced with UK-specific research putting a realistic starting rate at 3.0–3.5%, reflecting historically lower UK real equity returns and higher fund/platform charges. Section 2 now covers workplace pension/SIPP, the 25% Pension Commencement Lump Sum and its £268,275 Lump Sum Allowance cap, the State Pension (£241.30/week, triple-lock-uprated) as an income floor, and the ISA/GIA tax-wrapper distinction — none of which have a direct US equivalent worth reusing.
+- **Account model**: 401k/IRA/Roth replaced with GIA/ISA/SIPP-pension, each carrying a tax-wrapper flag, since ISA holdings are entirely tax-free while GIA holdings are subject to the £3,000 CGT allowance and £500 dividend allowance — a distinction the original US-flat model didn't need to make.
+- **Account aggregation**: SimpleFIN Bridge doesn't operate in the UK. Replaced with a note that UK Open Banking providers (Moneyhub, TrueLayer, Yapily, Plaid) don't have an equivalent cheap personal-use tier as far as this research found — so Phase 2 is now framed as a spike to confirm real terms, with manual entry as a durable fallback rather than a temporary stopgap.
+- **Market data**: added a caveat that FMP/Finnhub's LSE coverage isn't guaranteed, and named EODHD/Twelve Data as UK-specific alternatives, gated on how UK/LSE-heavy the actual portfolio turns out to be (see Open Question 5).
+- Not yet re-run through Fable — flag if you want a second review pass on this UK-specific version before treating it as final; token cost for the earlier pass was reported above so you can weigh that against the value of a re-review.
