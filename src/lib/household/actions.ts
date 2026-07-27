@@ -596,6 +596,53 @@ export async function addHolding(formData: FormData): Promise<ActionResult> {
   return { ok: true };
 }
 
+/**
+ * Edit a holding's ticker, quantity or cost basis in place.
+ *
+ * A holding is current composition, not history (same reasoning `deleteHolding` already
+ * documents), so unlike a balance there's no append-only model to protect — a plain
+ * `UPDATE` is the correct shape, not a new dated row.
+ */
+export async function updateHolding(formData: FormData): Promise<ActionResult> {
+  const holdingId = Number.parseInt(String(formData.get('holdingId') ?? ''), 10);
+  if (!Number.isInteger(holdingId)) {
+    return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+  }
+
+  const parsed = validateHolding(fieldValues(formData));
+  if (!parsed.ok) return parsed;
+
+  try {
+    // Scoped by household, joining through the owning account — same pattern as
+    // `deleteHolding`, and the real accountId is resolved from the row itself rather than
+    // trusted from the form, so the revalidated path is always the one that actually changed.
+    const householdId = await requireHouseholdId();
+    const db = getDb();
+    const [owned] = await db
+      .select({ accountId: holdings.accountId })
+      .from(holdings)
+      .innerJoin(accounts, eq(holdings.accountId, accounts.id))
+      .where(and(eq(holdings.id, holdingId), eq(accounts.householdId, householdId)))
+      .limit(1);
+    if (!owned) return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+
+    await db
+      .update(holdings)
+      .set({
+        ticker: parsed.value.ticker,
+        quantity: parsed.value.quantity,
+        costBasis: parsed.value.costBasis,
+      })
+      .where(eq(holdings.id, holdingId));
+
+    revalidatePath(`/accounts/${owned.accountId}`);
+  } catch (error) {
+    return logAndWrap('updateHolding', error);
+  }
+
+  return { ok: true };
+}
+
 export async function deleteHolding(formData: FormData): Promise<ActionResult> {
   const holdingId = Number.parseInt(String(formData.get('holdingId') ?? ''), 10);
   if (!Number.isInteger(holdingId)) {

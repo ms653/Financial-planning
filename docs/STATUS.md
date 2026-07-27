@@ -214,6 +214,48 @@ Two findings from the review turned out to be artifacts of condensing the code f
 
 **Not verified in this pass either** (still no real Docker registry access or tailnet in the sandbox): a live `docker compose up`, and Tailscale Serve itself, including the specific Host-header behavior the middleware fix above is defensive against. Worth a manual second-device login test on first real deploy.
 
+## Since Phase 2 deployment: holdings are now editable
+
+Requested by the household while using the Portfolio/Account Detail screens: holding rows
+were delete-only, a deliberate P1 choice (`DESIGN_SPEC.md`: "read-only... no accidental
+edit") made before live valuation existed, so a typo'd cost basis or quantity had to be
+deleted and re-added, losing entry order. Now fixed via a real edit path, not a
+delete-and-readd workaround.
+
+- New `updateHolding` Server Action (`src/lib/household/actions.ts`) — a plain `UPDATE`,
+  not a new dated row: a holding is current composition, not append-only history, same
+  reasoning `deleteHolding` already used. Scoped by household via the same
+  `holding → account → household_id` join every other holding mutation uses, and reuses
+  `validateHolding` — the same ticker/quantity/cost-basis rules as "Add holding".
+- `HoldingsPanel` (`src/components/accounts/HoldingsPanel.tsx`) gained an inline per-row
+  edit form (an "Edit" link next to "Remove"), reusing the same field layout as "Add
+  holding". Only one row editable at a time.
+- Not yet deployed — implemented and tested locally only; `./deploy.sh` hasn't been run
+  for this change. Two new integration tests cover it (edit-in-place, and rejecting a
+  nonexistent holding id); full suite is 411/411 against a scratch Postgres.
+
+## Since Phase 2 deployment: holdings totals
+
+Requested alongside the editable-holdings change above: the Account Detail Holdings table
+had no total row (cost basis, current value, gain/loss all had to be added up by eye), and
+the Portfolio page's summary card showed total invested value but no total gain/loss.
+
+- Account Detail's `HoldingsPanel` (`src/components/accounts/HoldingsPanel.tsx`) now has a
+  `<tfoot>` totals row. Cost basis totals every holding — it's always known. Current value
+  and gain/loss total only the holdings that actually have a live price; if some but not
+  all priced, a line under the table says how many were excluded rather than the total
+  silently understating (same "never fabricate" rule Phase 2 applies everywhere else).
+  Computed server-side in `src/app/accounts/[id]/page.tsx` via `sumPence`/`gainLoss`, no
+  new float ever touches the math.
+- Portfolio's summary card (`src/app/portfolio/page.tsx`) gained a "vs. cost basis"
+  gain/loss line next to the existing total-invested figure, same partial-sum caveat
+  applied (excludes unpriced tickers, with a count shown when that happens).
+- Both changes are pure display/aggregation — no schema change, no new action. Typecheck
+  clean; full suite still 411/411. Not yet deployed, same as the editable-holdings change.
+- Not verified in a real browser this pass — implemented and covered by the existing
+  automated suite (which already exercises the underlying valuation math), but the actual
+  rendered totals row hasn't been eyeballed against the household's real holdings yet.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.

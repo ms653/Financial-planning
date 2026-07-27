@@ -19,8 +19,12 @@ import { formErrorOf, serverErrorsOf, useActionForm } from '@/lib/ui/useActionFo
  * renders as "Price unavailable," never a blank cell or a fabricated value — the same
  * honesty-over-guessing rule Phase 1 applied when this data didn't exist at all yet.
  *
- * Rows are read-only with an explicit remove action rather than inline-editable, per the spec's
- * "Holdings rows are read-only in P1 tap targets (no accidental edit)".
+ * DESIGN_SPEC.md's P1 spec kept rows read-only ("no accidental edit") since there was no
+ * price data yet to make a typo costly to leave wrong. Phase 2 adds live valuation derived
+ * from quantity and cost basis, so a wrong entry now visibly corrupts gain/loss too —
+ * households asked for a way to fix one without deleting and re-adding it, which also loses
+ * the original entry order. Edit opens the same fields as "Add holding", inline on the row,
+ * behind an explicit tap rather than a click-to-edit cell, so it stays intentional.
  */
 
 export interface HoldingGainLoss {
@@ -37,6 +41,9 @@ export interface HoldingView {
   quantity: string;
   /** Pre-formatted on the server, so no money passes through a float here. */
   costBasis: string;
+  /** Plain decimal (e.g. "6080.00"), for prefilling the edit form's input — the same shape
+   * the add form's own input accepts, unlike `costBasis` which carries a currency symbol. */
+  costBasisRaw: string;
   /** Pre-formatted, or null when no live price is available. */
   currentValue: string | null;
   gainLoss: HoldingGainLoss | null;
@@ -54,17 +61,33 @@ function AddButton({ disabled, pending }: { disabled: boolean; pending: boolean 
   );
 }
 
+export interface HoldingsTotalsView {
+  /** Pre-formatted, sums every holding — cost basis is always known, never blocked on a price. */
+  costBasis: string;
+  /** Pre-formatted, or null when nothing priced at all (no provider, or every holding
+   * unpriceable). Sums only the holdings that actually priced — see `unpricedCount`. */
+  currentValue: string | null;
+  gainLoss: HoldingGainLoss | null;
+  /** Count of holdings excluded from `currentValue`/`gainLoss` because no price was
+   * available. When > 0 and > 0 holdings did price, the totals are a partial sum, not the
+   * whole account — flagged rather than silently understated. */
+  unpricedCount: number;
+}
+
 export function HoldingsPanel({
   accountId,
   holdings,
   addAction,
+  editAction,
   deleteAction,
   pricesAsOf,
   pricesStale,
+  totals,
 }: {
   accountId: number;
   holdings: HoldingView[];
   addAction: (formData: FormData) => Promise<ActionResult>;
+  editAction: (formData: FormData) => Promise<ActionResult>;
   /** Bare `<form action>`, so it returns void — a single-button form has nothing to render. */
   deleteAction: (formData: FormData) => Promise<void>;
   /** Pre-formatted relative time, e.g. "2 hours ago" — null when no holding has a live
@@ -74,6 +97,7 @@ export function HoldingsPanel({
    * none) is being shown instead — same "provider outage must not break the page"
    * posture as everywhere else this data is read. */
   pricesStale?: boolean;
+  totals?: HoldingsTotalsView;
 }) {
   const [adding, setAdding] = useState(false);
   const [values, setValues] = useState({ ticker: '', quantity: '', costBasis: '' });
@@ -84,6 +108,28 @@ export function HoldingsPanel({
     setAdding(false);
   }, []);
   const { state, pending, onSubmit } = useActionForm(addAction, { onSuccess });
+
+  // Only one row editable at a time — same "one thing open" posture as the add form below
+  // the table, so there's never more than one in-flight edit to reconcile.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editValues, setEditValues] = useState({ ticker: '', quantity: '', costBasis: '' });
+  const [editTouched, setEditTouched] = useState<Record<string, boolean>>({});
+  const stopEditing = useCallback(() => setEditingId(null), []);
+  const startEditing = useCallback((holding: HoldingView) => {
+    setEditingId(holding.id);
+    setEditValues({ ticker: holding.ticker, quantity: holding.quantity, costBasis: holding.costBasisRaw });
+    setEditTouched({});
+  }, []);
+  const {
+    state: editState,
+    pending: editPending,
+    onSubmit: onEditSubmit,
+  } = useActionForm(editAction, { onSuccess: stopEditing });
+  const editValidation = validateHolding(editValues);
+  const editServerErrors = serverErrorsOf(editState);
+  const editLiveErrors = editValidation.ok ? {} : editValidation.errors;
+  const editErrorFor = (field: string) =>
+    editServerErrors[field] ?? (editTouched[field] ? editLiveErrors[field] : undefined);
 
   const validation = validateHolding(values);
   const serverErrors = serverErrorsOf(state);
@@ -148,55 +194,205 @@ export function HoldingsPanel({
               </tr>
             </thead>
             <tbody>
-              {holdings.map((holding) => (
-                <tr key={holding.id} className="border-b border-line last:border-b-0">
-                  <td className="py-2.5 font-medium text-content">{holding.ticker}</td>
-                  <td className="tabular py-2.5 text-right text-content-muted">{holding.quantity}</td>
-                  <td className="tabular py-2.5 text-right text-content-muted">{holding.costBasis}</td>
-                  <td className="tabular py-2.5 text-right text-content-muted">
-                    {holding.currentValue ?? (
-                      <span className="text-content-faint">Price unavailable</span>
+              {holdings.map((holding) =>
+                editingId === holding.id ? (
+                  <tr key={holding.id} className="border-b border-line last:border-b-0">
+                    <td colSpan={6} className="py-3">
+                      <form onSubmit={onEditSubmit}>
+                        <input type="hidden" name="holdingId" value={holding.id} />
+                        <input type="hidden" name="accountId" value={accountId} />
+
+                        {formErrorOf(editState) ? (
+                          <div
+                            role="alert"
+                            className="mb-3 rounded-lg border border-clay/50 bg-clay-bg px-3 py-2 text-xs text-clay"
+                          >
+                            {formErrorOf(editState)}
+                          </div>
+                        ) : null}
+
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <div>
+                            <label htmlFor={`edit-ticker-${holding.id}`} className="block text-xs font-medium text-content">
+                              Ticker
+                            </label>
+                            <input
+                              id={`edit-ticker-${holding.id}`}
+                              name="ticker"
+                              value={editValues.ticker}
+                              onChange={(event) => setEditValues((c) => ({ ...c, ticker: event.target.value }))}
+                              onBlur={() => setEditTouched((c) => ({ ...c, ticker: true }))}
+                              className={`${inputClass} mt-1`}
+                            />
+                            {editErrorFor('ticker') ? (
+                              <p role="alert" className="mt-1 text-xs text-clay">
+                                {editErrorFor('ticker')}
+                              </p>
+                            ) : null}
+                          </div>
+
+                          <div>
+                            <label htmlFor={`edit-quantity-${holding.id}`} className="block text-xs font-medium text-content">
+                              Quantity
+                            </label>
+                            <input
+                              id={`edit-quantity-${holding.id}`}
+                              name="quantity"
+                              inputMode="decimal"
+                              value={editValues.quantity}
+                              onChange={(event) => setEditValues((c) => ({ ...c, quantity: event.target.value }))}
+                              onBlur={() => setEditTouched((c) => ({ ...c, quantity: true }))}
+                              className={`${inputClass} tabular mt-1`}
+                            />
+                            {editErrorFor('quantity') ? (
+                              <p role="alert" className="mt-1 text-xs text-clay">
+                                {editErrorFor('quantity')}
+                              </p>
+                            ) : null}
+                          </div>
+
+                          <div>
+                            <label htmlFor={`edit-cost-${holding.id}`} className="block text-xs font-medium text-content">
+                              Cost basis
+                            </label>
+                            <input
+                              id={`edit-cost-${holding.id}`}
+                              name="costBasis"
+                              inputMode="decimal"
+                              value={editValues.costBasis}
+                              onChange={(event) => setEditValues((c) => ({ ...c, costBasis: event.target.value }))}
+                              onBlur={() => setEditTouched((c) => ({ ...c, costBasis: true }))}
+                              className={`${inputClass} tabular mt-1`}
+                            />
+                            {editErrorFor('costBasis') ? (
+                              <p role="alert" className="mt-1 text-xs text-clay">
+                                {editErrorFor('costBasis')}
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex items-center gap-3">
+                          <button
+                            type="submit"
+                            disabled={!editValidation.ok || editPending}
+                            className="inline-flex min-h-[36px] items-center rounded-lg border border-line-strong px-3 text-xs font-medium text-content-muted transition enabled:hover:border-brass enabled:hover:text-content disabled:cursor-not-allowed disabled:opacity-45"
+                          >
+                            {editPending ? 'Saving…' : 'Save'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={stopEditing}
+                            className="min-h-[36px] px-2 text-xs text-content-muted transition hover:text-content"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    </td>
+                  </tr>
+                ) : (
+                  <tr key={holding.id} className="border-b border-line last:border-b-0">
+                    <td className="py-2.5 font-medium text-content">{holding.ticker}</td>
+                    <td className="tabular py-2.5 text-right text-content-muted">{holding.quantity}</td>
+                    <td className="tabular py-2.5 text-right text-content-muted">{holding.costBasis}</td>
+                    <td className="tabular py-2.5 text-right text-content-muted">
+                      {holding.currentValue ?? (
+                        <span className="text-content-faint">Price unavailable</span>
+                      )}
+                    </td>
+                    <td
+                      className={`tabular py-2.5 text-right ${
+                        holding.gainLoss?.direction === 'up'
+                          ? 'text-sage'
+                          : holding.gainLoss?.direction === 'down'
+                            ? 'text-clay'
+                            : 'text-content-muted'
+                      }`}
+                    >
+                      {holding.gainLoss ? (
+                        <>
+                          {holding.gainLoss.amount}
+                          {holding.gainLoss.percent ? (
+                            <span className="ml-1 text-content-faint">
+                              ({holding.gainLoss.percent}%)
+                            </span>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span className="text-content-faint">—</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 text-right">
+                      <div className="flex items-center justify-end gap-3">
+                        <button
+                          type="button"
+                          onClick={() => startEditing(holding)}
+                          className="text-xs text-content-faint underline underline-offset-2 transition hover:text-content"
+                        >
+                          Edit
+                        </button>
+                        <form action={deleteAction}>
+                          <input type="hidden" name="holdingId" value={holding.id} />
+                          <input type="hidden" name="accountId" value={accountId} />
+                          <button
+                            type="submit"
+                            className="text-xs text-content-faint underline underline-offset-2 transition hover:text-clay"
+                          >
+                            Remove
+                          </button>
+                        </form>
+                      </div>
+                    </td>
+                  </tr>
+                ),
+              )}
+            </tbody>
+            {totals ? (
+              <tfoot>
+                <tr className="border-t border-line-strong font-medium">
+                  <td className="py-2.5 text-content">Total</td>
+                  <td />
+                  <td className="tabular py-2.5 text-right text-content">{totals.costBasis}</td>
+                  <td className="tabular py-2.5 text-right text-content">
+                    {totals.currentValue ?? (
+                      <span className="font-normal text-content-faint">Price unavailable</span>
                     )}
                   </td>
                   <td
                     className={`tabular py-2.5 text-right ${
-                      holding.gainLoss?.direction === 'up'
+                      totals.gainLoss?.direction === 'up'
                         ? 'text-sage'
-                        : holding.gainLoss?.direction === 'down'
+                        : totals.gainLoss?.direction === 'down'
                           ? 'text-clay'
-                          : 'text-content-muted'
+                          : 'text-content'
                     }`}
                   >
-                    {holding.gainLoss ? (
+                    {totals.gainLoss ? (
                       <>
-                        {holding.gainLoss.amount}
-                        {holding.gainLoss.percent ? (
-                          <span className="ml-1 text-content-faint">
-                            ({holding.gainLoss.percent}%)
+                        {totals.gainLoss.amount}
+                        {totals.gainLoss.percent ? (
+                          <span className="ml-1 font-normal text-content-faint">
+                            ({totals.gainLoss.percent}%)
                           </span>
                         ) : null}
                       </>
                     ) : (
-                      <span className="text-content-faint">—</span>
+                      <span className="font-normal text-content-faint">—</span>
                     )}
                   </td>
-                  <td className="py-2.5 text-right">
-                    <form action={deleteAction}>
-                      <input type="hidden" name="holdingId" value={holding.id} />
-                      <input type="hidden" name="accountId" value={accountId} />
-                      <button
-                        type="submit"
-                        className="text-xs text-content-faint underline underline-offset-2 transition hover:text-clay"
-                      >
-                        Remove
-                      </button>
-                    </form>
-                  </td>
+                  <td />
                 </tr>
-              ))}
-            </tbody>
+              </tfoot>
+            ) : null}
           </table>
         </div>
+      ) : null}
+      {totals && totals.unpricedCount > 0 && holdings.length > totals.unpricedCount ? (
+        <p className="mt-2 text-xs text-content-faint">
+          Total value and gain/loss exclude {totals.unpricedCount} holding
+          {totals.unpricedCount === 1 ? '' : 's'} with no current price.
+        </p>
       ) : null}
 
       {adding ? (

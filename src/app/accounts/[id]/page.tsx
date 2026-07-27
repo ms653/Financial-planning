@@ -5,14 +5,15 @@ import { UpdateBalanceDrawer } from '@/components/accounts/UpdateBalanceDrawer';
 import { HoldingsPanel } from '@/components/accounts/HoldingsPanel';
 import { AccountTypeBadge, ArchivedBadge, TaxWrapperBadge } from '@/components/ui/Badges';
 import { FreshnessLine } from '@/components/ui/States';
-import { formatMoney, formatMoneyParts, numericToPence } from '@/lib/money';
+import { formatMoney, formatMoneyParts, numericToPence, sumPence } from '@/lib/money';
 import { accountTypeMeta } from '@/lib/accounts/types';
 import { OVERPAYMENT_BASIS_LABELS, todayIso } from '@/lib/accounts/validation';
-import { addHolding, deleteHolding, setAccountArchived, updateBalance } from '@/lib/household/actions';
+import { addHolding, deleteHolding, setAccountArchived, updateBalance, updateHolding } from '@/lib/household/actions';
 import { getAccountDetail, getSetupState } from '@/lib/household/queries';
 import { seriesToPath } from '@/lib/networth/series';
 import { alphaVantageApiKey, quoteStaleAfterHours } from '@/lib/env';
 import { createAlphaVantageQuoteSource, valueHoldings } from '@/lib/portfolio/quotes';
+import { gainLoss } from '@/lib/portfolio/valuation';
 import { formatGainLossAmount, relativeTimeFrom } from '@/lib/portfolio/formatting';
 
 /**
@@ -98,6 +99,25 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
     .filter((d): d is Date => d !== null)
     .sort((a, b) => b.getTime() - a.getTime())[0];
   const pricesStale = Array.from(holdingValuations.values()).some((v) => v.quoteStale);
+
+  // Totals across every holding in this account. Cost basis is always known, so its total
+  // covers every row regardless of pricing. Current value and gain/loss can only be summed
+  // from the rows that actually priced — silently treating an unpriced holding as £0 would
+  // understate the total without saying so, the same fabrication Phase 2's "Price
+  // unavailable" convention exists to avoid at the row level.
+  const totalCostBasisPence = sumPence(account.holdings.map((h) => numericToPence(h.costBasis)));
+  const pricedHoldings = account.holdings.filter(
+    (h) => holdingValuations.get(h.id)?.currentValuePence != null,
+  );
+  const unpricedCount = account.holdings.length - pricedHoldings.length;
+  const totalCurrentValuePence =
+    pricedHoldings.length > 0
+      ? sumPence(pricedHoldings.map((h) => holdingValuations.get(h.id)!.currentValuePence!))
+      : null;
+  const totalGainLoss =
+    totalCurrentValuePence !== null
+      ? gainLoss(sumPence(pricedHoldings.map((h) => numericToPence(h.costBasis))), totalCurrentValuePence)
+      : null;
 
   return (
     <AppShell pathname="/accounts">
@@ -218,6 +238,7 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
                 ticker: holding.ticker,
                 quantity: holding.quantity,
                 costBasis: formatMoney(numericToPence(holding.costBasis), { showPence: true }),
+                costBasisRaw: holding.costBasis,
                 currentValue:
                   valuation?.currentValuePence != null
                     ? formatMoney(valuation.currentValuePence, { showPence: true, currency })
@@ -232,9 +253,25 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
               };
             })}
             addAction={addHolding}
+            editAction={updateHolding}
             deleteAction={removeHolding}
             pricesAsOf={latestQuoteFetch ? relativeTimeFrom(latestQuoteFetch, now) : null}
             pricesStale={pricesStale}
+            totals={{
+              costBasis: formatMoney(totalCostBasisPence, { showPence: true }),
+              currentValue:
+                totalCurrentValuePence !== null
+                  ? formatMoney(totalCurrentValuePence, { showPence: true, currency: account.currency })
+                  : null,
+              gainLoss: totalGainLoss
+                ? {
+                    amount: formatGainLossAmount(totalGainLoss.amountPence, { currency: account.currency }),
+                    percent: totalGainLoss.percent,
+                    direction: totalGainLoss.direction,
+                  }
+                : null,
+              unpricedCount,
+            }}
           />
         </div>
       ) : null}

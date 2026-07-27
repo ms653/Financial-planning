@@ -651,6 +651,43 @@ describe.skipIf(!connectionString)('Phase 1 end-to-end flow', () => {
       detail = await queries.getAccountDetail(householdId, isa.id);
       expect(detail!.holdings).toHaveLength(0);
     });
+
+    it('edits a holding in place, without creating a new row', async () => {
+      const { householdId } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+
+      await actions.addHolding(
+        form({ accountId: String(isa.id), ticker: 'vwrl', quantity: '120.5', costBasis: '9400' }),
+      );
+      const before = await queries.getAccountDetail(householdId, isa.id);
+      const holdingId = before!.holdings[0]!.id;
+
+      const result = await actions.updateHolding(
+        form({ holdingId: String(holdingId), accountId: String(isa.id), ticker: 'vwrl', quantity: '130', costBasis: '10200' }),
+      );
+      expect(result.ok).toBe(true);
+
+      const after = await queries.getAccountDetail(householdId, isa.id);
+      expect(after!.holdings).toHaveLength(1);
+      expect(after!.holdings[0]).toMatchObject({
+        id: holdingId,
+        ticker: 'VWRL',
+        quantity: '130.000000',
+        costBasis: '10200.00',
+      });
+    });
+
+    it('rejects editing a holding id that does not exist', async () => {
+      const { householdId } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+
+      const result = await actions.updateHolding(
+        form({ holdingId: '999999999', accountId: String(isa.id), ticker: 'vwrl', quantity: '1', costBasis: '1' }),
+      );
+      expect(result.ok).toBe(false);
+    });
   });
 
   describe('pension contributions', () => {

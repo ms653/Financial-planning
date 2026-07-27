@@ -160,6 +160,17 @@ async function PortfolioBody({ householdId }: { householdId: number }) {
     tickerValuations.map((t) => t.valuePence).filter((v): v is bigint => v !== null),
   );
 
+  // Same partial-sum caveat as the total above: gain/loss is only computable from the
+  // tickers that actually priced, so its cost-basis side matches — not every holding's
+  // cost basis, only the priced ones', or the percentage would be measured against money
+  // that isn't reflected in the value side.
+  const pricedTickers = tickerValuations.filter((t) => t.valuePence !== null);
+  const totalGainLoss =
+    pricedTickers.length > 0
+      ? gainLoss(sumPence(pricedTickers.map((t) => t.totalCostBasisPence)), totalPortfolioPence)
+      : null;
+  const unpricedTickerCount = tickerValuations.length - pricedTickers.length;
+
   const fetchedTimes = tickerValuations.map((t) => t.fetchedAt).filter((d): d is Date => d !== null);
   const latestFetch = fetchedTimes.length > 0 ? new Date(Math.max(...fetchedTimes.map((d) => d.getTime()))) : null;
   const anyStale = tickerValuations.some((t) => t.stale);
@@ -213,6 +224,23 @@ async function PortfolioBody({ householdId }: { householdId: number }) {
         <p className="tabular mt-1 font-serif text-[clamp(1.75rem,5vw,2.5rem)] leading-none text-content">
           {formatMoney(totalPortfolioPence)}
         </p>
+        {totalGainLoss ? (
+          <p
+            className={`tabular mt-1.5 text-sm ${
+              totalGainLoss.direction === 'up'
+                ? 'text-sage'
+                : totalGainLoss.direction === 'down'
+                  ? 'text-clay'
+                  : 'text-content-muted'
+            }`}
+          >
+            {formatGainLossAmount(totalGainLoss.amountPence)}
+            {totalGainLoss.percent ? (
+              <span className="ml-1 text-content-faint">({totalGainLoss.percent}%)</span>
+            ) : null}
+            <span className="ml-1 text-content-faint">vs. cost basis</span>
+          </p>
+        ) : null}
         {latestFetch ? (
           <p className="mt-2 text-xs text-content-muted">
             Prices as of {relativeTimeFrom(latestFetch, now)}
@@ -221,6 +249,11 @@ async function PortfolioBody({ householdId }: { householdId: number }) {
         ) : !apiKey ? (
           <p className="mt-2 text-xs text-content-faint">
             No market-data provider configured — showing holdings without live pricing.
+          </p>
+        ) : null}
+        {unpricedTickerCount > 0 && pricedTickers.length > 0 ? (
+          <p className="mt-1 text-xs text-content-faint">
+            Excludes {unpricedTickerCount} unpriced holding{unpricedTickerCount === 1 ? '' : 's'}.
           </p>
         ) : null}
       </div>
