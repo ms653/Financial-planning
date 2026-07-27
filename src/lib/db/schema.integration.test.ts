@@ -13,6 +13,8 @@ import {
   people,
   pensionContributions,
   quoteCache,
+  retirementScenarios,
+  simulationRuns,
 } from '@/lib/db/schema';
 import { sumNumeric, penceToNumeric } from '@/lib/money';
 
@@ -62,7 +64,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
 
   beforeEach(async () => {
     await pool.query(
-      'TRUNCATE TABLE balance_snapshot, holding, debt_terms, account, pension_contribution, person, household, quote_cache RESTART IDENTITY CASCADE;',
+      'TRUNCATE TABLE balance_snapshot, holding, debt_terms, account, pension_contribution, person, household, quote_cache, simulation_run, retirement_scenario RESTART IDENTITY CASCADE;',
     );
   });
 
@@ -97,7 +99,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
   }
 
   describe('migration', () => {
-    it('creates all nine tables', async () => {
+    it('creates all eleven tables', async () => {
       const { rows } = await pool.query<{ table_name: string }>(
         "select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'",
       );
@@ -112,6 +114,8 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
         'pension_contribution',
         'person',
         'quote_cache',
+        'retirement_scenario',
+        'simulation_run',
       ]);
     });
 
@@ -413,6 +417,90 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
 
       expect(await db.select().from(people)).toHaveLength(1);
       expect(await db.select().from(accounts)).toHaveLength(1);
+    });
+
+    it('refuses to delete a household that still has retirement scenarios', async () => {
+      const householdId = await seedHousehold();
+      await db.insert(retirementScenarios).values({
+        householdId,
+        name: 'Baseline',
+        assumptions: { schemaVersion: 1 },
+      });
+
+      await expect(db.delete(households).where(eq(households.id, householdId))).rejects.toThrow(
+        /violates foreign key constraint/,
+      );
+    });
+
+    it('does cascade a scenario’s own simulation runs when the scenario is deleted', async () => {
+      // Unlike the scenario’s own ownership-by-household edge, a run has no meaning
+      // without the scenario it simulated and can always be recomputed — cascade is
+      // correct here the same way it is for holding/debt_terms above.
+      const householdId = await seedHousehold();
+      const [scenario] = await db
+        .insert(retirementScenarios)
+        .values({ householdId, name: 'Baseline', assumptions: { schemaVersion: 1 } })
+        .returning();
+      await db.insert(simulationRuns).values({
+        retirementScenarioId: scenario!.id,
+        seed: 42,
+        iterationCount: 1000,
+      });
+
+      await db.delete(retirementScenarios).where(eq(retirementScenarios.id, scenario!.id));
+
+      expect(await db.select().from(simulationRuns)).toHaveLength(0);
+    });
+  });
+
+  describe('retirement_scenario / simulation_run (Phase 3)', () => {
+    it('round-trips a nested JSONB assumptions object exactly, not just top-level keys', async () => {
+      const householdId = await seedHousehold();
+      const assumptions = {
+        schemaVersion: 1,
+        annualSpending: '30000.00',
+        wrapperWithdrawalOrder: ['ss_isa', 'gia'],
+        people: [{ personId: 1, retirementAge: 65, planEndAge: 95, pclsAge: 57 }],
+      };
+      await db.insert(retirementScenarios).values({ householdId, name: 'Baseline', assumptions });
+
+      const [row] = await db.select().from(retirementScenarios);
+      expect(row!.assumptions).toEqual(assumptions);
+    });
+
+    it('defaults status to running and allows null result until a run completes', async () => {
+      const householdId = await seedHousehold();
+      const [scenario] = await db
+        .insert(retirementScenarios)
+        .values({ householdId, name: 'Baseline', assumptions: { schemaVersion: 1 } })
+        .returning();
+
+      await db.insert(simulationRuns).values({
+        retirementScenarioId: scenario!.id,
+        seed: 7,
+        iterationCount: 2000,
+      });
+
+      const [run] = await db.select().from(simulationRuns);
+      expect(run!.status).toBe('running');
+      expect(run!.result).toBeNull();
+    });
+
+    it('enforces the simulation_run_status enum', async () => {
+      const { rows } = await pool.query<{ enumlabel: string }>(
+        `select enumlabel from pg_enum e join pg_type t on t.oid = e.enumtypid
+          where t.typname = 'simulation_run_status' order by e.enumsortorder`,
+      );
+      expect(rows.map((r) => r.enumlabel)).toEqual(['running', 'complete', 'failed']);
+    });
+
+    it('indexes simulation_run on (retirement_scenario_id, created_at DESC)', async () => {
+      const { rows } = await pool.query<{ indexdef: string }>(
+        "select indexdef from pg_indexes where tablename = 'simulation_run' and indexname = 'simulation_run_scenario_created_at_idx'",
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.indexdef).toMatch(/retirement_scenario_id/);
+      expect(rows[0]!.indexdef).toMatch(/created_at DESC/);
     });
   });
 

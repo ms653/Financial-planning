@@ -305,6 +305,103 @@ can't retarget a wrong date at all, only overwrite the amount on a known one.
   totals change above, now covering three unverified-in-browser changes in a row. Worth
   doing a proper browser pass before the next one ships blind.
 
+## Phase 3, Milestone 1: schema foundation
+
+First step of the retirement Monte Carlo engine (see the full 10-milestone plan agreed
+before starting — not reproduced here; ask for it if it's not still in the session's
+plan file). M1 is schema only: nothing computes a simulation yet.
+
+- **New tables** (`src/lib/db/schema.ts`, migration `drizzle/0004_retirement_scenario.sql`):
+  `retirement_scenario` (household-scoped, `assumptions` JSONB) and `simulation_run`
+  (append-only per scenario, `status` enum `running|complete|failed`, `result` JSONB,
+  cascades on its scenario). **First JSONB columns in this codebase** — deliberately
+  left untyped at the Drizzle level; `src/lib/retirement/scenarioAssumptions.ts`'s
+  `parseScenarioAssumptions` is the only code path meant to read the column as a typed
+  shape, guarded by a `schemaVersion` field that throws on anything unrecognised rather
+  than guessing. Starting portfolio composition is **not** stored in the blob — derived
+  live from `account`/`balance_snapshot`/`holding` at run time, same principle as State
+  Pension age from date of birth.
+- **`src/lib/retirement/taxYearConfig.ts`** — versioned typed constants, Phase 4.5's
+  future home for personal-allowance/taper figures too, not a second file. Two real
+  facts encoded, both independently sourced this session (not estimated):
+  - State Pension: £241.30/week for 2026/27 (`docs/PROPOSAL.md` §2's own cited figure);
+    the annual figure is *derived* by ×52 (£12,547.60), not a second constant that could
+    disagree with the weekly one.
+  - **State Pension age by date of birth** — fetched directly from gov.uk's own "State
+    Pension age timetable" publication (Pensions Act 2007/2014) rather than approximated
+    from the proposal's "66 rising to 67" summary: the exact monthly transition bands
+    for 66→67 (2026–2028) and the literal per-band target dates for 67→68 (2044–2046).
+    **The 67→68 figure is flagged as legislation-only, not settled** — gov.uk's own
+    document states that timetable "could change as a result of the review," and two
+    government reviews were reported ongoing as of mid-2026. This matters concretely for
+    this household: both Alex (b. 1985) and Jordan (b. 1987) fall in the flat-68 band
+    under current law, not 67 — worth knowing before either of their scenarios gets built.
+- **The M1-flagged "mortality/single-survivor spending" schema gap is resolved**, not
+  deferred: `ScenarioAssumptionsV1.people[].planEndAge` (required, not a real actuarial
+  prediction — a planning horizon each person's data ends at) plus a household-level
+  `survivorAnnualSpending`, required whenever more than one person is modelled. Chosen
+  now specifically so this doesn't get discovered mid-engine-build at Milestone 5, per
+  the plan's own warning.
+- **No default flat effective tax rate is specified anywhere in `PROPOSAL.md`** (unlike
+  the 3.0–3.5% withdrawal rate) — recorded as an open item for whichever milestone builds
+  the scenario-editor UI, not silently defaulted here.
+- 26 new tests (`taxYearConfig.test.ts`, `scenarioAssumptions.test.ts`, extensions to
+  `src/lib/db/schema.integration.test.ts` for JSONB round-tripping and the new
+  RESTRICT/CASCADE edges) — full suite 444/444 against a scratch Postgres. Typecheck
+  clean. `drizzle-kit generate` confirms the committed migration matches the schema
+  exactly (CI's own drift check, run manually this session).
+- **A real bug caught by the test suite before it shipped**: the first draft of
+  `scenarioAssumptions.ts` validated the percent fields (`inflationPct`, etc.) through
+  the money parser (`numericToPence`, 2dp), which rejected a perfectly valid `"2.500"`
+  (the `percent` schema column is 3dp). Fixed with a dedicated percent validator; worth
+  noting since it's exactly the kind of silent-drift bug this module exists to prevent,
+  caught here only because tests were written before moving on, not after.
+- Next: Milestone 2 (seeded RNG + shared engine types) per the plan, or Milestone 4/6/8
+  (UK return dataset research / worker-thread deploy spike / scenario CRUD), all of
+  which can run in parallel with M2 and each other once M1 exists.
+
+## Milestone 1 — Fable review
+
+Two independent Fable-model review passes, in the same spirit as `PROPOSAL.md`'s own
+eight prior "Fable Pass" sections: one on the M1 code, one on the full Phase 3 milestone
+plan itself. Both independently re-verified the State Pension figures/bands against
+gov.uk directly (not just re-citing the earlier transcription) and confirmed them
+correct — the highest-risk area, since it's hand-rolled calendar arithmetic with no
+library, checks out clean.
+
+**Two real gaps found in the code and fixed before this milestone was called done**:
+- `wrapperWithdrawalOrder` was validated only as "an array of strings," then unsafely
+  cast to `AccountTypeValue[]` — a payload like `["not_a_real_type"]` passed as if
+  trusted, typed data, directly contradicting this module's own stated purpose. Now
+  checked against the real `accountType` enum values.
+- No magnitude bounds on percent/age/money fields — `equityAllocationPct: "150.000"`,
+  `retirementAge: -5`, and a money field carrying UI-input formatting (`"£30,000"`
+  instead of canonical `"30000"`) all passed. Now bounded: percent fields take an
+  explicit `{min, max}` per field (not all percents share the same valid range), ages
+  are whole numbers 0–130 (the same sanity bound `validateAccountEdit`'s date-of-birth
+  check already uses elsewhere in this codebase), and money fields require the
+  canonical decimal form a stored assumption should already be in, rather than
+  tolerating raw keystroke formatting the way `money.ts`'s UI-input parser deliberately
+  does. `statePensionDate` also gained input-format validation it was missing (throw on
+  a malformed date rather than let a string comparison land in an arbitrary band).
+- 6 new tests covering all of the above. Full suite now 450/450.
+
+**Plan document also revised** (`/Users/morganstrutton/.claude/plans/glistening-sauteeing-backus.md`,
+not part of this repo — ask if it's needed and it isn't already in context): a missing
+cancellation path (`DESIGN_SPEC.md`'s Scenario Editor "Running" state requires an
+explicit cancel, which no milestone had covered) folded into M6/M7; M8 was wrongly
+serialized behind M7 in the original sequencing when it only depends on M1 — corrected;
+the block-bootstrap justification in M5 conflated sequence-of-returns risk with serial
+correlation — corrected to cite the real distinction; M3's citation of Phase 8 for
+skipping PCLS Lump-Sum-Allowance validation was a stretch (Phase 8 is about *timing*
+optimization, not amount-cap validation) — relabelled as its own simplification; M10's
+calibration plan now separates tax-mapping mismatch from return-methodology mismatch as
+two distinct risks rather than one; and a previously unowned gap — translating the
+3.0–3.5% UK-calibrated safe withdrawal rate (a rate) into `annualSpending` (an absolute
+figure) — is now explicitly assigned to Milestone 9.
+
+Deployed via `./deploy.sh` after this review — see the deploy log for confirmation.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.

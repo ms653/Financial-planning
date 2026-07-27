@@ -5,6 +5,7 @@ import {
   date,
   index,
   integer,
+  jsonb,
   numeric,
   pgEnum,
   pgTable,
@@ -592,3 +593,120 @@ export type PensionContributionMethodValue =
   (typeof pensionContributionMethod.enumValues)[number];
 export type OverpaymentAllowanceBasisValue =
   (typeof overpaymentAllowanceBasis.enumValues)[number];
+
+/* ------------------------------------------------------------------------------------
+ * Phase 3 — retirement Monte Carlo engine
+ * ---------------------------------------------------------------------------------- */
+
+/**
+ * A named retirement scenario ("Retire at 60", "Retire at 65 — baseline").
+ *
+ * `assumptions` is this schema's first JSONB column. A scenario is written atomically
+ * from one form and read atomically into one engine call — never queried field-by-field
+ * — so normalising it into columns would buy nothing and cost a migration every time the
+ * engine grows an assumption. That convenience is exactly why JSONB's real failure mode
+ * (silent shape drift between a scenario saved under one app version and read by a
+ * later one) has to be guarded explicitly rather than trusted: see
+ * `src/lib/retirement/scenarioAssumptions.ts`'s `schemaVersion`-checked parser, which is
+ * the only code path that should ever read this column's contents as a typed shape.
+ *
+ * Per-person values inside the blob (retirement age, State Pension overrides) are keyed
+ * by `person_id`, never duplicated from the `person` row — a birth date change or a
+ * deleted person then can't leave stale data behind. The blob holds *assumptions* only;
+ * the scenario's starting portfolio (ISA/SIPP/GIA/cash balances) is deliberately not
+ * stored here at all — it's aggregated live from `account`/`balance_snapshot`/`holding`
+ * at simulation-run time, the same "derive, don't duplicate" principle already applied
+ * to State Pension age from date of birth.
+ */
+export const retirementScenarios = pgTable(
+  'retirement_scenario',
+  {
+    id: serial('id').primaryKey(),
+    householdId: integer('household_id')
+      .notNull()
+      .references(() => households.id, { onDelete: 'restrict' }),
+
+    name: text('name').notNull(),
+
+    /** The scenario shown by default. Exactly one `true` row per household is an
+     * application-level invariant, not a database constraint — no `simulation_run`
+     * money is at stake in a race here the way `household_singleton` guards against, so
+     * a unique-partial-index backstop wasn't judged worth it. */
+    isBaseline: boolean('is_baseline').notNull().default(false),
+
+    /** Validate through `parseScenarioAssumptions` on every read and write — this
+     * column's Drizzle type is deliberately left untyped JSON, not `.$type<...>()`,
+     * so nothing can be misled into trusting the column type over the real parser. */
+    assumptions: jsonb('assumptions').notNull(),
+    ...timestamps,
+  },
+  (table) => ({
+    householdIdx: index('retirement_scenario_household_idx').on(table.householdId),
+  }),
+);
+
+export const simulationRunStatus = pgEnum('simulation_run_status', [
+  'running',
+  'complete',
+  'failed',
+]);
+
+/**
+ * One Monte Carlo run of a scenario. Append-only — like `balance_snapshot`, not
+ * mutable-latest like `quote_cache` — so "the current result" is just
+ * `ORDER BY created_at DESC LIMIT 1` per scenario, and a re-run never loses the
+ * comparison history a household might want later.
+ *
+ * This is the persisted half of the compute→persist→poll pattern
+ * (`docs/PROPOSAL.md`'s Compute execution model): a route handler inserts a `running`
+ * row before spawning a `worker_thread`, the worker writes `result`/`status` on
+ * completion, and the client polls this row rather than holding a request open across a
+ * long-running simulation on a variable-latency mobile connection.
+ *
+ * `ON DELETE CASCADE` to its scenario, unlike the ownership-of-history FKs elsewhere in
+ * this file: a run has no meaning without the scenario it simulated, and is not itself
+ * irreplaceable household-authored data the way a balance snapshot is — it can always be
+ * recomputed from the scenario's assumptions.
+ */
+export const simulationRuns = pgTable(
+  'simulation_run',
+  {
+    id: serial('id').primaryKey(),
+    retirementScenarioId: integer('retirement_scenario_id')
+      .notNull()
+      .references(() => retirementScenarios.id, { onDelete: 'cascade' }),
+
+    status: simulationRunStatus('status').notNull().default('running'),
+
+    /** The seeded RNG's seed for this run — recorded so a result is reproducible and
+     * debuggable, per PROPOSAL.md's "makes 'why did this number change' debuggable". */
+    seed: integer('seed').notNull(),
+    iterationCount: integer('iteration_count').notNull(),
+
+    /** Null until `status` is `complete`. Same "validate through a typed parser, don't
+     * trust the column type" posture as `retirement_scenario.assumptions`. */
+    result: jsonb('result'),
+
+    /** Set on `status: 'failed'` — a worker-thread exception message, or the
+     * staleness-reconciliation note for a run whose worker never reported back. */
+    errorDetail: text('error_detail'),
+
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (table) => ({
+    /** The poll endpoint's read pattern: a scenario's most recent run(s), newest first. */
+    scenarioCreatedAtIdx: index('simulation_run_scenario_created_at_idx').on(
+      table.retirementScenarioId,
+      table.createdAt.desc(),
+    ),
+  }),
+);
+
+export type RetirementScenario = typeof retirementScenarios.$inferSelect;
+export type NewRetirementScenario = typeof retirementScenarios.$inferInsert;
+export type SimulationRun = typeof simulationRuns.$inferSelect;
+export type NewSimulationRun = typeof simulationRuns.$inferInsert;
+export type SimulationRunStatusValue = (typeof simulationRunStatus.enumValues)[number];
