@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
 import {
   accounts,
@@ -12,6 +12,7 @@ import {
   households,
   people,
   pensionContributions,
+  type AccountTypeValue,
 } from '@/lib/db/schema';
 import { getSetupState } from '@/lib/household/queries';
 import { isLiabilityType, taxWrapperForType } from '@/lib/accounts/types';
@@ -489,6 +490,54 @@ export async function setAccountArchived(formData: FormData): Promise<ActionResu
  * Phase 6's retry-after-ambiguous-failure case will need, so the durable half of that design
  * lands in the schema and the write path without any of the client machinery.
  */
+
+/** Anything with `.select()`/`.insert()` — satisfied by both `getDb()` and a `db.transaction`
+ * callback's `tx`, so this can run either standalone or as part of a larger transaction. */
+type Queryable = Pick<ReturnType<typeof getDb>, 'select' | 'insert'>;
+
+/**
+ * Keep a debt account's `debt_terms.current_balance` mirrored to whichever snapshot is
+ * *actually* its latest, by re-reading the snapshot series rather than trusting the
+ * caller's own write to be the latest one.
+ *
+ * `updateBalance`'s original inline version of this assumed the write it had just made
+ * was always the latest — true only because the date input is capped at `max={today}`, so
+ * a plain "Update balance" call can never be backdated past an existing later entry...
+ * except it already could be backdated *before* one, which this assumption silently got
+ * wrong (a debt balance backfilled to an earlier date would clobber `current_balance` with
+ * the older figure). That gap gets wider once `updateBalanceSnapshot`/`deleteBalanceSnapshot`
+ * can touch an arbitrary historical row, so this is now a real re-read rather than an
+ * inline assumption. No-ops for a non-liability account type. `null` (not left stale) once
+ * no snapshots remain at all.
+ */
+async function syncDebtCurrentBalance(
+  db: Queryable,
+  accountId: number,
+  accountType: AccountTypeValue,
+): Promise<void> {
+  if (!isLiabilityType(accountType)) return;
+
+  const [latest] = await db
+    .select({ amount: balanceSnapshots.amount })
+    .from(balanceSnapshots)
+    .where(eq(balanceSnapshots.accountId, accountId))
+    .orderBy(desc(balanceSnapshots.snapshotDate), desc(balanceSnapshots.capturedAt))
+    .limit(1);
+
+  const currentBalance = latest ? penceToNumeric(-numericToPence(latest.amount)) : null;
+
+  // Upsert, not a plain update — see updateBalance's original note: a debt account can
+  // legitimately have no debt_terms row yet (createAccount only inserts one when terms
+  // were provided at creation).
+  await db
+    .insert(debtTerms)
+    .values({ accountId, currentBalance })
+    .onConflictDoUpdate({
+      target: debtTerms.accountId,
+      set: { currentBalance, updatedAt: sql`now()` },
+    });
+}
+
 export async function updateBalance(formData: FormData): Promise<ActionResult> {
   const accountId = Number.parseInt(String(formData.get('accountId') ?? ''), 10);
   if (!Number.isInteger(accountId)) {
@@ -526,23 +575,7 @@ export async function updateBalance(formData: FormData): Promise<ActionResult> {
 
       // Keep debt_terms.current_balance in step with the snapshot series, so Phase 4.5
       // can't read a stale figure. Positive there, negative in the snapshot.
-      //
-      // Upsert, not a plain update: `createAccount` only inserts a `debt_terms` row when
-      // terms were provided at creation, so a debt account can legitimately have none yet.
-      // A plain UPDATE against that account matches zero rows and silently no-ops, leaving
-      // `current_balance` absent even though a real snapshot exists — this closes that gap
-      // by creating the row (with everything but the balance left null) the first time a
-      // balance is recorded for a debt account that has no terms yet.
-      if (isLiabilityType(account.type)) {
-        const currentBalance = penceToNumeric(-numericToPence(parsed.value.amount));
-        await tx
-          .insert(debtTerms)
-          .values({ accountId, currentBalance })
-          .onConflictDoUpdate({
-            target: debtTerms.accountId,
-            set: { currentBalance, updatedAt: sql`now()` },
-          });
-      }
+      await syncDebtCurrentBalance(tx, accountId, account.type);
     });
   } catch (error) {
     return logAndWrap('updateBalance', error);
@@ -551,6 +584,121 @@ export async function updateBalance(formData: FormData): Promise<ActionResult> {
   revalidatePath('/');
   revalidatePath('/accounts');
   revalidatePath(`/accounts/${accountId}`);
+  return { ok: true };
+}
+
+/**
+ * Edit an existing balance entry in place — both its amount and its date.
+ *
+ * `updateBalance` above already upserts on `(account_id, snapshot_date)`, so "resubmit
+ * with the same date" was always technically an edit — but it isn't discoverable (you'd
+ * have to already know the exact date to overwrite), and it can't retarget a snapshot to
+ * a *different* date at all. This is the explicit version of that: a household member
+ * browsing a Balance history list can correct a specific entry directly, including
+ * fixing a snapshot recorded against the wrong day.
+ *
+ * Retargeting onto a date some *other* snapshot already owns is refused with a field
+ * error rather than silently colliding with `updateBalance`'s own upsert (which would
+ * overwrite that other row) or hitting the raw unique-constraint violation.
+ */
+export async function updateBalanceSnapshot(formData: FormData): Promise<ActionResult> {
+  const snapshotId = Number.parseInt(String(formData.get('snapshotId') ?? ''), 10);
+  if (!Number.isInteger(snapshotId)) {
+    return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+  }
+
+  try {
+    const householdId = await requireHouseholdId();
+    const db = getDb();
+
+    // Scoped by household, joining through the owning account — same pattern as
+    // `updateHolding`/`deleteHolding`. Also resolves the real accountId/type from the
+    // row itself rather than trusting the form's copy of either.
+    const [owned] = await db
+      .select({ accountId: balanceSnapshots.accountId, accountType: accounts.type })
+      .from(balanceSnapshots)
+      .innerJoin(accounts, eq(balanceSnapshots.accountId, accounts.id))
+      .where(and(eq(balanceSnapshots.id, snapshotId), eq(accounts.householdId, householdId)))
+      .limit(1);
+    if (!owned) return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+
+    const parsed = validateBalanceUpdate(fieldValues(formData), owned.accountType);
+    if (!parsed.ok) return parsed;
+
+    const [conflict] = await db
+      .select({ id: balanceSnapshots.id })
+      .from(balanceSnapshots)
+      .where(
+        and(
+          eq(balanceSnapshots.accountId, owned.accountId),
+          eq(balanceSnapshots.snapshotDate, parsed.value.snapshotDate),
+          ne(balanceSnapshots.id, snapshotId),
+        ),
+      )
+      .limit(1);
+    if (conflict) {
+      return {
+        ok: false,
+        errors: { snapshotDate: 'A balance already exists for that date — edit that entry instead, or use a different date.' },
+      };
+    }
+
+    await db.transaction(async (tx) => {
+      await tx
+        .update(balanceSnapshots)
+        .set({
+          amount: parsed.value.amount,
+          snapshotDate: parsed.value.snapshotDate,
+          capturedAt: sql`now()`,
+        })
+        .where(eq(balanceSnapshots.id, snapshotId));
+
+      await syncDebtCurrentBalance(tx, owned.accountId, owned.accountType);
+    });
+
+    revalidatePath('/');
+    revalidatePath('/accounts');
+    revalidatePath(`/accounts/${owned.accountId}`);
+  } catch (error) {
+    return logAndWrap('updateBalanceSnapshot', error);
+  }
+
+  return { ok: true };
+}
+
+export async function deleteBalanceSnapshot(formData: FormData): Promise<ActionResult> {
+  const snapshotId = Number.parseInt(String(formData.get('snapshotId') ?? ''), 10);
+  if (!Number.isInteger(snapshotId)) {
+    return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+  }
+
+  try {
+    const householdId = await requireHouseholdId();
+    const db = getDb();
+
+    const [owned] = await db
+      .select({ accountId: balanceSnapshots.accountId, accountType: accounts.type })
+      .from(balanceSnapshots)
+      .innerJoin(accounts, eq(balanceSnapshots.accountId, accounts.id))
+      .where(and(eq(balanceSnapshots.id, snapshotId), eq(accounts.householdId, householdId)))
+      .limit(1);
+    if (!owned) return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+
+    await db.transaction(async (tx) => {
+      await tx.delete(balanceSnapshots).where(eq(balanceSnapshots.id, snapshotId));
+      // Deleting an account's only snapshot is a supported state, not an edge case to
+      // special-case here — src/lib/networth/breakdown.test.ts already asserts a
+      // no-snapshot account contributes £0 to net worth rather than erroring.
+      await syncDebtCurrentBalance(tx, owned.accountId, owned.accountType);
+    });
+
+    revalidatePath('/');
+    revalidatePath('/accounts');
+    revalidatePath(`/accounts/${owned.accountId}`);
+  } catch (error) {
+    return logAndWrap('deleteBalanceSnapshot', error);
+  }
+
   return { ok: true };
 }
 

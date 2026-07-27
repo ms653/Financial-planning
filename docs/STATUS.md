@@ -1,7 +1,9 @@
 # Project Status
 
 Last updated: 2026-07-27 (Phase 2 implemented, browser-verified, independently
-code-reviewed, and deployed to the household's real stack — see Phase 2 sections below)
+code-reviewed, and deployed to the household's real stack; three post-deployment
+additions since — holdings editing, holdings totals, and balance-history editing — see
+the "Since Phase 2 deployment" sections below)
 
 ## Done
 
@@ -230,9 +232,10 @@ delete-and-readd workaround.
 - `HoldingsPanel` (`src/components/accounts/HoldingsPanel.tsx`) gained an inline per-row
   edit form (an "Edit" link next to "Remove"), reusing the same field layout as "Add
   holding". Only one row editable at a time.
-- Not yet deployed — implemented and tested locally only; `./deploy.sh` hasn't been run
-  for this change. Two new integration tests cover it (edit-in-place, and rejecting a
-  nonexistent holding id); full suite is 411/411 against a scratch Postgres.
+- Two new integration tests cover it (edit-in-place, and rejecting a nonexistent holding
+  id); full suite was 411/411 against a scratch Postgres at the time. Committed
+  (`5382c86`) together with the totals change below, pushed, and deployed via
+  `./deploy.sh` the same day — live on the household's real stack.
 
 ## Since Phase 2 deployment: holdings totals
 
@@ -251,10 +254,56 @@ the Portfolio page's summary card showed total invested value but no total gain/
   gain/loss line next to the existing total-invested figure, same partial-sum caveat
   applied (excludes unpriced tickers, with a count shown when that happens).
 - Both changes are pure display/aggregation — no schema change, no new action. Typecheck
-  clean; full suite still 411/411. Not yet deployed, same as the editable-holdings change.
+  clean; full suite was 411/411 at the time. Committed (`5382c86`) and deployed together
+  with the editable-holdings change above.
 - Not verified in a real browser this pass — implemented and covered by the existing
   automated suite (which already exercises the underlying valuation math), but the actual
   rendered totals row hasn't been eyeballed against the household's real holdings yet.
+  Still open as of the balance-history change below.
+
+## Since Phase 2 deployment: balance history — view, edit, and delete individual entries
+
+Triggered by a real incident: the household added a previously-missed account, and
+because its opening balance landed as a single dated entry, the net worth trend showed
+an unexplained jump. The underlying "Update balance" mechanism already upserts on
+`(account_id, snapshot_date)` — resubmitting the same date silently corrects that day's
+figure — but that's not discoverable (you'd have to already know the exact date), and it
+can't retarget a wrong date at all, only overwrite the amount on a known one.
+
+- New **Balance history** panel (`src/components/accounts/BalanceHistoryPanel.tsx`) on
+  every Account Detail page, below the existing trend chart — every dated entry for that
+  account, newest first, each with its own Edit (amount *and* date) and Remove. Same
+  interaction shape as the Holdings edit above: one row editable at a time, inline.
+  Additive, not a replacement — `UpdateBalanceDrawer` is untouched and stays the way to
+  record a *new* figure.
+- Two new Server Actions (`src/lib/household/actions.ts`): `updateBalanceSnapshot`
+  (retargeting onto a date another entry already owns is refused with a field error,
+  rather than colliding with `updateBalance`'s own upsert or hitting a raw constraint
+  violation) and `deleteBalanceSnapshot`. Both household-scoped via the same
+  `balance_snapshot → account → household_id` join pattern as `updateHolding`.
+- **A latent bug, found and fixed while building this**: `debt_terms.current_balance`
+  is supposed to always mirror a debt account's *latest* snapshot, but `updateBalance`'s
+  original resync logic just wrote whatever was *just entered*, trusting that write to be
+  the latest — true only by the accident of the date input being capped at `max={today}`,
+  and already wrong if you backdated a debt balance to an earlier date than an existing
+  later one. Fixed by extracting `syncDebtCurrentBalance`, which re-reads whichever
+  snapshot is *actually* latest (`ORDER BY snapshot_date DESC, captured_at DESC`) and
+  upserts/nulls `current_balance` from that — now shared by `updateBalance`,
+  `updateBalanceSnapshot`, and `deleteBalanceSnapshot`, so editing or deleting an
+  arbitrary historical entry can't leave it stale either.
+- **Deleting an account down to zero snapshots is a supported state, not a special
+  case** — `latestAmount: null` is already read and tested elsewhere
+  (`src/lib/networth/breakdown.test.ts`: a no-snapshot account contributes £0 to net
+  worth, not an error).
+- Seven new integration tests: edit-in-place, retarget to a free date, reject a
+  colliding date, delete a non-latest entry (latest untouched), delete a debt account's
+  latest entry (confirm `current_balance` resyncs), delete an account's only snapshot
+  (confirm both `latestAmount` and `current_balance` go `null`), and reject
+  edit/delete against a nonexistent snapshot id. Full suite: 418/418 against a scratch
+  Postgres. Typecheck clean.
+- Not yet deployed, and not yet verified in a real browser — same open item as the
+  totals change above, now covering three unverified-in-browser changes in a row. Worth
+  doing a proper browser pass before the next one ships blind.
 
 ## Next steps
 

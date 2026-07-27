@@ -480,6 +480,146 @@ describe.skipIf(!connectionString)('Phase 1 end-to-end flow', () => {
     });
   });
 
+  describe('balance history — edit and delete individual entries', () => {
+    it('edits an entry in place, without creating a new row', async () => {
+      const { householdId } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+      const before = await queries.getAccountDetail(householdId, isa.id);
+      const snapshotId = before!.history[0]!.id;
+
+      const result = await actions.updateBalanceSnapshot(
+        form({ snapshotId: String(snapshotId), accountId: String(isa.id), amount: '54500', snapshotDate: '2026-07-01' }),
+      );
+      expect(result.ok).toBe(true);
+
+      const after = await queries.getAccountDetail(householdId, isa.id);
+      expect(after!.history).toHaveLength(1);
+      expect(after!.history[0]).toMatchObject({ id: snapshotId, amount: '54500.00' });
+    });
+
+    it('retargets an entry to a different, free date', async () => {
+      const { householdId } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+      const before = await queries.getAccountDetail(householdId, isa.id);
+      const snapshotId = before!.history[0]!.id;
+
+      const result = await actions.updateBalanceSnapshot(
+        form({ snapshotId: String(snapshotId), accountId: String(isa.id), amount: '54110', snapshotDate: '2026-06-15' }),
+      );
+      expect(result.ok).toBe(true);
+
+      const after = await queries.getAccountDetail(householdId, isa.id);
+      expect(after!.history).toHaveLength(1);
+      expect(after!.history[0]).toMatchObject({ id: snapshotId, snapshotDate: '2026-06-15' });
+    });
+
+    it('rejects retargeting an entry onto a date another entry already owns', async () => {
+      const { householdId } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+      await actions.updateBalance(
+        form({ accountId: String(isa.id), amount: '56000', snapshotDate: '2026-07-20' }),
+      );
+      const before = await queries.getAccountDetail(householdId, isa.id);
+      const openingSnapshot = before!.history.find((entry) => entry.snapshotDate === '2026-07-01')!;
+
+      const result = await actions.updateBalanceSnapshot(
+        form({
+          snapshotId: String(openingSnapshot.id),
+          accountId: String(isa.id),
+          amount: '54110',
+          snapshotDate: '2026-07-20',
+        }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.snapshotDate).toBeDefined();
+
+      // Nothing changed: still two entries, opening one untouched.
+      const after = await queries.getAccountDetail(householdId, isa.id);
+      expect(after!.history).toHaveLength(2);
+      expect(after!.history.find((entry) => entry.id === openingSnapshot.id)!.snapshotDate).toBe('2026-07-01');
+    });
+
+    it('deletes a non-latest entry without disturbing the current balance', async () => {
+      const { householdId } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+      await actions.updateBalance(
+        form({ accountId: String(isa.id), amount: '56000', snapshotDate: '2026-07-20' }),
+      );
+      const before = await queries.getAccountDetail(householdId, isa.id);
+      const openingSnapshot = before!.history.find((entry) => entry.snapshotDate === '2026-07-01')!;
+
+      const result = await actions.deleteBalanceSnapshot(
+        form({ snapshotId: String(openingSnapshot.id), accountId: String(isa.id) }),
+      );
+      expect(result.ok).toBe(true);
+
+      const after = await queries.getAccountDetail(householdId, isa.id);
+      expect(after!.history).toHaveLength(1);
+      expect(after!.latestAmount).toBe('56000.00');
+    });
+
+    it('deletes the latest entry on a debt account and resyncs debt_terms.current_balance', async () => {
+      const { householdId } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const mortgage = accounts.find((account) => account.type === 'debt')!;
+      await actions.updateBalance(
+        form({ accountId: String(mortgage.id), amount: '374000', snapshotDate: '2026-07-20' }),
+      );
+      const before = await queries.getAccountDetail(householdId, mortgage.id);
+      const latestSnapshot = before!.history.find((entry) => entry.snapshotDate === '2026-07-20')!;
+
+      const result = await actions.deleteBalanceSnapshot(
+        form({ snapshotId: String(latestSnapshot.id), accountId: String(mortgage.id) }),
+      );
+      expect(result.ok).toBe(true);
+
+      // The true latest is now the opening entry — current_balance must follow it, not be
+      // left stale at the deleted figure.
+      const after = await queries.getAccountDetail(householdId, mortgage.id);
+      expect(after!.latestAmount).toBe('-376500.00');
+      expect(after!.debtTerms!.currentBalance).toBe('376500.00');
+    });
+
+    it('deletes an account down to zero snapshots, and current_balance goes null for a debt account', async () => {
+      const { householdId } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const mortgage = accounts.find((account) => account.type === 'debt')!;
+      const before = await queries.getAccountDetail(householdId, mortgage.id);
+      const onlySnapshot = before!.history[0]!;
+
+      const result = await actions.deleteBalanceSnapshot(
+        form({ snapshotId: String(onlySnapshot.id), accountId: String(mortgage.id) }),
+      );
+      expect(result.ok).toBe(true);
+
+      const after = await queries.getAccountDetail(householdId, mortgage.id);
+      expect(after!.history).toHaveLength(0);
+      expect(after!.latestAmount).toBeNull();
+      expect(after!.debtTerms!.currentBalance).toBeNull();
+    });
+
+    it('rejects editing or deleting a snapshot id that does not exist', async () => {
+      const { householdId } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+
+      const editResult = await actions.updateBalanceSnapshot(
+        form({ snapshotId: '999999999', accountId: String(isa.id), amount: '1', snapshotDate: '2026-07-01' }),
+      );
+      expect(editResult.ok).toBe(false);
+
+      const deleteResult = await actions.deleteBalanceSnapshot(
+        form({ snapshotId: '999999999', accountId: String(isa.id) }),
+      );
+      expect(deleteResult.ok).toBe(false);
+    });
+  });
+
   describe('archive, not delete', () => {
     it('removes an archived account from totals but keeps its history', async () => {
       const { householdId } = await completeGuidedSetup();

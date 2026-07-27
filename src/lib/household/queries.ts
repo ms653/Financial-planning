@@ -217,7 +217,7 @@ export async function getAccountsWithBalances(
 
 export interface AccountDetail extends AccountWithBalance {
   householdId: number;
-  history: Array<{ amount: string; snapshotDate: string; capturedAt: Date }>;
+  history: Array<{ id: number; amount: string; snapshotDate: string; capturedAt: Date }>;
   holdings: Holding[];
   debtTerms: DebtTerms | null;
 }
@@ -255,6 +255,7 @@ export async function getAccountDetail(
 
   const history = await db
     .select({
+      id: balanceSnapshots.id,
       amount: balanceSnapshots.amount,
       snapshotDate: balanceSnapshots.snapshotDate,
       capturedAt: balanceSnapshots.capturedAt,

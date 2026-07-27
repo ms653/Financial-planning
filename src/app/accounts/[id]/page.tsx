@@ -3,12 +3,21 @@ import { notFound, redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { UpdateBalanceDrawer } from '@/components/accounts/UpdateBalanceDrawer';
 import { HoldingsPanel } from '@/components/accounts/HoldingsPanel';
+import { BalanceHistoryPanel } from '@/components/accounts/BalanceHistoryPanel';
 import { AccountTypeBadge, ArchivedBadge, TaxWrapperBadge } from '@/components/ui/Badges';
 import { FreshnessLine } from '@/components/ui/States';
-import { formatMoney, formatMoneyParts, numericToPence, sumPence } from '@/lib/money';
+import { formatMoney, formatMoneyParts, numericToPence, penceToNumeric, sumPence } from '@/lib/money';
 import { accountTypeMeta } from '@/lib/accounts/types';
 import { OVERPAYMENT_BASIS_LABELS, todayIso } from '@/lib/accounts/validation';
-import { addHolding, deleteHolding, setAccountArchived, updateBalance, updateHolding } from '@/lib/household/actions';
+import {
+  addHolding,
+  deleteBalanceSnapshot,
+  deleteHolding,
+  setAccountArchived,
+  updateBalance,
+  updateBalanceSnapshot,
+  updateHolding,
+} from '@/lib/household/actions';
 import { getAccountDetail, getSetupState } from '@/lib/household/queries';
 import { seriesToPath } from '@/lib/networth/series';
 import { alphaVantageApiKey, quoteStaleAfterHours } from '@/lib/env';
@@ -45,6 +54,13 @@ async function toggleArchived(formData: FormData) {
 async function removeHolding(formData: FormData) {
   'use server';
   await deleteHolding(formData);
+}
+
+/** Same reasoning as `removeHolding` — a bare single-button form has nothing to render an
+ * error into, so this returns void rather than the underlying action's `ActionResult`. */
+async function removeBalanceSnapshot(formData: FormData) {
+  'use server';
+  await deleteBalanceSnapshot(formData);
 }
 
 export default async function AccountDetailPage({ params }: { params: { id: string } }) {
@@ -225,6 +241,26 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
           )}
         </div>
       </section>
+
+      <div className="mt-5">
+        <BalanceHistoryPanel
+          accountId={account.id}
+          accountType={account.type}
+          today={todayIso(now)}
+          entries={[...account.history]
+            .reverse()
+            .map((entry) => ({
+              id: entry.id,
+              snapshotDate: entry.snapshotDate,
+              amount: isDebt
+                ? formatMoney(-numericToPence(entry.amount), { showPence: true })
+                : formatMoney(numericToPence(entry.amount), { showPence: true }),
+              amountRaw: isDebt ? penceToNumeric(-numericToPence(entry.amount)) : entry.amount,
+            }))}
+          editAction={updateBalanceSnapshot}
+          deleteAction={removeBalanceSnapshot}
+        />
+      </div>
 
       {meta.holdsSecurities ? (
         <div className="mt-5">
