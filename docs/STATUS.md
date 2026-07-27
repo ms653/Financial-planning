@@ -402,6 +402,35 @@ figure) — is now explicitly assigned to Milestone 9.
 
 Deployed via `./deploy.sh` after this review — see the deploy log for confirmation.
 
+## Phase 3, Milestone 2: seeded RNG + shared engine types
+
+`src/lib/retirement/rng.ts` (seeded, deterministic `mulberry32` PRNG — `Math.random()`
+can't be seeded at all, so it was never an option) and `src/lib/retirement/engineTypes.ts`
+(shared types for the deterministic and randomized engines Milestones 3/5 will build,
+plus a `RATE_SCALE` fixed-point convention for rate-shaped values, reusing
+`valuation.ts`'s `roundDiv` — now exported rather than module-private, specifically for
+this reuse). No simulation logic yet; this is shared infrastructure only.
+
+Fable-reviewed — no real bugs. The mulberry32 transcription was independently
+hand-verified bit-for-bit correct against a canonical reference, and the fixed-point
+rate-scaling arithmetic was hand-traced and confirmed correct. Two fixes applied
+anyway: the RNG's own tests only asserted self-consistency (two same-seed generators
+agreeing with each other), which a subtly-wrong-but-internally-consistent transcription
+would still pass — added a hardcoded reference-vector test pinning real output values,
+independently re-verified by actually running the code rather than trusting the
+review's numbers at face value. Also fixed a doc comment in `src/lib/money.ts` that
+went stale ("`number` appears in exactly one place") the moment this milestone added a
+second justified non-money `number` (`SimulationResult.successRate`).
+
+**Flagged for Milestone 3, not fixed now**: the shared types' wrapper-keyed fields
+(`wrapperWithdrawalOrder`, `startingBalancesPence`, `balancesByWrapperPence`) type their
+key as the full `AccountTypeValue` enum, which includes `debt`/`property` — neither a
+real decumulation wrapper. Nothing stops M3 from accidentally aggregating a debt
+balance into a simulation total; recorded in the plan file as something M3 must resolve
+before writing its aggregation logic, not carried forward silently.
+
+13 new tests, full suite 463/463. Typecheck clean.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.

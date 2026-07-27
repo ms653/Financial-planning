@@ -42,8 +42,11 @@ export function formatScaledDecimal(value: bigint, scale: number): string {
 }
 
 /** Round-half-up integer division, signed. Used wherever a fixed-point product has to
- * land back on a coarser scale (e.g. sub-penny price × fractional shares → whole pence). */
-function roundDiv(numerator: bigint, divisor: bigint): bigint {
+ * land back on a coarser scale (e.g. sub-penny price × fractional shares → whole pence).
+ * Exported (not module-private) so other fixed-point domains — e.g.
+ * `src/lib/retirement/engineTypes.ts`'s rate-scale conversions — reuse this rather than
+ * each defining their own copy. */
+export function roundDiv(numerator: bigint, divisor: bigint): bigint {
   const negative = numerator < 0n !== divisor < 0n;
   const absNumerator = numerator < 0n ? -numerator : numerator;
   const absDivisor = divisor < 0n ? -divisor : divisor;

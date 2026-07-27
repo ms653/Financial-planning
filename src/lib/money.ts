@@ -13,10 +13,12 @@
  *    possible without a custom type parser.
  *  - Amounts are parsed into **integer pence as `bigint`**, summed and compared there,
  *    and rendered back to a NUMERIC-shaped string for the database.
- *  - `number` appears in exactly one place: chart geometry (src/lib/networth/series.ts),
- *    where the output is an SVG coordinate and a sub-penny rounding error is invisible
- *    and harmless. Nothing that is ever displayed as a figure or written to the database
- *    goes through a float.
+ *  - `number` shows up in a few places where it is never money and never persisted —
+ *    chart geometry (src/lib/networth/series.ts), where the output is an SVG coordinate
+ *    and a sub-penny rounding error is invisible and harmless; and summary statistics
+ *    like a Monte Carlo success rate (src/lib/retirement/engineTypes.ts), computed once
+ *    at the end of a run rather than compounded. Nothing that is ever displayed as a
+ *    money figure or written to the database as an amount goes through a float.
  *
  * The reason for `bigint` rather than `number` for pence, given that Number.MAX_SAFE_INTEGER
  * is ~9e15 pence (£90 trillion) and no household will reach it: NUMERIC(14,2) permits
