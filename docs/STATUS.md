@@ -1,7 +1,7 @@
 # Project Status
 
-Last updated: 2026-07-27 (Phase 2 implemented, browser-verified, and independently
-code-reviewed — see Phase 2 sections below)
+Last updated: 2026-07-27 (Phase 2 implemented, browser-verified, independently
+code-reviewed, and deployed to the household's real stack — see Phase 2 sections below)
 
 ## Done
 
@@ -12,7 +12,7 @@ code-reviewed — see Phase 2 sections below)
 - **Phase 0 code review** (independent model, real source pasted for review, ~84k tokens, 17 searches verifying load-bearing security claims) — see below. Fixes applied and merged.
 - **Phase 1 implementation** — household/people/accounts data model and the manual net worth dashboard. Details below.
 - **Phase 1 code review** (two independent passes — see below) — fixes applied and merged.
-- **Phase 2 implementation** — portfolio tracking and live market-data pricing (Alpha Vantage). Details below.
+- **Phase 2 implementation** — portfolio tracking and live market-data pricing (Alpha Vantage). Details below. Deployed to the household's real stack via `./deploy.sh` 2026-07-27 — live now, not just merged.
 - **Phase 2 code review** (two independent passes, run in parallel, no access to each other's findings or to this document's own Phase 2 claims — see below) — one genuine high-severity bug (an uncaught exception could crash the page) and two medium ones fixed; test count now 409 (up from 358 at the end of Phase 1), all passing against a real Postgres, plus the full Playwright E2E suite (9/9) and a full browser walkthrough of both the priced and unpriced paths including a real Alpha Vantage call.
 
 ## Phase 2 — what shipped
@@ -39,10 +39,11 @@ New: `quote_cache` table (migration `drizzle/0003_third_hydra.sql`), the provide
 - **No true asset-class (equities/bonds/cash) allocation breakdown** — same reasoning; by-ticker is what's honestly buildable today.
 - **No FX conversion.** A holding priced in a non-GBP currency is excluded from the Portfolio page's GBP total/allocation and flagged with its own currency on expand, rather than silently mixed into a GBP-labelled sum. None of the household's actual holdings hit this today.
 - **No manual price entry fallback** for holdings the provider can't price (the household's OEIC). Considered and deliberately deferred — "Price unavailable" ships today with no added scope; manual entry remains an easy addition later if wanted.
+- **Holdings and account balance don't sync** — flagged by the household after this phase shipped, confirmed against `addHolding` (`src/lib/household/actions.ts`): it only writes to the `holding` table, never to `balance_snapshot`, which is the only thing that moves an account's balance and the net worth total. So an S&S ISA's stored balance and the live value of its holdings can silently drift apart — add a holding worth £5,388 and the account still shows whatever it last did until "Update balance" is used separately. **Wanted, not yet scoped.** A real fix here isn't just "write the balance automatically on every holding change" — that would need deciding whether a holdings-derived balance ever gets a `balance_snapshot` of its own (and if so, whether that conflicts with the "one balance, one source of truth per day" append-only model this whole area is built around, per the `debt_terms`/`current_balance` precedent in Phase 1 and DESIGN_SPEC.md's "Update balance" flow), or whether it's a one-tap "sync balance to current holdings value" action the household triggers deliberately rather than an automatic write on every holding edit. Needs a design decision before implementation, not just a schema change.
 
 ### Not verified in this pass
 
-- Docker Compose deployment of this specific change (the schema migration, the new env var) — browser verification ran against a throwaway Postgres + `npm run dev`, not the actual `deploy.sh` path. The migration was confirmed to apply cleanly via `drizzle-kit migrate` and via the integration test suite's from-scratch migration run, but the full `deploy.sh` sequence (dump → migrate → up) hasn't been exercised for this change specifically.
+- ~~Docker Compose deployment of this specific change~~ Done — `./deploy.sh` run against the real household stack 2026-07-27: pre-migration dump taken (`backups/pre-migration/pre-migration-20260727T175901Z.sql`), migration `0003` applied cleanly to the live database, `quote_cache` confirmed present via `\d quote_cache`, app container recreated and healthy. `ALPHA_VANTAGE_API_KEY` added to the real `.env` afterward and the app container force-recreated to pick it up — confirmed present inside the running container via `printenv`.
 - Alpha Vantage's actual behaviour once the free-tier daily limit is genuinely exhausted (the "Note"/"Information" rate-limit handling in `fetchGlobalQuote` is tested against constructed fixtures, not a real exhausted-quota response).
 
 ## Phase 1 — what shipped
@@ -217,9 +218,10 @@ Two findings from the review turned out to be artifacts of condensing the code f
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
 2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner. Phase 2 adds `e2e/portfolio.spec.ts` to the same not-yet-in-CI backlog.
-3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done — see "Phase 2 — what shipped" above. An independent code-review pass (the same treatment Phase 0 and 1 got) is worth doing before this is considered fully closed out, per the note under "Done."
-4. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named.
-5. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
+3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done, deployed, and independently code-reviewed — see "Phase 2 — what shipped" and "Phase 2 code review" above.
+4. **Holdings-to-balance sync** — requested by the household after using Phase 2 live: adding/updating a holding never touches the account's own balance, so an account's stored balance and its holdings' live value can silently drift apart (see "Deliberately not built" above for the full note and the design question it raises — this isn't a one-line fix). Worth scoping and building before or alongside Phase 3, since it's a real gap in what's already shipped, not a new phase's feature.
+5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named.
+6. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
 ## Notes for Phase 3
 
