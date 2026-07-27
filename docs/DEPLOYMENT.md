@@ -3,8 +3,10 @@
 How to stand this up, expose it over Tailscale (so it's reachable from a phone as well
 as the laptop it runs on), back it up, and deploy changes to it. Written as a Phase 0
 runbook; it still applies unchanged now that Phase 1 (household/accounts/net worth
-dashboard) is built on top — nothing about how the app is deployed or reached changed,
-only what's behind the login gate. See `docs/STATUS.md` for what that is.
+dashboard) and Phase 2 (portfolio tracking/market data) are built on top — nothing about
+how the app is deployed or reached changed, only what's behind the login gate (Phase 2
+adds one optional env var, `ALPHA_VANTAGE_API_KEY`, §1.1). See `docs/STATUS.md` for what
+that is.
 
 Everything here assumes the app runs on **your own laptop** (or, later, an always-on
 mini-PC — see PROPOSAL.md's Mobile/tablet access section for that upgrade path). A
@@ -68,6 +70,15 @@ determined remote attacker — Tailscale already handles that part.
 > `npm run passphrase:hash` with a new one and redeploy — no data is lost.
 
 **`BACKUP_AGE_RECIPIENT`** — see section 4.
+
+**`ALPHA_VANTAGE_API_KEY`** (Phase 2, optional) — powers live portfolio pricing. Get a
+free key (no card) at <https://www.alphavantage.co/support/#api-key>. Leave it unset and
+the app works exactly as before, with holdings showing "Price unavailable" instead of a
+live value — the same graceful-degradation posture as the account-sync provider in a
+later phase. If you're running `npm run dev` directly against a `.env.local` rather than
+`docker compose`, see the note in `.env.example` about escaping `$` in the passphrase
+hash — the same Next.js env-loading quirk applies to any `.env.local` value shaped like
+one, though `ALPHA_VANTAGE_API_KEY` itself has no `$` in it and isn't affected.
 
 ### 1.2 Bring the stack up
 
@@ -319,7 +330,10 @@ functionality, not deployment mechanics, which are unchanged since Phase 0:
 - Household, people, accounts, balances, and the net worth dashboard **are** built
   (Phase 1) — logging in for the first time lands you in Guided Setup, not an empty
   page.
-- No portfolio tracking, retirement engine, or market data yet — Phases 2–3.
+- Portfolio tracking and live market-data pricing **are** built (Phase 2) — holdings show
+  a current value and gain/loss when `ALPHA_VANTAGE_API_KEY` is set (see §1.1), and
+  `/portfolio` gives a household-wide, ticker-aggregated view. No retirement engine yet —
+  Phase 3.
 - No PWA manifest, service worker, or offline layer — Phase 6. The app is usable from a
   phone browser over Tailscale today (§2), but nothing is cached and nothing works
   offline — no Tailscale connection on the phone means no access, full stop.

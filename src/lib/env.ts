@@ -71,3 +71,28 @@ export function backupStaleAfterHours(): number {
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 48;
 }
+
+/**
+ * Alpha Vantage API key for live portfolio pricing.
+ *
+ * Deliberately nullable, unlike `passphraseHash`/`sessionSecret` above: the proposal's
+ * provider abstraction must work with zero market-data provider connected (same posture
+ * as Open Banking), not crash Account Detail or /portfolio if unset. Callers show
+ * "Price unavailable" rather than a broken page.
+ */
+export function alphaVantageApiKey(): string | null {
+  const value = process.env.ALPHA_VANTAGE_API_KEY;
+  return value && value.trim() !== '' ? value : null;
+}
+
+/**
+ * How stale a cached quote may get before a page load triggers a refetch. Default 24h —
+ * ample for a household checking prices at most once a day, and keeps well inside Alpha
+ * Vantage's free-tier daily rate limit for a small number of distinct tickers.
+ */
+export function quoteStaleAfterHours(): number {
+  const raw = process.env.QUOTE_STALE_AFTER_HOURS;
+  if (!raw) return 24;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 24;
+}

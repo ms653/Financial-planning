@@ -11,6 +11,9 @@ import { OVERPAYMENT_BASIS_LABELS, todayIso } from '@/lib/accounts/validation';
 import { addHolding, deleteHolding, setAccountArchived, updateBalance } from '@/lib/household/actions';
 import { getAccountDetail, getSetupState } from '@/lib/household/queries';
 import { seriesToPath } from '@/lib/networth/series';
+import { alphaVantageApiKey, quoteStaleAfterHours } from '@/lib/env';
+import { createAlphaVantageQuoteSource, valueHoldings } from '@/lib/portfolio/quotes';
+import { formatGainLossAmount, relativeTimeFrom } from '@/lib/portfolio/formatting';
 
 /**
  * Account Detail — DESIGN_SPEC.md.
@@ -69,6 +72,32 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
   // the sage (positive) tone rather than clay so it doesn't read as decline, per the spec.
   const isDebt = meta.isLiability;
   const strokeColour = isDebt ? 'var(--sage)' : 'var(--brass)';
+
+  // Live pricing is genuinely optional (docs/PROPOSAL.md's Open Banking posture, applied
+  // here to market data too): with no key configured, holdings just render without a
+  // current value, rather than the page failing.
+  const apiKey = alphaVantageApiKey();
+  const holdingValuations =
+    meta.holdsSecurities && account.holdings.length > 0 && apiKey
+      ? await valueHoldings(
+          account.holdings.map((holding) => ({
+            id: holding.id,
+            ticker: holding.ticker,
+            quantity: holding.quantity,
+            costBasis: holding.costBasis,
+            accountCurrency: account.currency,
+          })),
+          { source: createAlphaVantageQuoteSource(apiKey), staleAfterHours: quoteStaleAfterHours() },
+        )
+      : new Map();
+
+  // "Prices as of" reflects the freshest quote actually found — null when nothing in this
+  // account priced at all (no key configured, or every holding came back unpriceable).
+  const latestQuoteFetch = Array.from(holdingValuations.values())
+    .map((v) => v.quoteFetchedAt)
+    .filter((d): d is Date => d !== null)
+    .sort((a, b) => b.getTime() - a.getTime())[0];
+  const pricesStale = Array.from(holdingValuations.values()).some((v) => v.quoteStale);
 
   return (
     <AppShell pathname="/accounts">
@@ -181,14 +210,31 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
         <div className="mt-5">
           <HoldingsPanel
             accountId={account.id}
-            holdings={account.holdings.map((holding) => ({
-              id: holding.id,
-              ticker: holding.ticker,
-              quantity: holding.quantity,
-              costBasis: formatMoney(numericToPence(holding.costBasis), { showPence: true }),
-            }))}
+            holdings={account.holdings.map((holding) => {
+              const valuation = holdingValuations.get(holding.id);
+              const currency = valuation?.quoteCurrency ?? account.currency;
+              return {
+                id: holding.id,
+                ticker: holding.ticker,
+                quantity: holding.quantity,
+                costBasis: formatMoney(numericToPence(holding.costBasis), { showPence: true }),
+                currentValue:
+                  valuation?.currentValuePence != null
+                    ? formatMoney(valuation.currentValuePence, { showPence: true, currency })
+                    : null,
+                gainLoss: valuation?.gainLoss
+                  ? {
+                      amount: formatGainLossAmount(valuation.gainLoss.amountPence, { currency }),
+                      percent: valuation.gainLoss.percent,
+                      direction: valuation.gainLoss.direction,
+                    }
+                  : null,
+              };
+            })}
             addAction={addHolding}
             deleteAction={removeHolding}
+            pricesAsOf={latestQuoteFetch ? relativeTimeFrom(latestQuoteFetch, now) : null}
+            pricesStale={pricesStale}
           />
         </div>
       ) : null}

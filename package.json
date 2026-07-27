@@ -15,6 +15,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "passphrase:hash": "tsx scripts/hash-passphrase.ts",
+    "portfolio:verify-quotes": "tsx scripts/verify-quote-provider.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

@@ -285,6 +285,59 @@ export async function getAccountDetail(
   };
 }
 
+export interface PortfolioHoldingRow {
+  id: number;
+  ticker: string;
+  /** NUMERIC(18,6) string. */
+  quantity: string;
+  /** NUMERIC(14,2) string. */
+  costBasis: string;
+  accountId: number;
+  accountName: string;
+  accountCurrency: string;
+  /** null = jointly owned by the household, same convention as `AccountWithBalance`. */
+  ownerName: string | null;
+}
+
+/**
+ * Every holding across every live investment account in the household, with just enough
+ * account context for the Portfolio View to group by ticker and still show which
+ * account(s) each one lives in (DESIGN_SPEC.md: "Each row expandable to show which
+ * account(s) it's held in").
+ *
+ * Not filtered by account type: only `holdsSecurities` account types ever get a holding
+ * row in the first place (the Add Holding form only renders on those account types), so
+ * there is nothing to additionally filter here — trusting that invariant rather than
+ * re-deriving it, the same way the rest of this file trusts `debt_terms` only existing on
+ * debt accounts.
+ */
+export async function getPortfolioHoldings(householdId: number): Promise<PortfolioHoldingRow[]> {
+  const db = getDb();
+
+  const rows = await db
+    .select({
+      id: holdings.id,
+      ticker: holdings.ticker,
+      quantity: holdings.quantity,
+      costBasis: holdings.costBasis,
+      accountId: accounts.id,
+      accountName: accounts.name,
+      accountCurrency: accounts.currency,
+      personId: accounts.personId,
+      ownerName: people.name,
+    })
+    .from(holdings)
+    .innerJoin(accounts, eq(accounts.id, holdings.accountId))
+    .leftJoin(people, eq(people.id, accounts.personId))
+    .where(and(eq(accounts.householdId, householdId), eq(accounts.archived, false)))
+    .orderBy(asc(holdings.ticker));
+
+  return rows.map((row) => ({
+    ...row,
+    ownerName: row.personId === null ? null : row.ownerName,
+  }));
+}
+
 export interface SnapshotPoint {
   accountId: number;
   amount: string;

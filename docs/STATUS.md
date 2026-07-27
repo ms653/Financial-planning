@@ -1,6 +1,7 @@
 # Project Status
 
-Last updated: 2026-07-26 (Phase 1, code review complete)
+Last updated: 2026-07-27 (Phase 2 implemented, browser-verified, and independently
+code-reviewed — see Phase 2 sections below)
 
 ## Done
 
@@ -11,6 +12,38 @@ Last updated: 2026-07-26 (Phase 1, code review complete)
 - **Phase 0 code review** (independent model, real source pasted for review, ~84k tokens, 17 searches verifying load-bearing security claims) — see below. Fixes applied and merged.
 - **Phase 1 implementation** — household/people/accounts data model and the manual net worth dashboard. Details below.
 - **Phase 1 code review** (two independent passes — see below) — fixes applied and merged.
+- **Phase 2 implementation** — portfolio tracking and live market-data pricing (Alpha Vantage). Details below.
+- **Phase 2 code review** (two independent passes, run in parallel, no access to each other's findings or to this document's own Phase 2 claims — see below) — one genuine high-severity bug (an uncaught exception could crash the page) and two medium ones fixed; test count now 409 (up from 358 at the end of Phase 1), all passing against a real Postgres, plus the full Playwright E2E suite (9/9) and a full browser walkthrough of both the priced and unpriced paths including a real Alpha Vantage call.
+
+## Phase 2 — what shipped
+
+Blocking verification task (per `docs/PROPOSAL.md`'s Phase 2 row) resolved first, before any schema or UI work depended on the answer: **Alpha Vantage returns LSE (`.LON`) quotes in pounds (GBP), not pence (GBX)** — confirmed 2026-07-27 via `scripts/verify-quote-provider.ts` against the household's real holdings, `VUAG.LON` (107.76) and `VHYG.LON` (79.52) against real-world prices of £107.84 and £79.52 (Yahoo Finance / Hargreaves Lansdown, 24 Jul 2026) — an exact match. No normalization is applied; see `LSE_QUOTES_ARE_GBX` in `src/lib/portfolio/quotes.ts`. The provider itself changed from what the proposal assumed: EODHD and Twelve Data's free tiers turned out to be US-only (LSE coverage needs a paid plan, $19.99–$79/mo); **Alpha Vantage** is genuinely free and documents LSE tickers via a `.LON` suffix, which its ~25 req/day limit comfortably covers for a household with a handful of tickers refreshed at most daily.
+
+New: `quote_cache` table (migration `drizzle/0003_third_hydra.sql`), the provider boundary and refresh/staleness logic (`src/lib/portfolio/quotes.ts`), bigint fixed-point valuation math (`src/lib/portfolio/valuation.ts`), current-value/gain-loss columns on the Account Detail holdings table, and a new `/portfolio` screen (household-wide, ticker-aggregated holdings table with an expand-in-place account breakdown, and a by-ticker allocation panel) — Portfolio's sidebar slot is unreserved.
+
+**A pre-existing local-dev footgun, found (not introduced) while browser-verifying this phase**: running `npm run dev` or `npm run test:e2e` directly against a `.env.local` — rather than via `docker compose`, which passes `.env` straight through as container env vars — sends every value through Next's `@next/env`/`dotenv-expand`, which treats a bare `$word` as a variable reference and silently strips it, even inside single quotes. `APP_PASSPHRASE_HASH` is exactly this shape (`$argon2id$v=19$...`), so local non-Docker dev has apparently always been one `npm run dev` away from a baffling "not a valid argon2id hash" error with no clue that `$` was the cause. Not a Phase 2 regression — this would have bitten Phase 0/1 local dev identically — just not previously hit or documented. Now documented in `.env.example` (the fix: escape every `$` as `\$` in `.env.local` specifically) rather than fixed in code, since it's Next's own env-loading behaviour, not this app's.
+
+### Judgment calls worth knowing about
+
+- **`quote_cache` is a mutable single-row-per-symbol cache, not append-only history** — the opposite shape from `balance_snapshot`, deliberately: a quote is re-fetchable market data with no household-authored history to protect, unlike a balance the household typed in. Keyed by provider symbol (not `holding_id`), so a ticker held in two accounts shares one row and one API call.
+- **`resolveProviderSymbol` maps a GBP-currency account's ticker to `{ticker}.LON`, and any other currency to the bare ticker, assumed US-listed.** This also means a quote's currency always equals the holding's account currency by construction — there is no FX conversion anywhere in Phase 2. Documented limitation: an LSE-listed non-GBP security, or a genuinely non-US/non-UK holding, resolves to a wrong or empty lookup; the provider boundary returns a typed "not found" rather than a fabricated price, so this degrades to "Price unavailable," never a wrong number.
+- **A confirmed "no quote for this symbol" (e.g. an OEIC/unit trust, priced by NAV with no exchange ticker — the household's own third holding is exactly this) is cached as `price: null`, not left unrecorded.** Otherwise a symbol that will never resolve would get re-fetched on every single page load within the staleness window, wasting a meaningful fraction of the free-tier daily budget on a lookup guaranteed to fail. It's still rechecked once the staleness window passes, in case the provider adds coverage later.
+- **The Portfolio page's allocation breakdown is by ticker, not by asset class (equities/bonds/cash), despite that being DESIGN_SPEC.md's stated example.** Account-level asset class (`src/lib/accounts/types.ts`) collapses every securities-holding account type into just `investments`/`pensions` — too coarse to be informative within a portfolio view on its own, and a true equities/bonds/cash split needs either fundamentals data (Phase 4's stock-workbench remit) or a new manual per-holding classification field, neither of which exists yet. By-ticker needed no new data and is what the same screen's holdings table already wants.
+- **Benchmark comparison ("+3.2% vs FTSE All-World") is not built.** `holding.costBasis` carries no acquisition date, so a true time-weighted return vs. an index isn't computable from the current schema. What **is** built — gain/loss vs. cost basis — is a different, narrower number and is labelled as such throughout, never presented as benchmark-relative performance.
+- **Quote price is `NUMERIC(14,4)`, not the `money()` helper's 2dp `NUMERIC(14,2)`.** It's multiplied against `holding.quantity`'s `NUMERIC(18,6)` in `src/lib/portfolio/valuation.ts`; rounding a price to the penny before that multiplication would compound error on fractional-share holdings — the same reasoning already applied to why quantity itself isn't 2dp. Valuation math is bigint fixed-point throughout (`parseScaledDecimal`/`formatScaledDecimal`), never a float.
+- **Live pricing degrades gracefully with zero provider connected** — `alphaVantageApiKey()` is nullable, unlike every other required-env-var getter in `src/lib/env.ts`, and both the Account Detail and Portfolio pages render fully (with "Price unavailable" in place of figures) when it's unset. Verified in a real browser: the account-detail and portfolio screens render correctly and identically-structured with the key unset (all holdings show "Price unavailable," £0 total, "No market-data provider configured") and with a real key (live £107.76 VUAG price, correct valuation and gain/loss math, correct allocation percentages).
+
+### Deliberately not built (and why)
+
+- **No benchmark-relative performance** — see judgment calls above; the data model doesn't support it honestly yet.
+- **No true asset-class (equities/bonds/cash) allocation breakdown** — same reasoning; by-ticker is what's honestly buildable today.
+- **No FX conversion.** A holding priced in a non-GBP currency is excluded from the Portfolio page's GBP total/allocation and flagged with its own currency on expand, rather than silently mixed into a GBP-labelled sum. None of the household's actual holdings hit this today.
+- **No manual price entry fallback** for holdings the provider can't price (the household's OEIC). Considered and deliberately deferred — "Price unavailable" ships today with no added scope; manual entry remains an easy addition later if wanted.
+
+### Not verified in this pass
+
+- Docker Compose deployment of this specific change (the schema migration, the new env var) — browser verification ran against a throwaway Postgres + `npm run dev`, not the actual `deploy.sh` path. The migration was confirmed to apply cleanly via `drizzle-kit migrate` and via the integration test suite's from-scratch migration run, but the full `deploy.sh` sequence (dump → migrate → up) hasn't been exercised for this change specifically.
+- Alpha Vantage's actual behaviour once the free-tier daily limit is genuinely exhausted (the "Note"/"Information" rate-limit handling in `fetchGlobalQuote` is tested against constructed fixtures, not a real exhausted-quota response).
 
 ## Phase 1 — what shipped
 
@@ -58,6 +91,94 @@ Two of the spec's own locators were also wrong, and worth knowing when writing m
 
 All 6 tests now pass, verified over two consecutive full runs plus a `--repeat-each=3` run (18/18) to rule out the flakiness the first failures suggested. Still unexercised: any browser other than Chromium, and any mobile viewport.
 
+## Phase 2 code review — findings and fixes
+
+Two independent passes, run in parallel with no access to each other's output or to this
+document's own Phase 2 write-up (to avoid anchoring on the author's self-assessment):
+one focused on money/valuation-math correctness, one on security, architecture
+consistency, and test coverage. Every finding below was re-verified against the actual
+files before being treated as real, the same discipline Phase 0/1's reviews used.
+
+Both passes independently converged on the same critical finding, which is a strong
+signal it was real:
+
+- **A malformed-but-well-shaped price from Alpha Vantage could crash the entire page,
+  directly contradicting this module's own "a provider outage must not break the page"
+  claim.** `ensureFreshQuotes`'s `'ok'` branch called `normalizeQuotePrice` with no
+  try/catch; that function throws on anything that isn't a plain decimal with ≤4
+  fractional digits (a value like `"N/A"`, a thousands separator, or unexpectedly more
+  decimal places), and neither `src/app/portfolio/page.tsx` nor
+  `src/app/accounts/[id]/page.tsx` wrapped the call in a try/catch either. Every *other*
+  failure mode this module handles (non-2xx, invalid JSON, rate-limit signal, a missing
+  price field) was deliberately caught and turned into a typed result; this one shape of
+  malformed "ok" response was the sole gap, and it was untested — every existing test fed
+  a well-formed 4-decimal price through the happy path. **Fixed**: the entire
+  fetch-normalize-write sequence inside `ensureFreshQuotes`'s per-symbol loop is now
+  wrapped in one try/catch that degrades exactly like a rate-limited/network-error
+  response (serve the last cached price, marked stale, or omit the symbol), with a
+  `console.error` for diagnostics. Two new integration tests cover it directly: a
+  malformed price with no prior cache (omits the symbol, writes nothing), and a malformed
+  price when a stale cache exists (falls back to it, marked stale).
+- **A negative or zero price was accepted with no validation** — the same
+  `parseScaledDecimal` call that rejects non-numeric input happily parses a leading `-`,
+  and nothing downstream rejected it, so a corrupted response could produce a real,
+  rendered (if nonsensical) negative valuation rather than "Price unavailable." This is
+  the opposite of the module's own stated philosophy ("the provider boundary returns a
+  typed 'not found' rather than a fabricated price") — a negative price is a fabricated
+  price that wasn't being caught. **Fixed**: `normalizeQuotePrice` now rejects any value
+  `<= 0`, caught by the same try/catch above. New unit tests cover zero and negative
+  prices explicitly.
+- **The Portfolio page's cross-account ticker aggregation could silently mix currencies
+  into one wrong number, not just a missing one, once account currency ever varies** —
+  found by the money-math pass. `aggregateByTicker` grouped purely by ticker string, with
+  no awareness of currency; the page then picked one "representative" account currency
+  per ticker (an arbitrary `.find()`), resolved one provider symbol from it, and priced
+  the *entire* combined quantity — summed across every account holding that ticker
+  string regardless of each account's actual currency — against that single quote. A real
+  (not contrived) example: Vodafone trades under the bare ticker `VOD` both on the LSE in
+  GBP and as a NYSE ADR in USD; 100 GBP shares and 50 USD shares of `VOD` would have
+  summed to 150 shares priced entirely off one quote. **Not reachable today** — grepping
+  confirmed `account.currency` is never set to anything but its schema default `'GBP'`
+  anywhere in the app; there is no create/edit path that changes it yet — but STATUS.md's
+  own Phase 2 write-up asserted this "degrades to 'Price unavailable,' never a wrong
+  number," and that claim was only true for the single-holding path (Account Detail's
+  `valueHoldings`), not this cross-account aggregation path. Worth fixing before a future
+  phase adds currency editing, not after. **Fixed**: `aggregateByTicker` now groups by
+  `(ticker, currency)`, not ticker alone — `HoldingForAggregation`/`TickerAggregate` both
+  carry currency, and two holdings of the same bare ticker under different account
+  currencies now produce two separate aggregates, each correctly priced in its own
+  currency, rather than one merged (and wrong) one. The Portfolio page's fragile
+  `representativeCurrency` lookup was removed entirely in favor of reading
+  `aggregate.currency` directly. Threaded through to the UI too: `PortfolioHoldingRowView`
+  gained a `rowKey` (ticker+currency) distinct from the display-only `ticker`, since two
+  rows can now legitimately share a ticker — `PortfolioHoldingsTable`'s React key and
+  expand/collapse state key off `rowKey`, not `ticker`, to avoid a key collision if this
+  ever becomes reachable. New unit test proves the two-currency case produces two
+  aggregates, not one merged sum.
+- **No server-side log when a refetch came back rate-limited or errored** (as distinct
+  from falling back to a genuinely-missing quote) — a single-operator self-hosted app has
+  no way to notice from logs why prices stopped refreshing (revoked key, exhausted quota,
+  provider outage), inconsistent with the logging discipline (`logAndWrap`) the rest of
+  the codebase applies to failures worth knowing about. **Fixed**: both the
+  rate-limited/network-error path and the newly-added catch block now log
+  `[quotes] <symbol>: <reason>` server-side.
+
+Findings checked and confirmed **not** bugs, worth recording so they aren't
+re-litigated: the core fixed-point arithmetic (`currentValuePence`, `roundDiv`,
+`parseScaledDecimal`/`formatScaledDecimal`) was hand-verified against several cases,
+including the half-penny rounding boundary, and is correct; the API key never leaks into
+a client-rendered prop, RSC payload, or logged/displayed error message (traced every use
+of `apiKey` across the codebase); the outbound request URL is built via `URLSearchParams`
+(not string concatenation), so there's no query-injection or SSRF risk regardless of
+ticker content, and the existing ticker regex constrains it further; `getPortfolioHoldings`
+correctly scopes to the household and `quote_cache`'s deliberate lack of household scoping
+is never treated as if it had any; the migration is purely additive and safe against a
+live database; the known `timestamptz`-as-string gotcha (Phase 1) does not recur, since
+`quote_cache.fetchedAt` is read exclusively via Drizzle's typed `select()`; and the
+one-multiplication-on-summed-quantity vs. sum-of-per-account-values discrepancy between
+the Portfolio and Account Detail pages (up to a penny, from independent rounding) is a
+documented, immaterial tradeoff, not a bug.
+
 ## Phase 1 code review — findings and fixes
 
 Two independent passes, deliberately different in method: one given condensed, hand-picked excerpts of the changed files (the same method Phase 0's review used); one given the actual full `git diff` of the merged Phase 1 commit (~10,900 lines) to read directly, after the excerpt-based pass was already running — a condensed excerpt had introduced two false-positive findings during Phase 0's review, so this phase tested whether the real diff would find things the excerpt missed or clear things it got wrong. It did both. Every finding below was independently re-verified against the actual files in this repo before being treated as real, not taken on either review's word.
@@ -94,15 +215,17 @@ Two findings from the review turned out to be artifacts of condensing the code f
 
 ## Next steps
 
-1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`.
-2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner.
-3. Phase 2 per the Phased Delivery table: portfolio tracking plus a market-data provider, starting with the **blocking verification task** — confirm the provider returns the LSE GBP line rather than a USD cross-listing, and confirm whether it labels prices in pence (GBX) or pounds. The proposal names this the single most likely correctness bug in that phase.
-4. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
+1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
+2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner. Phase 2 adds `e2e/portfolio.spec.ts` to the same not-yet-in-CI backlog.
+3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done — see "Phase 2 — what shipped" above. An independent code-review pass (the same treatment Phase 0 and 1 got) is worth doing before this is considered fully closed out, per the note under "Done."
+4. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named.
+5. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
-## Notes for Phase 2
+## Notes for Phase 3
 
-- `src/lib/auth/csrf.ts` (`sameOriginGuard`) is still implemented, tested and unused — Phase 1 added no route handlers, only Server Actions (which carry Next's own Origin/Host check). The first mutating route handler must call it; that protection does not extend to route handlers.
-- `holding` has no price, valuation or last-fetched column yet, by design — Phase 2 chooses the provider and therefore the cache shape. `account.currency` and `balance_snapshot.currency` already exist for the GBX/GBP and USD-holdings cases to live in.
-- **Money never touches a float.** `src/lib/money.ts` parses to integer pence as `bigint` and back to NUMERIC strings; `numeric` columns come out of node-postgres as strings and stay that way. A `numericToPence`/`formatMoney` pair exists for every display path — new code should go through it rather than `Number(row.amount)`.
+- `src/lib/auth/csrf.ts` (`sameOriginGuard`) is still implemented, tested and unused — neither Phase 1 nor Phase 2 added a route handler, only Server Actions (which carry Next's own Origin/Host check). The first mutating route handler must call it; that protection does not extend to route handlers. Phase 3's compute-persist-poll pattern (PROPOSAL.md's Compute execution model) is likely where the first one appears — a `simulation_run` status-polling endpoint is naturally a route handler, not a Server Action.
+- **Money never touches a float.** `src/lib/money.ts` parses to integer pence as `bigint` and back to NUMERIC strings; `numeric` columns come out of node-postgres as strings and stay that way. A `numericToPence`/`formatMoney` pair exists for every display path — new code should go through it rather than `Number(row.amount)`. Phase 2's `src/lib/portfolio/valuation.ts` extends the same discipline to sub-penny/fractional-share precision (`parseScaledDecimal`/`formatScaledDecimal`) — the Monte Carlo engine's compounding math should look to that module before reinventing fixed-point arithmetic, or before reaching for a float and relying on the reference-calculator tolerance test to catch it (Testing strategy in PROPOSAL.md is explicit that tolerance-matching alone isn't sufficient coverage).
 - **Watch out for `db.execute` with raw SQL**: unlike a typed `select()`, it returns the driver's raw values, so a `timestamptz` arrives as a *string*, not a `Date`. That mismatch typechecked happily and threw at render time during Phase 1 (`capturedAt.getTime is not a function`). `getAccountsWithBalances` converts explicitly and a regression test asserts it.
-- Both `*.integration.test.ts` suites share one scratch database and drop its schema, so `fileParallelism` is off in `vitest.config.ts`. A new DB-backed test file can rely on that.
+- Both `*.integration.test.ts` suites share one scratch database and drop its schema, so `fileParallelism` is off in `vitest.config.ts`. A new DB-backed test file can rely on that. Phase 2's `quotes.integration.test.ts` follows the same pattern with an injected fake provider — Phase 3's `simulation_run` persistence layer should do the same rather than inventing a new DB-test convention.
+- **Outbound HTTP calls are mockable via dependency injection, not a library.** Phase 2 needed this for the first time (`fetchGlobalQuote`'s `fetchImpl` parameter, `ensureFreshQuotes`'s `QuoteSource` parameter) — no `msw`/`nock` is installed. If Phase 3 or later needs to mock more than a couple of call sites this way, that's the point to reconsider, not before.
+- `src/lib/env.ts`'s pattern for an optional, gracefully-degrading integration (`alphaVantageApiKey(): string | null`, never `required()`) is the template for any future provider key — Phase 5's Open Banking tokens are a different category (per-connection bearer credentials needing encryption at rest, not a single env var) and shouldn't follow this exact shape, but Phase 4's stock-data provider likely should.

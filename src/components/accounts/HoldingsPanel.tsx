@@ -9,19 +9,27 @@ import { formErrorOf, serverErrorsOf, useActionForm } from '@/lib/ui/useActionFo
  * Holdings for an investment account.
  *
  * DESIGN_SPEC.md: "for investment-type accounts (GIA/ISA/SIPP), a holdings table (ticker,
- * quantity, cost basis, current value, gain/loss) — P1 scope is display-only, editable
- * manually; live pricing is P2 (market data provider)."
+ * quantity, cost basis, current value, gain/loss)."
  *
- * So current value and gain/loss columns are **absent, not blank**. There is no price in
- * Phase 1 — the provider isn't chosen yet, and choosing it carries a blocking verification
- * task about whether LSE prices come back as pence or pounds (the proposal calls a GBX/GBP
- * mix-up the single most likely correctness bug in Phase 2). Empty columns headed "Current
- * value" would imply the app knows something it doesn't; a line saying valuations arrive with
- * live pricing is honest.
+ * Phase 2 adds live current value and gain/loss, via `src/lib/portfolio/quotes.ts`'s
+ * `valueHoldings` — but a price still isn't guaranteed for every row: a holding with no
+ * `ALPHA_VANTAGE_API_KEY` configured, a provider outage, or a symbol the provider
+ * genuinely has no quote for (the household's own OEIC holding, priced by NAV with no
+ * exchange ticker, is exactly this case) all resolve to `currentValue: null`. That
+ * renders as "Price unavailable," never a blank cell or a fabricated value — the same
+ * honesty-over-guessing rule Phase 1 applied when this data didn't exist at all yet.
  *
  * Rows are read-only with an explicit remove action rather than inline-editable, per the spec's
  * "Holdings rows are read-only in P1 tap targets (no accidental edit)".
  */
+
+export interface HoldingGainLoss {
+  /** Pre-formatted, e.g. "+£240.12" or "−£18.40". */
+  amount: string;
+  /** Pre-formatted percent vs. cost basis, e.g. "12.4%" — null when cost basis is zero. */
+  percent: string | null;
+  direction: 'up' | 'down' | 'flat';
+}
 
 export interface HoldingView {
   id: number;
@@ -29,6 +37,9 @@ export interface HoldingView {
   quantity: string;
   /** Pre-formatted on the server, so no money passes through a float here. */
   costBasis: string;
+  /** Pre-formatted, or null when no live price is available. */
+  currentValue: string | null;
+  gainLoss: HoldingGainLoss | null;
 }
 
 function AddButton({ disabled, pending }: { disabled: boolean; pending: boolean }) {
@@ -48,12 +59,21 @@ export function HoldingsPanel({
   holdings,
   addAction,
   deleteAction,
+  pricesAsOf,
+  pricesStale,
 }: {
   accountId: number;
   holdings: HoldingView[];
   addAction: (formData: FormData) => Promise<ActionResult>;
   /** Bare `<form action>`, so it returns void — a single-button form has nothing to render. */
   deleteAction: (formData: FormData) => Promise<void>;
+  /** Pre-formatted relative time, e.g. "2 hours ago" — null when no holding has a live
+   * price at all (no provider configured, or nothing priceable yet). */
+  pricesAsOf?: string | null;
+  /** True when the freshest attempt to refresh a price failed and a cached value (or
+   * none) is being shown instead — same "provider outage must not break the page"
+   * posture as everywhere else this data is read. */
+  pricesStale?: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   const [values, setValues] = useState({ ticker: '', quantity: '', costBasis: '' });
@@ -80,7 +100,11 @@ export function HoldingsPanel({
         <div>
           <h2 className="font-serif text-lg text-content">Holdings</h2>
           <p className="mt-0.5 text-xs text-content-faint">
-            Entered manually. Live prices and valuations arrive with market data in a later phase.
+            {pricesAsOf
+              ? `Quantity and cost basis entered manually. Prices as of ${pricesAsOf}${
+                  pricesStale ? ' — couldn’t refresh just now' : ''
+                }.`
+              : 'Entered manually. Live prices arrive once a market-data provider is configured.'}
           </p>
         </div>
         {!adding ? (
@@ -100,7 +124,7 @@ export function HoldingsPanel({
 
       {holdings.length > 0 ? (
         <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[380px] text-sm">
+          <table className="w-full min-w-[560px] text-sm">
             <thead>
               <tr className="border-b border-line text-left text-[11px] uppercase tracking-wider text-content-faint">
                 <th scope="col" className="pb-2 font-medium">
@@ -113,6 +137,12 @@ export function HoldingsPanel({
                   Cost basis
                 </th>
                 <th scope="col" className="pb-2 text-right font-medium">
+                  Current value
+                </th>
+                <th scope="col" className="pb-2 text-right font-medium">
+                  Gain/loss
+                </th>
+                <th scope="col" className="pb-2 text-right font-medium">
                   <span className="sr-only">Actions</span>
                 </th>
               </tr>
@@ -123,6 +153,33 @@ export function HoldingsPanel({
                   <td className="py-2.5 font-medium text-content">{holding.ticker}</td>
                   <td className="tabular py-2.5 text-right text-content-muted">{holding.quantity}</td>
                   <td className="tabular py-2.5 text-right text-content-muted">{holding.costBasis}</td>
+                  <td className="tabular py-2.5 text-right text-content-muted">
+                    {holding.currentValue ?? (
+                      <span className="text-content-faint">Price unavailable</span>
+                    )}
+                  </td>
+                  <td
+                    className={`tabular py-2.5 text-right ${
+                      holding.gainLoss?.direction === 'up'
+                        ? 'text-sage'
+                        : holding.gainLoss?.direction === 'down'
+                          ? 'text-clay'
+                          : 'text-content-muted'
+                    }`}
+                  >
+                    {holding.gainLoss ? (
+                      <>
+                        {holding.gainLoss.amount}
+                        {holding.gainLoss.percent ? (
+                          <span className="ml-1 text-content-faint">
+                            ({holding.gainLoss.percent}%)
+                          </span>
+                        ) : null}
+                      </>
+                    ) : (
+                      <span className="text-content-faint">—</span>
+                    )}
+                  </td>
                   <td className="py-2.5 text-right">
                     <form action={deleteAction}>
                       <input type="hidden" name="holdingId" value={holding.id} />

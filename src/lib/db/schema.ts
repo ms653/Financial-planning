@@ -373,6 +373,60 @@ export const holdings = pgTable(
 );
 
 /**
+ * Cached market-data quotes (Phase 2).
+ *
+ * Deliberately the opposite shape from `balance_snapshot` above: this is a **mutable,
+ * single-row-per-symbol cache**, not append-only history. `balance_snapshot` protects
+ * irreplaceable household-entered data, which is why it never gets overwritten — a quote
+ * is re-fetchable market data with no household-authored history to lose, so keeping only
+ * the latest value and overwriting it on refresh is correct, not a shortcut.
+ *
+ * Keyed by provider `symbol` (e.g. `VUAG.LON`), not by `holding_id` or `account_id`: the
+ * same ticker held in two accounts shares one row and one API call, which matters given
+ * Alpha Vantage's free-tier rate limit. `resolveProviderSymbol` in
+ * src/lib/portfolio/quotes.ts derives the symbol from a holding's ticker and its account's
+ * currency, so a symbol implies a currency — no separate FX handling is needed.
+ *
+ * `price` is `NUMERIC(14,4)`, not the `money()` helper's 2dp: it is multiplied against
+ * `holding.quantity`'s `NUMERIC(18,6)` in src/lib/portfolio/valuation.ts, and rounding a
+ * price to the penny before that multiplication would compound error on fractional-share
+ * holdings — the same reasoning already applied to why quantity itself isn't 2dp.
+ *
+ * No FK to `holding` or `account`: this cache belongs to no household and no account, only
+ * to a symbol, so there is nothing to cascade or restrict.
+ */
+export const quoteCache = pgTable(
+  'quote_cache',
+  {
+    id: serial('id').primaryKey(),
+
+    /** Provider symbol, e.g. `VUAG.LON` or a bare US ticker. Not the household's ticker
+     * string directly — see `resolveProviderSymbol`. */
+    symbol: text('symbol').notNull(),
+
+    /** ISO 4217. Implied by the symbol's exchange suffix at fetch time, stored explicitly
+     * so a reader doesn't have to re-derive it from the symbol string. */
+    currency: text('currency').notNull(),
+
+    /**
+     * Nullable, and that's a real state, not an oversight: `null` means "checked as of
+     * `fetchedAt` and the provider had no quote for this symbol" (the household's OEIC
+     * holding, priced by NAV with no exchange ticker, is exactly this case) — distinct
+     * from no row existing at all, which means "never checked." Recording the negative
+     * result with its own timestamp lets `ensureFreshQuotes` respect the same staleness
+     * threshold before re-checking, instead of re-spending API budget on a symbol that
+     * will never resolve every single page load.
+     */
+    price: numeric('price', { precision: 14, scale: 4 }),
+
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull(),
+  },
+  (table) => ({
+    symbolUnique: uniqueIndex('quote_cache_symbol_unique').on(table.symbol),
+  }),
+);
+
+/**
  * A dated balance observation — the app's core time series, and an append-only one.
  *
  * PROPOSAL.md §12 prefers append-only modelling over conflict resolution: "balance
@@ -525,6 +579,8 @@ export type Account = typeof accounts.$inferSelect;
 export type NewAccount = typeof accounts.$inferInsert;
 export type Holding = typeof holdings.$inferSelect;
 export type NewHolding = typeof holdings.$inferInsert;
+export type QuoteCache = typeof quoteCache.$inferSelect;
+export type NewQuoteCache = typeof quoteCache.$inferInsert;
 export type BalanceSnapshot = typeof balanceSnapshots.$inferSelect;
 export type NewBalanceSnapshot = typeof balanceSnapshots.$inferInsert;
 export type DebtTerms = typeof debtTerms.$inferSelect;

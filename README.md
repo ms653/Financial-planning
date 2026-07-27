@@ -5,14 +5,14 @@ household. Net worth tracking, portfolio analysis, UK-calibrated retirement Mont
 modelling, and a cash allocation advisor — all running on your own hardware, reachable
 only over Tailscale, with nothing leaving the machine except market-data lookups.
 
-**Current state: Phase 1 complete.** Scaffold, database, CI, auth, HTTPS, and backup
-tooling are in place (Phase 0), plus the household/people/accounts data model and a
-real net worth dashboard (Phase 1) — Guided Setup, Net Worth Dashboard, Accounts
-List/Add/Edit/Detail, and a minimal Settings screen. Logging in for the first time
-lands you in Guided Setup, not a placeholder page. See
-[`docs/STATUS.md`](docs/STATUS.md) for exactly what's built and what isn't yet
-(portfolio tracking, retirement modelling, and the rest of the roadmap below are
-still ahead).
+**Current state: Phase 2 complete.** Scaffold, database, CI, auth, HTTPS, and backup
+tooling are in place (Phase 0), the household/people/accounts data model and a real
+net worth dashboard (Phase 1), and portfolio tracking with live market-data pricing
+(Phase 2) — Guided Setup, Net Worth Dashboard, Accounts List/Add/Edit/Detail, Portfolio,
+and a minimal Settings screen. Logging in for the first time lands you in Guided Setup,
+not a placeholder page. See [`docs/STATUS.md`](docs/STATUS.md) for exactly what's built
+and what isn't yet (retirement modelling and the rest of the roadmap below are still
+ahead).
 
 ## Documentation
 
@@ -109,7 +109,7 @@ Full spec and rationale: `docs/PROPOSAL.md` → Security notes.
 ## Roadmap
 
 Phase 0 ✅ scaffold, auth, CI, backup · Phase 1 ✅ household/accounts + net worth dashboard ·
-Phase 2 portfolio + market data · Phase 3 retirement Monte Carlo · Phase 4 stock analysis
+Phase 2 ✅ portfolio + market data · Phase 3 retirement Monte Carlo · Phase 4 stock analysis
 workbench · Phase 4.5 cash allocation advisor · Phase 4.6 scenario planning ·
 Phase 4.7 reporting · Phase 5 UK Open Banking spike · Phase 6 PWA + offline ·
 Phase 7 visual design pass

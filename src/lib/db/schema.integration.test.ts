@@ -4,7 +4,16 @@ import { Pool } from 'pg';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import * as schema from '@/lib/db/schema';
-import { accounts, balanceSnapshots, debtTerms, holdings, households, people, pensionContributions } from '@/lib/db/schema';
+import {
+  accounts,
+  balanceSnapshots,
+  debtTerms,
+  holdings,
+  households,
+  people,
+  pensionContributions,
+  quoteCache,
+} from '@/lib/db/schema';
 import { sumNumeric, penceToNumeric } from '@/lib/money';
 
 /**
@@ -53,7 +62,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
 
   beforeEach(async () => {
     await pool.query(
-      'TRUNCATE TABLE balance_snapshot, holding, debt_terms, account, pension_contribution, person, household RESTART IDENTITY CASCADE;',
+      'TRUNCATE TABLE balance_snapshot, holding, debt_terms, account, pension_contribution, person, household, quote_cache RESTART IDENTITY CASCADE;',
     );
   });
 
@@ -88,7 +97,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
   }
 
   describe('migration', () => {
-    it('creates all eight tables', async () => {
+    it('creates all nine tables', async () => {
       const { rows } = await pool.query<{ table_name: string }>(
         "select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'",
       );
@@ -102,6 +111,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
         'household',
         'pension_contribution',
         'person',
+        'quote_cache',
       ]);
     });
 
@@ -487,6 +497,58 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
       const [row] = await db.select().from(holdings);
       expect(row!.quantity).toBe('12.345678');
       expect(typeof row!.quantity).toBe('string');
+    });
+  });
+
+  describe('quote_cache (Phase 2)', () => {
+    it('stores price at NUMERIC(14,4) precision, sub-penny, not the 2dp money scale', async () => {
+      const { rows } = await pool.query<{ numeric_precision: number; numeric_scale: number }>(
+        `select numeric_precision, numeric_scale from information_schema.columns
+          where table_schema = 'public' and table_name = 'quote_cache' and column_name = 'price'`,
+      );
+      expect(rows[0]!.numeric_precision).toBe(14);
+      expect(rows[0]!.numeric_scale).toBe(4);
+    });
+
+    it('allows a null price — a confirmed "no quote for this symbol" result, not an error', async () => {
+      await db.insert(quoteCache).values({
+        symbol: 'VANGFTSEGACC',
+        currency: 'GBP',
+        price: null,
+        fetchedAt: new Date(),
+      });
+      const [row] = await db.select().from(quoteCache);
+      expect(row!.price).toBeNull();
+    });
+
+    it('rejects a second row for the same symbol', async () => {
+      const fetchedAt = new Date();
+      await db.insert(quoteCache).values({ symbol: 'VUAG.LON', currency: 'GBP', price: '107.7600', fetchedAt });
+
+      await expect(
+        db.insert(quoteCache).values({ symbol: 'VUAG.LON', currency: 'GBP', price: '108.0000', fetchedAt }),
+      ).rejects.toThrow(/quote_cache_symbol_unique|duplicate key/);
+    });
+
+    it('supports an idempotent upsert on the symbol constraint, which is how ensureFreshQuotes writes', async () => {
+      const fetchedAt = new Date();
+      await db.insert(quoteCache).values({ symbol: 'VUAG.LON', currency: 'GBP', price: '107.7600', fetchedAt });
+      await db
+        .insert(quoteCache)
+        .values({ symbol: 'VUAG.LON', currency: 'GBP', price: '110.0000', fetchedAt })
+        .onConflictDoUpdate({ target: quoteCache.symbol, set: { price: '110.0000', fetchedAt } });
+
+      const rows = await db.select().from(quoteCache);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.price).toBe('110.0000');
+    });
+
+    it('has no FK to account or holding — it belongs to no household', async () => {
+      const { rows } = await pool.query<{ constraint_name: string }>(
+        `select constraint_name from information_schema.table_constraints
+          where table_schema = 'public' and table_name = 'quote_cache' and constraint_type = 'FOREIGN KEY'`,
+      );
+      expect(rows).toEqual([]);
     });
   });
 });
