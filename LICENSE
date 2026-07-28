@@ -19,3 +19,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+EXCEPTION — third-party data:
+
+The above MIT grant does not extend to the historical return data embedded in
+`src/lib/retirement/returns/ukHistoricalReturns.ts` (the `RAW_YEARS` constant
+and its derived values). That data is sourced from the Jordà-Schularick-Taylor
+Macrohistory Database and is licensed separately under CC BY-NC-SA 4.0
+(non-commercial, share-alike) — see `LICENSE-DATA.md` for the full terms and
+required attribution. Nothing in this MIT license authorizes commercial use,
+resale, or redistribution of that data under different terms; the code that
+reads and computes with it (the rest of `ukHistoricalReturns.ts`, and every
+other file in this repository) remains MIT-licensed as above.

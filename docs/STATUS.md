@@ -478,6 +478,49 @@ residual issue. One suggested nice-to-have (an end-to-end test piping both fixed
 functions together for the exact reported shape) was added. 4 new tests, full suite
 467/467. Typecheck clean.
 
+## Phase 3, Milestone 4: UK historical return dataset
+
+Blocking verification task #1 — the bootstrap engine (Milestone 5) needs a real,
+citable annual UK real-return series, not an invented one. The original candidate lead
+(Bank of England's "A Millennium of Macroeconomic Data") was actually downloaded and
+rejected: its `share-prices` series is a capital-only price index, no dividends, and its
+bond series are yields, not returns — reconstructing genuine total returns from those
+would have needed additional unsourced assumptions.
+
+Used the **Jordà-Schularick-Taylor (JST) Macrohistory Database, release R6** instead — a
+real, free, peer-reviewed academic dataset (NBER Macroeconomics Annual 2016; *Quarterly
+Journal of Economics* 134:3, 2019) with genuine UK equity/gilt total-return and bill-rate
+columns, 1871–2020. `src/lib/retirement/returns/ukHistoricalReturns.ts` embeds all 150
+years, converts nominal returns to real via the exact Fisher relation in fixed-point
+bigint math (reusing `valuation.ts`'s `roundDiv`, now exported), and is independently
+cross-validated: the geometric mean real UK equity return this implies (~5.2–5.3%)
+matches the UBS Global Investment Returns Yearbook 2025's separately published "5.2%
+real, worldwide equities" figure. **Deliberately not spliced to 2021–present** —
+documented as an explicit, dated gap for whichever milestone next touches this, rather
+than rushed under time pressure.
+
+**Verification, not just transcription**: every one of the 150 embedded rows was
+programmatically cross-checked against the downloaded primary source with zero
+mismatches — twice, once during implementation and again independently during Fable
+review (which also independently re-derived the whole pipeline from scratch in Python
+and got matching figures). One real transcription error was caught and fixed before
+review even started: a placeholder value for 1870's CPI (needed only to compute 1871's
+inflation rate) had been typed from memory rather than the source — corrected to the
+actual sourced figure before it went further.
+
+**A genuine license conflict, found by Fable review and fixed**: the JST database is
+licensed CC BY-NC-SA 4.0 (non-commercial, share-alike). This repo is public on GitHub
+and carries a blanket MIT `LICENSE` with no carve-outs — which textually authorized
+commercial use, resale, and resharing under different terms over data that forbids all
+three. Morgan's own use (private, non-commercial, self-hosted) was always fine under
+CC BY-NC-SA's terms; the problem was specifically that `LICENSE` itself misrepresented
+what the data could legally be used for. Fixed with an explicit exception clause in
+`LICENSE` and a new `LICENSE-DATA.md` carrying the full terms and required citations.
+
+24 new tests, full suite 474/474. Typecheck clean. Not wired into anything yet — this is
+prep work for Milestone 5's bootstrap sampler, confirmed via grep that nothing else in
+the app references it.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
