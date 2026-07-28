@@ -106,29 +106,43 @@ export function buildNetWorthSeries(
   const latestByAccount = new Map<number, bigint>();
   const byDate = new Map<string, bigint>();
 
-  for (const snapshot of ordered) {
-    latestByAccount.set(snapshot.accountId, numericToPence(snapshot.amount));
-    if (start !== null && snapshot.snapshotDate < start) {
-      // Establishes the opening position without plotting a point outside the window.
-      continue;
-    }
+  const totalOf = (balances: Map<number, bigint>): bigint => {
     let total = 0n;
-    for (const value of latestByAccount.values()) total += value;
-    byDate.set(snapshot.snapshotDate, total);
+    for (const value of balances.values()) total += value;
+    return total;
+  };
+
+  // Fold in every pre-window snapshot first, then plot ONE point at the window's own
+  // start date using the resulting carried-forward total — rather than only using that
+  // total to seed later balances and never plotting it. Skipping this point used to mean
+  // the chart's leftmost plotted point was "whenever the first in-window snapshot
+  // happens to be", not "the start of the window" — for a household whose only in-window
+  // updates land in the final day or two (a real, not hypothetical, case: e.g. one
+  // backdated entry a year ago plus one recent correction, both months before "6M"
+  // begins except the correction itself), that made the true multi-month gap invisible
+  // and, combined with seriesToPath's index-based x-axis below, stretched a one- or
+  // two-day change across the entire chart width — a smooth-looking trend line that
+  // never actually happened. No point is added when there's nothing to carry forward
+  // (a household with no history predating the window has nothing to plot there).
+  for (const snapshot of ordered) {
+    if (start !== null && snapshot.snapshotDate < start) {
+      latestByAccount.set(snapshot.accountId, numericToPence(snapshot.amount));
+    }
+  }
+  if (start !== null && latestByAccount.size > 0) {
+    byDate.set(start, totalOf(latestByAccount));
   }
 
-  // If every snapshot predates the window, the household still has a position throughout
-  // it — a flat line at the carried-forward total, not an empty chart.
-  if (byDate.size === 0) {
-    let total = 0n;
-    for (const value of latestByAccount.values()) total += value;
-    const openingDate = start ?? today;
-    const flat: SeriesPoint[] = [
-      { date: openingDate, pence: total },
-      { date: today, pence: total },
-    ];
-    return { points: flat, first: flat[0]!, last: flat[1]!, downsampled: false };
+  for (const snapshot of ordered) {
+    if (start !== null && snapshot.snapshotDate < start) continue; // already folded in above
+    latestByAccount.set(snapshot.accountId, numericToPence(snapshot.amount));
+    byDate.set(snapshot.snapshotDate, totalOf(latestByAccount));
   }
+
+  // `byDate` is guaranteed non-empty here: every snapshot in `ordered` (at least one,
+  // per the early return above) either predates the window — in which case it seeded
+  // `latestByAccount`, which the block above always turns into a point at `start` — or
+  // falls at/after `start`, which the loop above always plots at its own date.
 
   let points: SeriesPoint[] = [...byDate.entries()]
     .map(([date, pence]) => ({ date, pence }))
@@ -206,6 +220,17 @@ export function trendDelta(series: NetWorthSeries): TrendDelta | null {
  * This is the one place a `number` is allowed to hold something derived from money: the
  * output is a pixel coordinate, where a sub-penny rounding error is invisible. Nothing
  * displayed as a figure comes from here.
+ *
+ * X position is proportional to elapsed calendar time between the first and last point,
+ * not point index. A household whose only recent updates land a day or two apart, after
+ * a long stretch with no snapshot at all, has genuinely sparse data — plotting those
+ * points at evenly-spaced indices regardless of the real gap between their dates would
+ * stretch that day or two across the *entire* chart width, drawing a smooth-looking
+ * trend line over what was actually a long flat stretch followed by a sudden change.
+ * `buildNetWorthSeries` now always anchors the window's actual start with a real point
+ * (its own doc comment explains why); this is the other half of the same fix — the
+ * anchor point only tells the honest story if its x position reflects how much real time
+ * separates it from what follows.
  */
 export function seriesToPath(
   points: readonly SeriesPoint[],
@@ -221,8 +246,19 @@ export function seriesToPath(
   const span = max - min || 1;
   const usableHeight = height - padding * 2;
 
-  const coordinates = points.map((point, index) => {
-    const x = points.length === 1 ? width / 2 : (index / (points.length - 1)) * width;
+  const dateMs = (date: string): number => Date.parse(`${date}T00:00:00Z`);
+  const firstMs = dateMs(points[0]!.date);
+  const lastMs = dateMs(points.at(-1)!.date);
+  // All points sharing one date (a single-point series, or every point deduplicated onto
+  // the same day) has no time span to scale against — centre it, same reasoning as the
+  // flat-value case above, rather than dividing by zero.
+  const timeSpanMs = lastMs - firstMs || 1;
+
+  const coordinates = points.map((point) => {
+    const x =
+      points.length === 1 || lastMs === firstMs
+        ? width / 2
+        : ((dateMs(point.date) - firstMs) / timeSpanMs) * width;
     const ratio = max === min ? 0.5 : (Number(point.pence) - min) / span;
     const y = padding + (1 - ratio) * usableHeight;
     return `${x.toFixed(2)},${y.toFixed(2)}`;

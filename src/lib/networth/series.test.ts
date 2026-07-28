@@ -82,16 +82,74 @@ describe('buildNetWorthSeries', () => {
     expect(trendDelta(series)!.direction).toBe('up');
   });
 
-  it('uses snapshots before the window to set the opening balance without plotting them', () => {
+  it('anchors the window’s own start date with the carried-forward opening balance', () => {
     const snapshots: SeriesSnapshot[] = [
       { accountId: 1, amount: '10000.00', snapshotDate: '2025-01-01' },
       { accountId: 2, amount: '5000.00', snapshotDate: '2026-07-10' },
     ];
     const series = buildNetWorthSeries(snapshots, { start: '2026-06-26', today: '2026-07-26' });
 
-    // No point dated 2025; but account 1's £10,000 is included from the first plotted point.
+    // No point dated 2025 — but the window's own start date IS plotted, carrying
+    // account 1's £10,000 forward, not skipped in favour of the first in-window
+    // snapshot. Without this, a household whose only in-window update lands near
+    // "today" would show a chart whose leftmost point silently isn't the start of the
+    // window at all, understating how long nothing changed for.
+    expect(series.points.map((point) => point.date)).toEqual(['2026-06-26', '2026-07-10', '2026-07-26']);
+    expect(penceToNumeric(series.points[0]!.pence)).toBe('10000.00');
+    expect(penceToNumeric(series.points[1]!.pence)).toBe('15000.00');
+  });
+
+  it('adds no opening-anchor point when nothing predates the window', () => {
+    // A household with no history before the window has nothing to carry forward —
+    // the series should start naturally at the first real snapshot, not fabricate a
+    // point at `start` with no data behind it.
+    const series = buildNetWorthSeries(
+      [{ accountId: 1, amount: '100.00', snapshotDate: '2026-07-10' }],
+      { start: '2026-06-26', today: '2026-07-26' },
+    );
     expect(series.points.map((point) => point.date)).toEqual(['2026-07-10', '2026-07-26']);
-    expect(penceToNumeric(series.points[0]!.pence)).toBe('15000.00');
+  });
+
+  it('reproduces the real reported bug: sparse recent updates no longer stretch across the whole window', () => {
+    // A backdated "opening" entry from a year ago, then no further update until a
+    // single correction two days before "today" — the exact shape that produced a
+    // suspiciously smooth diagonal 6-month trend line in practice. The fix is proven
+    // by two things together: the window-start date IS now plotted (carrying the old
+    // figure forward), and (per seriesToPath, tested separately) the recent update
+    // sits close to the right edge rather than spread evenly across the full width.
+    const snapshots: SeriesSnapshot[] = [
+      { accountId: 1, amount: '18992.00', snapshotDate: '2025-07-27' },
+      { accountId: 1, amount: '25385.26', snapshotDate: '2026-07-26' },
+    ];
+    const series = buildNetWorthSeries(snapshots, { start: '2026-01-28', today: '2026-07-28' });
+
+    expect(series.points.map((point) => point.date)).toEqual([
+      '2026-01-28',
+      '2026-07-26',
+      '2026-07-28',
+    ]);
+    expect(penceToNumeric(series.points[0]!.pence)).toBe('18992.00');
+    expect(penceToNumeric(series.points[1]!.pence)).toBe('25385.26');
+  });
+
+  it('end-to-end: the reported-bug shape renders as mostly flat then a sharp late rise, not a smooth diagonal', () => {
+    // buildNetWorthSeries and seriesToPath are each tested independently above; this
+    // pipes the exact reported shape through both together, since that composition is
+    // the actual bug the household saw (neither half alone was visible on screen).
+    const snapshots: SeriesSnapshot[] = [
+      { accountId: 1, amount: '18992.00', snapshotDate: '2025-07-27' },
+      { accountId: 1, amount: '25385.26', snapshotDate: '2026-07-26' },
+    ];
+    const series = buildNetWorthSeries(snapshots, { start: '2026-01-28', today: '2026-07-28' });
+    const path = seriesToPath(series.points, { width: 760, height: 120 })!;
+
+    const xs = [...path.line.matchAll(/(\d+\.\d+),\d+\.\d+/g)].map((match) => Number(match[1]));
+    // Window-start anchor at the left edge, both recent points crammed into the last
+    // ~1% of the width — not spread evenly across three roughly-equal thirds, which is
+    // what the pre-fix index-based spacing would have drawn.
+    expect(xs[0]).toBeCloseTo(0, 1);
+    expect(xs[1]).toBeGreaterThan(750);
+    expect(xs[2]).toBeCloseTo(760, 1);
   });
 
   it('draws a flat line when every snapshot predates the window', () => {
@@ -280,6 +338,29 @@ describe('seriesToPath', () => {
   it('places a single point in the middle horizontally', () => {
     const path = seriesToPath([{ date: '2026-01-01', pence: 500n }], { width: 100, height: 100 })!;
     expect(path.line.startsWith('M50.00,')).toBe(true);
+  });
+
+  it('spaces points by elapsed calendar time, not by index — the bug this replaces', () => {
+    // Three points spanning six months, but the last two are only two days apart.
+    // Index-based spacing would place them at x=0, x=380, x=760 (evenly thirds) —
+    // visually implying three roughly-equal gaps. Date-based spacing must put the last
+    // two hard against the right edge instead, since almost the entire six months
+    // elapsed before either of them.
+    const path = seriesToPath(
+      [
+        { date: '2026-01-28', pence: 100n },
+        { date: '2026-07-26', pence: 150n },
+        { date: '2026-07-28', pence: 200n },
+      ],
+      { width: 760, height: 100 },
+    )!;
+
+    const xs = [...path.line.matchAll(/(\d+\.\d+),\d+\.\d+/g)].map((match) => Number(match[1]));
+    expect(xs[0]).toBeCloseTo(0, 1);
+    expect(xs[2]).toBeCloseTo(760, 1);
+    // The middle point (2026-07-26) is 179 of the 181 total days in — hard against the
+    // right edge, not at the index-even midpoint (380).
+    expect(xs[1]).toBeGreaterThan(700);
   });
 
   it('handles a negative series without producing NaN coordinates', () => {

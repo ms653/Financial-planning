@@ -431,6 +431,53 @@ before writing its aggregation logic, not carried forward silently.
 
 13 new tests, full suite 463/463. Typecheck clean.
 
+## Net worth trend chart: found and fixed a real rendering bug
+
+Flagged by the household: the dashboard's "6M" trend line rendered as a suspiciously
+perfect straight diagonal. Queried the live `balance_snapshot` table directly to find
+the real cause rather than guessing — most accounts have exactly two rows (one
+backdated roughly a year ago, one from the last day or two), and one large account
+(the previously-missing one added a few days ago) has only a single very recent row.
+
+Two compounding bugs in `src/lib/networth/series.ts`, both real, both fixed:
+
+1. **`buildNetWorthSeries` never plotted a point at the window's own start date.**
+   Pre-window snapshots only seeded an internal carried-forward balance; plotting began
+   at whichever date the *first in-window* snapshot happened to land on. For a
+   household whose only in-window updates are a day or two old, the chart's leftmost
+   point was silently "two days ago," not "six months ago" — the true multi-month gap
+   was invisible, and so was the accurate (and, it turns out, negative) window-start
+   figure.
+2. **`seriesToPath` spaced points evenly by array index, not by elapsed calendar
+   time.** Combined with bug 1, a cluster of points from the last day or two got
+   stretched evenly across the *entire* chart width, drawing a smooth six-month trend
+   that never happened.
+
+Fixed: `buildNetWorthSeries` now always emits an explicit point at the window's `start`
+date (when non-null) from the carried-forward pre-window total, before plotting
+whatever falls inside the window as before — the now-unreachable old "every snapshot
+predates the window" special case was removed rather than left as dead code, with the
+reachability argument written out in a comment. `seriesToPath` now places each point's
+x-coordinate proportional to real elapsed time between the first and last plotted date.
+
+**Verified against the household's actual live data**, not just synthetic test cases —
+queried `balance_snapshot` directly, ran it through the real functions, and confirmed
+the fix produces the honest shape: a window-start total of **−£36,659** (correct: the
+large recently-added account genuinely wasn't tracked six months ago) followed by a
+sharp, near-vertical rise concentrated in the final ~1% of the chart width, rather than
+a misleading smooth diagonal. This also changes the dashboard's "Up £X (Y%) over 6
+months" text: with a negative opening figure, `trendDelta` correctly now shows the
+absolute change only, no percentage (per its own documented "no meaningful percentage
+from a negative base" rule) — previously it showed a small, misleadingly-precise
+percentage computed from the wrong (much shorter) actual span.
+
+Fable-reviewed — no bugs found; the "unreachable dead code" removal was independently
+hand-traced and confirmed, and the account-detail balance chart (a separate code path
+that never had bug 1) was confirmed to correctly benefit from the bug-2 fix with no
+residual issue. One suggested nice-to-have (an end-to-end test piping both fixed
+functions together for the exact reported shape) was added. 4 new tests, full suite
+467/467. Typecheck clean.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
