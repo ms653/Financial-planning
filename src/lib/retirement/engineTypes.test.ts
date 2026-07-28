@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { percentStringToScaledFraction, RATE_SCALE } from './engineTypes';
+import { DRAWDOWN_ACCOUNT_TYPES, percentStringToScaledFraction, RATE_SCALE } from './engineTypes';
 
 describe('percentStringToScaledFraction', () => {
   it('converts a percent string to a RATE_SCALE-scaled fraction', () => {
@@ -29,5 +29,18 @@ describe('percentStringToScaledFraction', () => {
     // lands exactly on a .5 boundary (25050.5) — round-half-up takes it to 25051, not
     // truncated down to 25050.
     expect(percentStringToScaledFraction('2.505050')).toBe(25_051n);
+  });
+});
+
+describe('DRAWDOWN_ACCOUNT_TYPES', () => {
+  it('excludes debt and property — neither is a liquid decumulation wrapper', () => {
+    expect(DRAWDOWN_ACCOUNT_TYPES).not.toContain('debt');
+    expect(DRAWDOWN_ACCOUNT_TYPES).not.toContain('property');
+  });
+
+  it('includes every other account type', () => {
+    expect([...DRAWDOWN_ACCOUNT_TYPES].sort()).toEqual(
+      ['cash', 'cash_isa', 'gia', 'lisa', 'sipp_pension', 'ss_isa'].sort(),
+    );
   });
 });

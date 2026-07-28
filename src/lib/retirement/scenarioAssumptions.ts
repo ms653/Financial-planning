@@ -16,7 +16,7 @@
  */
 
 import { numericToPence } from '@/lib/money';
-import { accountType, type AccountTypeValue } from '@/lib/db/schema';
+import { DRAWDOWN_ACCOUNT_TYPES, type DrawdownAccountType } from '@/lib/retirement/engineTypes';
 
 export class ScenarioAssumptionsParseError extends Error {}
 
@@ -72,7 +72,7 @@ export interface ScenarioAssumptionsV1 {
   /** Applied literally, in order, with no optimisation — the exact boundary
    * `docs/PROPOSAL.md`'s Phase 8 note draws: an honestly-documented simplification, not
    * an undocumented early arrival of wrapper-sequencing optimisation. */
-  wrapperWithdrawalOrder: AccountTypeValue[];
+  wrapperWithdrawalOrder: DrawdownAccountType[];
   people: ScenarioAssumptionsPersonV1[];
 }
 
@@ -210,10 +210,15 @@ export function parseScenarioAssumptions(raw: unknown): ScenarioAssumptionsV1 {
         );
       }
 
-      // Validated against the real enum, not just "is a string" — an unchecked cast to
-      // AccountTypeValue[] would let a payload like ["not_a_type"] through as if it
-      // were trusted, typed data, contradicting this module's whole reason to exist.
-      const validAccountTypes = new Set<string>(accountType.enumValues);
+      // Validated against the real drawdown-wrapper enum, not just "is a string" — an
+      // unchecked cast to AccountTypeValue[] would let a payload like ["not_a_type"]
+      // through as if it were trusted, typed data, contradicting this module's whole
+      // reason to exist. Narrowed to `DrawdownAccountType` (excludes `debt`/`property`),
+      // not the full 8-value `AccountTypeValue` enum: Milestone 2's Fable review flagged
+      // that a wider type here would let a mortgage or a house valuation be walked into
+      // a simulated drawdown total, and Milestone 3 is the milestone that had to close
+      // it — see `engineTypes.ts`'s `DRAWDOWN_ACCOUNT_TYPES` doc comment.
+      const validAccountTypes = new Set<string>(DRAWDOWN_ACCOUNT_TYPES);
       const wrapperWithdrawalOrderRaw = raw.wrapperWithdrawalOrder;
       if (
         !Array.isArray(wrapperWithdrawalOrderRaw) ||
@@ -221,7 +226,7 @@ export function parseScenarioAssumptions(raw: unknown): ScenarioAssumptionsV1 {
         !wrapperWithdrawalOrderRaw.every((w) => typeof w === 'string' && validAccountTypes.has(w))
       ) {
         throw new ScenarioAssumptionsParseError(
-          `wrapperWithdrawalOrder must be a non-empty array of account types (one of ${[...validAccountTypes].join(', ')})`,
+          `wrapperWithdrawalOrder must be a non-empty array of drawdown account types (one of ${[...validAccountTypes].join(', ')})`,
         );
       }
 
@@ -236,7 +241,7 @@ export function parseScenarioAssumptions(raw: unknown): ScenarioAssumptionsV1 {
           min: 0,
           max: 100,
         }),
-        wrapperWithdrawalOrder: wrapperWithdrawalOrderRaw as AccountTypeValue[],
+        wrapperWithdrawalOrder: wrapperWithdrawalOrderRaw as DrawdownAccountType[],
         people,
       };
     }

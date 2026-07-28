@@ -1,9 +1,11 @@
 # Project Status
 
-Last updated: 2026-07-27 (Phase 2 implemented, browser-verified, independently
-code-reviewed, and deployed to the household's real stack; three post-deployment
-additions since — holdings editing, holdings totals, and balance-history editing — see
-the "Since Phase 2 deployment" sections below)
+Last updated: 2026-07-28 (Phase 3, Milestone 3 — deterministic zero-volatility
+decumulation core — implemented, tested, and Fable-reviewed; see below. Phase 2 was
+implemented, browser-verified, independently code-reviewed, and deployed to the
+household's real stack 2026-07-27; three post-deployment additions since — holdings
+editing, holdings totals, and balance-history editing — see the "Since Phase 2
+deployment" sections below)
 
 ## Done
 
@@ -16,6 +18,7 @@ the "Since Phase 2 deployment" sections below)
 - **Phase 1 code review** (two independent passes — see below) — fixes applied and merged.
 - **Phase 2 implementation** — portfolio tracking and live market-data pricing (Alpha Vantage). Details below. Deployed to the household's real stack via `./deploy.sh` 2026-07-27 — live now, not just merged.
 - **Phase 2 code review** (two independent passes, run in parallel, no access to each other's findings or to this document's own Phase 2 claims — see below) — one genuine high-severity bug (an uncaught exception could crash the page) and two medium ones fixed; test count now 409 (up from 358 at the end of Phase 1), all passing against a real Postgres, plus the full Playwright E2E suite (9/9) and a full browser walkthrough of both the priced and unpriced paths including a real Alpha Vantage call.
+- **Phase 3, Milestones 1/2/3/4** — retirement Monte Carlo engine foundation: `retirement_scenario`/`simulation_run` schema, seeded RNG and shared engine types, the deterministic zero-volatility decumulation core, and a real UK historical return dataset (JST Macrohistory Database). Each independently Fable-reviewed. Details below; M5 (the randomized bootstrap engine) is next.
 
 ## Phase 2 — what shipped
 
@@ -521,13 +524,124 @@ what the data could legally be used for. Fixed with an explicit exception clause
 prep work for Milestone 5's bootstrap sampler, confirmed via grep that nothing else in
 the app references it.
 
+## Phase 3, Milestone 3: deterministic zero-volatility decumulation core
+
+The first real engine logic — everything before this milestone was schema, types, RNG,
+or reference data. `src/lib/retirement/engine/deterministicCore.ts`'s `simulatePath`
+takes one real annual return rate per simulated year (not a single baked-in constant),
+specifically so Milestone 5's bootstrap engine can be built as "this core plus sampled
+returns" and reuse the same year-by-year mechanics, cross-checked against it — M3's own
+`runDeterministicPath` is a thin wrapper repeating one fixed rate.
+
+Per year: investment growth applied to every wrapper's start-of-year balance; any PCLS
+event(s) due that year move 25% of the (post-growth) `sipp_pension` balance into `cash`,
+tax-free, not validated against the £268,275 Lump Sum Allowance (the plan's own named
+P1-of-Phase-3 simplification); State Pension income for anyone who's claimed offsets
+spending directly; the remaining shortfall is drawn from wrappers strictly in
+`wrapperWithdrawalOrder`, literally, stopping once met. All arithmetic in bigint pence.
+
+**Fixed the gap Milestone 2's own review flagged and left for M3**: `wrapperWithdrawalOrder`,
+`startingBalancesPence`, and `YearState.balancesByWrapperPence` were typed against the
+full 8-value `AccountTypeValue` enum, which included `debt`/`property` — nothing stopped
+a mortgage or a house valuation from being walked into a simulated drawdown total. Now a
+new `DrawdownAccountType` (`engineTypes.ts`'s `DRAWDOWN_ACCOUNT_TYPES`, derived from the
+real enum minus those two, not hand-copied), threaded through `ResolvedScenario`,
+`YearState`, and `scenarioAssumptions.ts`'s `wrapperWithdrawalOrder` parser — with a new
+regression test proving both `debt` and `property` are now rejected.
+
+### Judgment calls worth knowing about
+
+- **`cash` is tax-free on withdrawal, not just the ISA types the milestone plan's own
+  shorthand ("ISA/PCLS excluded") named.** A flat "effective tax rate" is meant to stand
+  in for tax on investment income/gains; taxing a `cash` withdrawal under that umbrella
+  would be a real UK-tax error (cash is already-taxed money — its *withdrawal* triggers
+  nothing further), not a simplification. So the tax-free set is
+  `cash`/`cash_isa`/`ss_isa`/`lisa`; only `gia` and the non-PCLS portion of
+  `sipp_pension` are taxable. Independently confirmed correct by Fable review.
+- **A 100%-or-higher effective tax rate on a taxable wrapper is guarded, not left to
+  divide by zero.** The parser's own bounds allow `flatEffectiveTaxRatePct` up to
+  100.000; at exactly 100%, no gross withdrawal from `gia`/`sipp_pension` can ever net a
+  positive amount, so that wrapper is skipped for the rest of the shortfall-drawing loop
+  rather than crashing. Covered by a dedicated test.
+- **`YearState.depleted` is defined by unmet spending, not by a wrapper balance reading
+  zero** — a refinement of Milestone 2's own original doc comment ("the balance is
+  exhausted"), written before the algorithm that actually produces the flag existed. A
+  household with £0 starting balance and £0 spending has nothing to deplete and is not a
+  failed path; the sticky "once depleted, always depleted" latch is keyed to "drawdown
+  demand could not be fully met" instead. Both the zero/zero case and the sticky latch
+  have dedicated tests.
+- **PCLS proceeds are moved into the `cash` wrapper, not spent speculatively.** An
+  earlier design that let unspent PCLS proceeds directly offset the year's spending
+  shortfall (rather than landing in a wrapper first) would have made any surplus vanish
+  from `totalBalancePence` instead of remaining on the balance sheet as cash — caught
+  and fixed before implementation, not by review.
+- **Genuine, plan-contradicting scope narrowing — flagged by Fable review, corrected in
+  the code's own doc comment and the plan file rather than left standing uncorrected.**
+  M3 does not model an accumulation/contribution phase at all: a simulated path always
+  begins already retired (`ResolvedPerson.currentAge`, new this milestone, is the age at
+  year 0 of *this* path, not necessarily today's real age), and `retirementAge` is
+  carried in the type but never read by the engine — a future "retire at 60 vs. 65"
+  comparison (Milestone 9) is meant to be built by resolving two separate
+  `ResolvedScenario`s that each start at a different `currentAge`, not one continuous
+  timeline. The first draft justified this by saying `ScenarioAssumptionsV1` has no
+  contribution-amount field, which is true but incomplete: Phase 1 already has live
+  contribution data (`person.annual_gross_income`, the `pension_contribution` table)
+  that a resolution layer could have surfaced — this session chose not to build that
+  wiring. **The Phase 3 milestone plan itself, not just PROPOSAL.md's general Testing
+  strategy, named "contributions past assumed retirement" as one of M3's own required
+  tests** — so this is a real deferral of an explicitly-owned deliverable. Judged
+  defensible (a full accumulation-phase model is substantial separate scope; PROPOSAL
+  §5 itself frames Phase 3 as "a pre-tax/pre-wrapper Monte Carlo") and now recorded in
+  both places rather than left only in a code comment a future session might not read.
+  `deterministicCore.test.ts` has a regression-lock test proving `retirementAge`
+  currently has zero effect — a scope-lock, explicitly not a substitute for the real
+  edge case. **Whoever next builds an accumulation phase (or Phase 4.5's
+  contribution-aware planning) owns this.**
+
+### Deliberately not built (and why)
+
+- **No DB resolution layer** (`ScenarioAssumptionsV1` + live `person`/`account`/
+  `balance_snapshot`/`holding` rows → a real `ResolvedScenario`). `engineTypes.ts`'s
+  original doc comment (Milestone 2) attributed "assembling a `ResolvedScenario`" to
+  "Milestone 3's job," but M3's own bullet list in the plan only ever specified the
+  engine and its tests, not this wiring — corrected in the plan file. M3 as implemented
+  is the pure computational core only, exercised entirely by hand-built fixtures in its
+  own test suite; no integration test against a real Postgres was needed or written.
+  Whoever picks up M8 (scenario CRUD) or wires M7's route handlers needs this resolution
+  function and doesn't yet have it.
+- **No default flat tax rate** — unchanged gap from the original plan text; still M9's
+  job to choose and document one (e.g. basic-rate 20%) as an editable starting
+  assumption, not a calibrated figure.
+- **No accumulation/contribution phase** — see the judgment call above.
+
+### Fable review
+
+Independent pass, no access to this session's own reasoning. Hand-recomputed (not just
+trusted) the closed-form 3%-return test and the tax gross-up test — both correct. Also
+independently confirmed: the `DRAWDOWN_ACCOUNT_TYPES` fix is derived correctly and
+tested; PCLS can't fire twice for a person; no wrapper balance can ever go negative
+(`grossWithdrawn = min(grossNeeded, available)` before every mutation); the sticky
+depletion latch never resets; fixed-point rounding is round-half-away-from-zero,
+applied consistently. One real finding — the accumulation-phase scope narrowing above —
+fixed by correcting the doc comment and the plan file rather than by writing new code.
+Two minor gaps noted, not fixed: no test exercises State Pension income exceeding
+spending (only the exact-equal case is tested — the surplus-vanishes behaviour is
+documented but unexercised); and if a household's real PCLS predates a simulated path's
+`currentAge`, correctness depends on the not-yet-built resolution layer setting
+`pclsAge: null` for an already-taken PCLS, which is out of this file's scope to enforce.
+
+29 new tests (19 in `deterministicCore.test.ts`, plus regression tests in
+`engineTypes.test.ts` and `scenarioAssumptions.test.ts`), full suite 405 passed / 91
+skipped (skipped tests need `TEST_DATABASE_URL`, unchanged from before this milestone —
+496 total, up from 474). Typecheck and lint both clean.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
 2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner. Phase 2 adds `e2e/portfolio.spec.ts` to the same not-yet-in-CI backlog.
 3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done, deployed, and independently code-reviewed — see "Phase 2 — what shipped" and "Phase 2 code review" above.
 4. **Holdings-to-balance sync** — requested by the household after using Phase 2 live: adding/updating a holding never touches the account's own balance, so an account's stored balance and its holdings' live value can silently drift apart (see "Deliberately not built" above for the full note and the design question it raises — this isn't a one-line fix). Worth scoping and building before or alongside Phase 3, since it's a real gap in what's already shipped, not a new phase's feature.
-5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named.
+5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1, 2, 3, and 4 done (schema, RNG/shared types, deterministic core, UK return dataset) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **M5 (the randomized bootstrap engine) is next** — it's now unblocked (needs M2+M3+M4, all done) and is the longest remaining pole to M7→M9. M6 (worker-thread deploy spike) and M8 (scenario CRUD) remain available to run in parallel with M5 if a session wants a narrower, lower-risk task instead.
 6. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
 ## Notes for Phase 3

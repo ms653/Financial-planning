@@ -15,7 +15,7 @@
  */
 
 import { parseScaledDecimal, roundDiv } from '@/lib/portfolio/valuation';
-import type { AccountTypeValue } from '@/lib/db/schema';
+import { accountType, type AccountTypeValue } from '@/lib/db/schema';
 
 /** Scale for rate-shaped values — a *fraction*, not a percent: "2.5%" is represented as
  * the fraction 0.025, scaled by `10^RATE_SCALE`. Six digits of fractional precision is
@@ -32,12 +32,50 @@ export function percentStringToScaledFraction(percent: string): bigint {
   return roundDiv(percentScaled, 100n);
 }
 
+/**
+ * The account types a drawdown simulation can actually hold a balance in and walk a
+ * withdrawal order through — every `AccountTypeValue` except `debt` and `property`,
+ * neither of which is a liquid decumulation wrapper. Resolves the gap Milestone 2's
+ * Fable review flagged and left for Milestone 3 to fix: `wrapperWithdrawalOrder`,
+ * `startingBalancesPence` and `YearState.balancesByWrapperPence` all typed their wrapper
+ * key as the full 8-value `AccountTypeValue` enum, which meant nothing stopped the engine
+ * from accidentally aggregating a mortgage balance or a house valuation into a simulated
+ * portfolio total. Derived from the real enum (`accountType.enumValues`), not
+ * hand-copied, so a future ninth account type can't silently need a second edit here.
+ */
+export const DRAWDOWN_ACCOUNT_TYPES = accountType.enumValues.filter(
+  (value): value is Exclude<AccountTypeValue, 'debt' | 'property'> =>
+    value !== 'debt' && value !== 'property',
+);
+
+export type DrawdownAccountType = (typeof DRAWDOWN_ACCOUNT_TYPES)[number];
+
 /** One person's assumptions, fully resolved — overrides from `ScenarioAssumptionsV1`
  * already applied where present, falling back to `taxYearConfig`'s current-tax-year
  * defaults where not, so the engine never has to know the difference between "the
  * household typed a State Pension age" and "we derived one from date of birth". */
 export interface ResolvedPerson {
   personId: number;
+  /**
+   * This person's age at year 0 of the simulated path — not necessarily today's real
+   * age. A "retire at 60 vs. 65" comparison (Milestone 9's narrow scenario-comparison
+   * UI) is built by resolving *two* `ResolvedScenario`s that each start their path at a
+   * different `currentAge`, not by simulating one continuous timeline through an
+   * accumulation phase into decumulation — see `retirementAge`'s doc comment below for
+   * why `deterministicCore.ts` never reads `retirementAge` directly.
+   */
+  currentAge: number;
+  /**
+   * The age this person intends to stop earned income and start drawing down (per
+   * `ScenarioAssumptionsPersonV1`'s own doc comment) — carried through for whichever
+   * resolution/UI logic needs it (deciding `currentAge` for a given comparison run,
+   * displaying it back to the household) but **deliberately not consumed by
+   * `deterministicCore.ts`'s year-by-year mechanics**. Milestone 3 scopes Phase 3 to a
+   * pure decumulation model with no accumulation/contribution phase — `ScenarioAssumptionsV1`
+   * has no contribution-amount field to model one from, matching PROPOSAL.md §5's "P1
+   * ships a pre-tax/pre-wrapper Monte Carlo" framing. A simulated path always begins
+   * already retired; `currentAge` is what actually anchors the year-by-year clock.
+   */
   retirementAge: number;
   statePensionClaimAge: number;
   statePensionAnnualPence: bigint;
@@ -65,22 +103,29 @@ export interface ResolvedScenario {
   targetSuccessRate: bigint;
   flatEffectiveTaxRate: bigint;
   /** Applied literally, in order, with no optimisation — Milestone 3's documented
-   * simplification, not a half-implementation of Phase 8's wrapper-sequencing work. */
-  wrapperWithdrawalOrder: AccountTypeValue[];
+   * simplification, not a half-implementation of Phase 8's wrapper-sequencing work.
+   * Restricted to `DrawdownAccountType` (see above) — `debt`/`property` were never
+   * meaningful entries here. */
+  wrapperWithdrawalOrder: DrawdownAccountType[];
   people: ResolvedPerson[];
   /** Starting balance per wrapper type, aggregated live from `balance_snapshot`/
    * `holding` at run time — deliberately never stored in the scenario's own JSONB, per
    * Milestone 1's "derive, don't duplicate" design decision. */
-  startingBalancesPence: Partial<Record<AccountTypeValue, bigint>>;
+  startingBalancesPence: Partial<Record<DrawdownAccountType, bigint>>;
 }
 
 /** One simulated year, within one simulated path. */
 export interface YearState {
   yearIndex: number;
   totalBalancePence: bigint;
-  balancesByWrapperPence: Partial<Record<AccountTypeValue, bigint>>;
-  /** True from the first year the balance is exhausted onward — once a path is
-   * depleted it stays depleted; this is never reset to `false` in a later year. */
+  balancesByWrapperPence: Partial<Record<DrawdownAccountType, bigint>>;
+  /** True from the first year drawdown demand could not be fully met from available
+   * wrapper balances onward — once a path is depleted it stays depleted; this is never
+   * reset to `false` in a later year. Refines Milestone 2's original wording ("the
+   * balance is exhausted") now that Milestone 3 has written the algorithm that actually
+   * produces this flag: depletion is keyed to unmet spending demand, not to a wrapper
+   * balance merely reading zero — a household with £0 starting balance and £0 spending
+   * has nothing to deplete and is not a failed path. */
   depleted: boolean;
 }
 

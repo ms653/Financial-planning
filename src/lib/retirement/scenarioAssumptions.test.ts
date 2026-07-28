@@ -102,6 +102,18 @@ describe('parseScenarioAssumptions', () => {
     ).toThrow(ScenarioAssumptionsParseError);
   });
 
+  it('rejects debt and property in wrapperWithdrawalOrder — neither is a drawdown wrapper', () => {
+    // Regression test for the gap Milestone 2's Fable review flagged and Milestone 3
+    // closed: wrapperWithdrawalOrder used to accept any real AccountTypeValue, which
+    // meant a mortgage or a house valuation could be walked into a simulated drawdown.
+    expect(() =>
+      parseScenarioAssumptions({ ...validSinglePersonPayload(), wrapperWithdrawalOrder: ['ss_isa', 'debt'] }),
+    ).toThrow(ScenarioAssumptionsParseError);
+    expect(() =>
+      parseScenarioAssumptions({ ...validSinglePersonPayload(), wrapperWithdrawalOrder: ['ss_isa', 'property'] }),
+    ).toThrow(ScenarioAssumptionsParseError);
+  });
+
   it('rejects an out-of-range percent field, not just a badly-formatted one', () => {
     expect(() =>
       parseScenarioAssumptions({ ...validSinglePersonPayload(), equityAllocationPct: '150.000' }),
