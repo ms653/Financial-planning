@@ -491,7 +491,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
         `select enumlabel from pg_enum e join pg_type t on t.oid = e.enumtypid
           where t.typname = 'simulation_run_status' order by e.enumsortorder`,
       );
-      expect(rows.map((r) => r.enumlabel)).toEqual(['running', 'complete', 'failed']);
+      expect(rows.map((r) => r.enumlabel)).toEqual(['running', 'complete', 'failed', 'cancelled']);
     });
 
     it('indexes simulation_run on (retirement_scenario_id, created_at DESC)', async () => {

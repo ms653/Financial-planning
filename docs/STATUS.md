@@ -1,11 +1,12 @@
 # Project Status
 
-Last updated: 2026-07-29 (Phase 3, Milestone 5 — the randomized bootstrap Monte Carlo
-engine — implemented, tested, and Fable-reviewed; see below. Milestone 3 shipped the
-day before. Phase 2 was implemented, browser-verified, independently code-reviewed, and
-deployed to the household's real stack 2026-07-27; three post-deployment additions
-since — holdings editing, holdings totals, and balance-history editing — see the "Since
-Phase 2 deployment" sections below)
+Last updated: 2026-07-29 (Phase 3, Milestone 6 — the `worker_threads` deployment spike —
+implemented, tested, and verified end-to-end through a real `docker build` + run; see
+below. Milestone 5 shipped the same day, Milestone 3 the day before. Phase 2 was
+implemented, browser-verified, independently code-reviewed, and deployed to the
+household's real stack 2026-07-27; three post-deployment additions since — holdings
+editing, holdings totals, and balance-history editing — see the "Since Phase 2
+deployment" sections below)
 
 ## Done
 
@@ -18,7 +19,8 @@ Phase 2 deployment" sections below)
 - **Phase 1 code review** (two independent passes — see below) — fixes applied and merged.
 - **Phase 2 implementation** — portfolio tracking and live market-data pricing (Alpha Vantage). Details below. Deployed to the household's real stack via `./deploy.sh` 2026-07-27 — live now, not just merged.
 - **Phase 2 code review** (two independent passes, run in parallel, no access to each other's findings or to this document's own Phase 2 claims — see below) — one genuine high-severity bug (an uncaught exception could crash the page) and two medium ones fixed; test count now 409 (up from 358 at the end of Phase 1), all passing against a real Postgres, plus the full Playwright E2E suite (9/9) and a full browser walkthrough of both the priced and unpriced paths including a real Alpha Vantage call.
-- **Phase 3, Milestones 1–5** — the retirement Monte Carlo engine is functionally complete: `retirement_scenario`/`simulation_run` schema, seeded RNG and shared engine types, the deterministic zero-volatility decumulation core, a real UK historical return dataset (JST Macrohistory Database), and the randomized block-bootstrap sampler that runs the core thousands of times over sampled real returns to produce a success rate and percentile fan-chart bands. Each independently Fable-reviewed. Details below; still needed before a household can actually use it: the DB resolution layer, the worker-thread deploy spike (M6), route handlers (M7), scenario CRUD (M8), and the UI (M9).
+- **Phase 3, Milestones 1–5** — the retirement Monte Carlo engine is functionally complete: `retirement_scenario`/`simulation_run` schema, seeded RNG and shared engine types, the deterministic zero-volatility decumulation core, a real UK historical return dataset (JST Macrohistory Database), and the randomized block-bootstrap sampler that runs the core thousands of times over sampled real returns to produce a success rate and percentile fan-chart bands. Each independently Fable-reviewed.
+- **Phase 3, Milestone 6** — the `worker_threads` deployment spike: proves the compute-persist-poll pattern's worker survives the Docker `output: 'standalone'` build and that both normal completion and forced cancellation update `simulation_run` correctly, verified with a real `docker build` + run, not just an integration test. Details below; still needed before a household can actually use any of this: the DB resolution layer, route handlers (M7, now unblocked), scenario CRUD (M8), and the UI (M9).
 
 ## Phase 2 — what shipped
 
@@ -738,13 +740,226 @@ is `ScenarioAssumptionsV1.equityAllocationPct` in `scenarioAssumptions.ts` — c
 18 new tests in `bootstrapEngine.test.ts`, full suite 423 passed / 91 skipped (514
 total, up from 496). Typecheck and lint both clean.
 
+## Phase 3, Milestone 6: `worker_threads` deployment spike
+
+Blocking verification task #2 from the milestone plan — "`worker_threads` survives the
+Docker standalone build" — resolved by actually building and running the real image,
+not assumed. The plan named two fallback options for getting a worker entry file into
+`.next/standalone` (let Next's tracer discover it, or hand-copy a `workers/` directory
+via an explicit Dockerfile `COPY`); this session found a third option that needs neither:
+Next has no documented/supported bundling story for a `node:worker_threads` entry point,
+so betting on its tracer wasn't worth the risk, but a hand-copied directory turned out
+unnecessary too.
+
+- **`src/workers/build.ts`** bundles `src/workers/simulationWorker.ts` with `esbuild`
+  (new devDependency) into a single self-contained CommonJS file, `pg` and
+  `@node-rs/argon2` marked external — the same two packages and the same reasoning as
+  `next.config.mjs`'s own `serverComponentsExternalPackages` (prebuilt native binaries a
+  bundler can't and shouldn't inline). `scripts/build-worker.ts` (new `npm run
+  build:worker` script, chained after `next build` in `npm run build`) writes that
+  bundle straight to `.next/standalone/workers/simulationWorker.js`. Because the
+  Dockerfile's `runner` stage already does `COPY --from=builder .../.next/standalone
+  ./`, the worker file rides along for free — **zero Dockerfile or `next.config.mjs`
+  changes needed.** Confirmed by a real `docker build`: the build log shows `Built
+  /app/.next/standalone/workers/simulationWorker.js` during the `builder` stage, and the
+  file (with `node_modules/pg` sitting right alongside it, already traced in for the
+  main app) is present at `/app/workers/simulationWorker.js` in the resulting `runner`
+  image, unmodified from what shipped it.
+- **`src/workers/simulationWorker.ts`** — not a literal no-op stub: it runs the real
+  `runSimulation` (M5) against a small hand-built fixture `ResolvedScenario`, proving the
+  bundle can load and execute real app code (bigint arithmetic, `taxYearConfig.ts`'s
+  State Pension figure, Drizzle writes) through esbuild, not just that a thread can
+  start. Reads `workerData: { simulationRunId }`, writes `status: 'complete'` +
+  `result` or `status: 'failed'` + `errorDetail` back to its `simulation_run` row.
+- **`src/lib/retirement/simulationResultCodec.ts`** — a real gap found while building
+  this, not anticipated by the milestone plan: `simulation_run.result` is `jsonb`, and
+  `SimulationResult` carries `bigint` pence (`percentileBandsPence`) — `JSON.stringify`
+  throws on a raw `bigint`, so nothing could actually persist a result until something
+  converted to/from a JSON-safe shape. Nothing needed this before M6 (M1's `assumptions`
+  JSONB has no bigints). `serializeSimulationResult`/`deserializeSimulationResult`, kept
+  narrow and hand-validated like `scenarioAssumptions.ts`, not a generic bigint-aware
+  JSON replacer.
+- **`src/lib/db/schema.ts`**: `'cancelled'` added to `simulationRunStatus` (was
+  `running|complete|failed`) — migration `drizzle/0005_public_raider.sql`, the first
+  enum-*append* migration in this repo (every prior enum migration created one fresh).
+  `ALTER TYPE ... ADD VALUE 'cancelled'` applied cleanly both against the scratch
+  Postgres the integration test suite uses and inside the real Docker spike's `migrate`
+  container — genuinely verified, not just generated and assumed to work.
+- **`src/lib/retirement/workerHarness.ts`** — `spawnSimulationWorker`/
+  `cancelSimulationRun`, the real infrastructure M7's route handlers will call directly,
+  built now rather than as throwaway test scaffolding.
+
+### Judgment calls worth knowing about
+
+- **Cancellation is decided in the database by the caller, never by the worker's own
+  cleanup.** `worker.terminate()` stops a thread "as soon as possible" with no
+  guaranteed graceful `finally`, so a worker can't reliably report its own cancellation
+  once asked to stop. `cancelSimulationRun` writes `status = 'cancelled'` itself
+  (guarded by `WHERE status = 'running'`) *before* calling `terminate()`. The worker's
+  own completion/failure writes use the identical guard, so whichever write actually
+  lands first — the cancel, or the worker finishing a moment before it's told to stop —
+  wins cleanly: the loser's `UPDATE` matches zero rows instead of overwriting a terminal
+  status. Same CAS-guard pattern this codebase already uses elsewhere (`createHousehold`'s
+  singleton index, `updateBalanceSnapshot`'s collision guard).
+- **A worker-internal timeout is cooperative, not preemptive — documented as a real
+  limitation rather than overclaimed.** A `setTimeout` on the worker's own event loop
+  cannot interrupt a genuinely long-running *synchronous* loop, since the timer callback
+  can't fire until that loop yields. `runSimulation` is an unchunked synchronous loop
+  today, so `simulationWorker.ts`'s own `runWithTimeout` only actually cuts a
+  computation short if given the chance to check — real insurance for the fixture's fast
+  computation, not a guarantee for a hypothetical pathological one. The genuine hard
+  stop for a truly runaway computation is the *parent's* `worker.terminate()`, which
+  this milestone separately proves works. Both mechanisms are real and tested; neither
+  is a substitute for the other.
+- **A Node worker's own `process.env` inheritance made the multi-connection-pool problem
+  disappear rather than needing to be solved.** `getDb()`/`getPool()`
+  (`src/lib/db/client.ts`) cache a `Pool` on `globalThis` — a worker thread gets its own
+  `globalThis`, so calling `getDb()` inside the worker transparently constructs its own
+  separate connection, with `DATABASE_URL` inherited from the parent process at `Worker`
+  construction time. No code change was needed for this to work correctly.
+- **A real bug found while building the integration test, not by inspection**: without
+  explicitly closing the worker's own `pg` `Pool` before `main()` returns, the worker
+  thread never fired its `exit` event — an idle-but-open connection pool (`pg`'s
+  `idleTimeoutMillis: 30_000`) kept the thread's event loop alive for up to 30 seconds
+  after the actual work was done. Fixed with a `finally { await getPool().end(); }`
+  around the whole of `main()`, on both the success and failure paths.
+- **The exit code a terminated worker reports turned out not to be a reliable "was it
+  genuinely mid-run" signal on its own — verified empirically, and the test design
+  changed as a result.** An early version of the termination test called
+  `cancelSimulationRun` immediately after `new Worker(...)`, racing the bundle's own
+  load/evaluation time (drizzle-orm, `pg`, the embedded 150-year JST dataset are not
+  free to parse) — sometimes terminating the thread before it had genuinely begun
+  running `main()`, which is not what "prove the worker can be terminated mid-run" is
+  supposed to demonstrate. Fixed by having the worker `postMessage({ type: 'started' })`
+  as the first thing `main()` does, and having the test wait for that message before
+  cancelling — a real synchronization point instead of a timing guess. With that fix,
+  Node reliably reports exit code `1` for a `terminate()`'d worker versus `0` for a
+  normal completion, confirmed both in the vitest integration test and independently
+  inside the real Docker container during the spike below — but the test itself asserts
+  on the row's final state (`cancelled`, and never later overwritten to `complete`)
+  rather than pinning the exact numeric exit code, since that row state is what M7/M9
+  actually depend on and the exit code is an implementation detail undocumented by Node.
+
+### Real Docker verification
+
+Docker is genuinely usable in this session's environment (`docker info` succeeds) —
+unlike every prior phase, which had to record "not verified — no real Docker access" as
+an open gap. **The household's real stack was live throughout** (`financial-planning-app-1`/
+`financial-planning-db-1`, healthy, bound to the standard `127.0.0.1:3000`/`:5432`), so
+verification ran as a fully separate Compose project (`fp-m6-spike`, its own compose
+file rather than an override of the real one, its own scratch `.env`, remapped host
+ports `13000`/`15432`, its own disposable named volume) — never touching the real
+`.env`, `docker-compose.yml`'s actual services, or the running containers at any point.
+Confirmed via `docker ps` before and after that only `financial-planning-app-1`/
+`financial-planning-db-1` remained running, and the spike's images, containers, network,
+and volume were all removed afterward.
+
+Sequence, all against the real Dockerfile/build context: `docker compose build` (the
+real multi-stage build — `deps` → `builder` running `npm run build` → `runner`) →
+`docker compose run --rm migrate` (confirmed the `cancelled` enum migration applies
+cleanly from empty) → `docker compose up -d db app`, waited for the real `/api/health`
+healthcheck to report healthy (real containerized Postgres connectivity, not mocked) →
+`docker exec`'d into the running `app` container and confirmed
+`/app/workers/simulationWorker.js` and `/app/node_modules/pg` both present → ran two
+one-off Node scripts inside that same container, against that same containerized
+Postgres, seeding a real `simulation_run` row and exercising both required paths:
+
+1. **Completion**: spawned the real worker against the real row — `running` → `complete`
+   with a non-null `result`, exit code `0`.
+2. **Termination**: spawned the real worker, waited for its `started` message, called
+   the same cancel-then-terminate sequence `cancelSimulationRun` uses — row ended
+   `cancelled` with no `result`, confirmed still `cancelled` after waiting past the point
+   the fixture computation would otherwise have finished, exit code `1`.
+
+Both matched the vitest integration test's own results exactly — the real containerized
+environment behaves the same as the test environment, which is the actual thing this
+milestone exists to establish confidence in.
+
+### Deliberately not built (and why)
+
+- **The DB resolution layer is still not built** — unchanged from M3/M5's own notes.
+  `simulationWorker.ts` runs a hand-built fixture scenario, not one resolved from a real
+  `retirement_scenario` row plus live account data. Whoever wires M7's route handlers
+  needs this and doesn't yet have it.
+- **No accumulation/contribution phase, no default flat tax rate** — both unchanged,
+  inherited scope decisions from M3, not this milestone's concern.
+- **`workerHarness.ts` is not wired into any route handler yet** — that's M7, which is
+  now unblocked (`M1 + M5 + M6` are all done) but not started. `sameOriginGuard`
+  (`src/lib/auth/csrf.ts`) is still implemented, tested, and has zero call sites — M7's
+  route handlers remain the first that must call it.
+
+### Fable review
+
+Independent pass, no access to this session's own reasoning — same posture as every
+prior milestone review. Verified rather than just read: ran `npx tsc --noEmit` and
+`npm run lint` directly; ran a real `npm run build` from scratch and inspected
+`.next/standalone` itself, confirming `workers/simulationWorker.js` and
+`node_modules/pg` are both genuinely present and that Node's own module resolution
+(`require.resolve('pg', {paths: [...]})`) finds `pg` from the worker's directory; spun
+up its own scratch Postgres and ran `simulationWorker.integration.test.ts` for real
+rather than trusting the session's reported result; wrote and ran (then deleted) an
+extra scratch script exercising `cancelSimulationRun` against an *already-completed*
+run — a case this milestone's own shipped tests didn't cover — and confirmed the
+`WHERE status='running'` guard leaves the row untouched and `terminate()` on an
+already-exited worker doesn't throw.
+
+**Confirmed correct, worth recording so it isn't re-litigated**: the cancellation race
+is genuinely closed in every interleaving (worker-finishes-first and cancel-first both
+verified empirically, not just reasoned through) because Postgres serializes the two
+single-statement `UPDATE`s via ordinary row-level locking; `finally { await
+getPool().end(); }` cannot drop a pending write, since both the success and failure
+branches already `await` their `UPDATE` before reaching it; the esbuild-into-
+`.next/standalone` bundling is sound as actually built, not just as designed; build
+ordering can't ship one of {worker bundle, `.next/standalone`} without the other, since
+`build:worker` runs inside the same Docker `builder` stage before the `runner` stage's
+copy; the `'cancelled'` enum migration applies cleanly from empty and nothing downstream
+still assumes the old 3-value enum.
+
+**One real finding, more serious than this session's own original write-up admitted,
+and fixed**: `runWithTimeout` (as first written) raced a `Promise.race` between the
+synchronous `run()` call and a `setTimeout`, described here as "cooperative... cuts a
+computation short if given the chance to check." Fable review proved that description
+was too generous — it wasn't weak protection, it was **dead code that could never fire
+under any circumstances**, verified empirically with an isolated repro: `run` is
+scheduled as a microtask via `Promise.resolve().then(run)`, and Node/V8 always fully
+drains the microtask queue before the event loop ever reaches the timer phase, so for a
+synchronous `run` (which `runSimulation` is), the timeout branch of that race could not
+win regardless of `timeoutMs` or how long `run()` actually took. **Fixed** by replacing
+it with `runWithBudgetCheck`, which runs the computation, checks elapsed wall-clock time
+*afterward*, and reports a `failed` status (with a `WorkerTimeoutError` naming the
+overrun) if the budget was exceeded — an honest "detect after the fact," not a
+preemptive stop, since nothing running on the same thread can preempt a synchronous
+loop. The real (and only) mid-run stop remains the parent's `worker.terminate()`,
+already proven separately. A new test (`reports a run that overruns its budget as
+failed, not complete`, using `timeoutMs: 0` to force a deterministic overrun) exercises
+this and, not incidentally, is also the first test to exercise the worker's `failed`-
+status write path at all — the second finding below.
+
+**Two smaller findings, both fixed**: `deserializeSimulationResult`'s final `BigInt(entry)`
+call was unguarded — every other validation step in that function threw a
+`SimulationResultCodecError`, but a string that isn't a valid bigint literal (e.g.
+`"not-a-bigint"`) threw a raw `SyntaxError` instead, breaking a caller that catches the
+module's own error type specifically. Fixed by wrapping the conversion in a try/catch;
+new regression test in `simulationResultCodec.test.ts` (also new — this module previously
+had no dedicated unit test file, only indirect coverage through the integration test's
+round-trip assertions). Separately, the worker's `catch` branch (`status: 'failed'` +
+`errorDetail` write) had no test at all before this review — both shipped tests only
+ever exercised the success and cancellation paths — closed by the same new budget-
+overrun test above.
+
+6 new tests total from this review pass (1 in `simulationWorker.integration.test.ts`, 5
+in the new `simulationResultCodec.test.ts`), on top of the 2 tests M6 shipped with. Full
+suite 428 passed / 94 skipped without a scratch Postgres (522 total, up from 514 before
+M6, 516 after M6's own initial tests), all 522 passing against a real `TEST_DATABASE_URL`.
+Typecheck and lint both clean.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
 2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner. Phase 2 adds `e2e/portfolio.spec.ts` to the same not-yet-in-CI backlog.
 3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done, deployed, and independently code-reviewed — see "Phase 2 — what shipped" and "Phase 2 code review" above.
 4. **Holdings-to-balance sync** — requested by the household after using Phase 2 live: adding/updating a holding never touches the account's own balance, so an account's stored balance and its holdings' live value can silently drift apart (see "Deliberately not built" above for the full note and the design question it raises — this isn't a one-line fix). Worth scoping and building before or alongside Phase 3, since it's a real gap in what's already shipped, not a new phase's feature.
-5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1–5 done (schema, RNG/shared types, deterministic core, UK return dataset, and now the randomized bootstrap engine itself) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **The engine is functionally complete; M6 (worker-thread deploy spike) is next** — M7's route handlers depend on M1+M5(done)+M6, so M6 is now the only thing blocking M7. M8 (scenario CRUD) remains available to run in parallel with M6 if a session wants a narrower, lower-risk task instead. Also still needed before any of this is reachable by a household: the DB resolution layer (`ScenarioAssumptionsV1` + live account data → `ResolvedScenario`) that M3's own section flagged as not yet built by any milestone.
+5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1–6 done (schema, RNG/shared types, deterministic core, UK return dataset, the randomized bootstrap engine, and now the worker-thread deployment spike, verified end-to-end through a real `docker build` + run) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **M7 (compute-persist-poll route handlers) is next and now fully unblocked** — it depended on M1+M5+M6, all done. M8 (scenario CRUD) remains available to run in parallel with M7 if a session wants a narrower, lower-risk task instead — it only ever needed M1. Also still needed before any of this is reachable by a household: the DB resolution layer (`ScenarioAssumptionsV1` + live account data → `ResolvedScenario`) that M3's own section flagged as not yet built by any milestone — M7's route handlers need it too, and don't yet have it.
 6. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
 ## Notes for Phase 3

@@ -36,6 +36,13 @@
       "when": 1785190176905,
       "tag": "0004_retirement_scenario",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785285158986,
+      "tag": "0005_public_raider",
+      "breakpoints": true
     }
   ]
 }

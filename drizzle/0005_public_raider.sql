@@ -1,0 +1,1 @@
+ALTER TYPE "public"."simulation_run_status" ADD VALUE 'cancelled';

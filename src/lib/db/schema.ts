@@ -645,10 +645,19 @@ export const retirementScenarios = pgTable(
   }),
 );
 
+/**
+ * `cancelled` (M6) is set only by the caller that requested cancellation, never by the
+ * worker terminating itself — `worker.terminate()` gives no reliable graceful cleanup,
+ * so `workerHarness.ts`'s `cancelSimulationRun` writes this status itself, guarded by
+ * `WHERE status = 'running'`, before calling `terminate()`. The worker's own
+ * completion/failure writes use the same guard, so whichever write lands first wins and
+ * the loser matches zero rows instead of overwriting a terminal status.
+ */
 export const simulationRunStatus = pgEnum('simulation_run_status', [
   'running',
   'complete',
   'failed',
+  'cancelled',
 ]);
 
 /**
