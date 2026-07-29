@@ -1,11 +1,11 @@
 # Project Status
 
-Last updated: 2026-07-28 (Phase 3, Milestone 3 — deterministic zero-volatility
-decumulation core — implemented, tested, and Fable-reviewed; see below. Phase 2 was
-implemented, browser-verified, independently code-reviewed, and deployed to the
-household's real stack 2026-07-27; three post-deployment additions since — holdings
-editing, holdings totals, and balance-history editing — see the "Since Phase 2
-deployment" sections below)
+Last updated: 2026-07-29 (Phase 3, Milestone 5 — the randomized bootstrap Monte Carlo
+engine — implemented, tested, and Fable-reviewed; see below. Milestone 3 shipped the
+day before. Phase 2 was implemented, browser-verified, independently code-reviewed, and
+deployed to the household's real stack 2026-07-27; three post-deployment additions
+since — holdings editing, holdings totals, and balance-history editing — see the "Since
+Phase 2 deployment" sections below)
 
 ## Done
 
@@ -18,7 +18,7 @@ deployment" sections below)
 - **Phase 1 code review** (two independent passes — see below) — fixes applied and merged.
 - **Phase 2 implementation** — portfolio tracking and live market-data pricing (Alpha Vantage). Details below. Deployed to the household's real stack via `./deploy.sh` 2026-07-27 — live now, not just merged.
 - **Phase 2 code review** (two independent passes, run in parallel, no access to each other's findings or to this document's own Phase 2 claims — see below) — one genuine high-severity bug (an uncaught exception could crash the page) and two medium ones fixed; test count now 409 (up from 358 at the end of Phase 1), all passing against a real Postgres, plus the full Playwright E2E suite (9/9) and a full browser walkthrough of both the priced and unpriced paths including a real Alpha Vantage call.
-- **Phase 3, Milestones 1/2/3/4** — retirement Monte Carlo engine foundation: `retirement_scenario`/`simulation_run` schema, seeded RNG and shared engine types, the deterministic zero-volatility decumulation core, and a real UK historical return dataset (JST Macrohistory Database). Each independently Fable-reviewed. Details below; M5 (the randomized bootstrap engine) is next.
+- **Phase 3, Milestones 1–5** — the retirement Monte Carlo engine is functionally complete: `retirement_scenario`/`simulation_run` schema, seeded RNG and shared engine types, the deterministic zero-volatility decumulation core, a real UK historical return dataset (JST Macrohistory Database), and the randomized block-bootstrap sampler that runs the core thousands of times over sampled real returns to produce a success rate and percentile fan-chart bands. Each independently Fable-reviewed. Details below; still needed before a household can actually use it: the DB resolution layer, the worker-thread deploy spike (M6), route handlers (M7), scenario CRUD (M8), and the UI (M9).
 
 ## Phase 2 — what shipped
 
@@ -635,13 +635,116 @@ documented but unexercised); and if a household's real PCLS predates a simulated
 skipped (skipped tests need `TEST_DATABASE_URL`, unchanged from before this milestone —
 496 total, up from 474). Typecheck and lint both clean.
 
+## Phase 3, Milestone 5: the randomized bootstrap engine
+
+The actual Monte Carlo engine — `src/lib/retirement/engine/bootstrapEngine.ts`'s
+`runSimulation(scenario, {iterations, seed})` runs Milestone 3's `simulatePath` many
+times over, each iteration's per-year real returns sampled from Milestone 4's 150-year
+UK dataset via Milestone 2's seeded RNG, aggregated into a success rate and p10/p50/p90
+percentile balance bands (the fan chart's data, once Milestone 9 builds it). `fast-check`
+added as a new devDependency for the property-based tests below.
+
+**Historical block bootstrap** (`DEFAULT_BLOCK_LENGTH_YEARS = 10`), not i.i.d. annual
+resampling or a parametric distribution — matches "matching ProjectionLab's approach"
+(PROPOSAL.md §2) without a second research task to fit and defend a distribution shape.
+What block bootstrap adds over i.i.d. is preserved *serial correlation* (mean
+reversion/volatility clustering), a different claim from sequence-of-returns risk (which
+exists under i.i.d. too, since path order still varies either way) — recorded as a
+one-paragraph doc comment in the file itself, on the corrected basis the milestone plan
+itself specifies. Each sampled year is blended `equityAllocationRate * equity + (1 −
+equityAllocationRate) * gilt` — gilts, not M4's separate bill-rate series, stand in for
+the "bonds/cash" side, the conventional defensive-asset proxy in retirement modelling.
+
+### Judgment calls worth knowing about
+
+- **Every iteration draws a fixed 130 years of blocks (`MAX_SIMULATION_YEARS`, the
+  absolute ceiling given `scenarioAssumptions.ts`'s own 0–130 age bound), regardless of
+  the scenario's actual, usually much shorter, horizon** — `simulatePath` only ever
+  reads the years it needs and ignores the rest. This is not wasted work but a
+  deliberate design choice: it makes RNG draw *consumption* per iteration
+  scenario-independent, so two `runSimulation` calls sharing a seed and differing only
+  in starting balance, spending, or horizon produce byte-identical underlying return
+  sequences. That shared-prefix property turns the monotonic-success-rate property
+  tests below into exact, deterministic guarantees rather than statistical tendencies
+  that could occasionally fail — the one piece of reasoning in this milestone subtle
+  enough to plausibly be wrong, so it was the primary focus of the Fable review (see
+  below), which independently traced the mechanism and confirmed it holds, including
+  checking specifically that `equityAllocationRate` (which does vary draw *content*)
+  cannot affect draw *count*.
+- **Multiplicative compounding is already geometric-mean by construction** — Milestone
+  3's `simulatePath` applies each year's growth as `balance × (1 + rate)` per
+  individually-sampled path, never a pre-averaged flat rate, so PROPOSAL.md §2's named
+  "classic and easy-to-miss bug" (using an arithmetic mean and silently inflating
+  success rates) has no code path to occur through. A standing regression test proves
+  the magnitude of what it guards against anyway: a hand-picked +20%/−20%/+20%/−20%
+  sequence (arithmetic mean exactly 0%) compounds to a real ~7.84% loss (`0.9216×`)
+  versus an unchanged balance under flat 0% compounding — hand-verified exact by both
+  this session and the Fable review independently, so it can't silently regress later,
+  including into any future UI "average return" summary stat.
+- **`MAX_ITERATIONS = 10_000`**, matching ProjectionLab's own cited "best-in-class Monte
+  Carlo (10,000 runs)" (PROPOSAL.md §1's competitor research) — not an arbitrary round
+  number, and enforced as a hard server-side cap regardless of what a caller requests.
+- **Convergence check calibrated against real measured numbers, not guessed** —
+  matching M4's own "verify, don't assume" discipline. At a scenario tuned near 50%
+  success (the highest-variance regime — a scenario that almost always succeeds or
+  fails has near-zero variance regardless of iteration count), successRate range across
+  independent seeds measured 0.085 at N=200, 0.026 at N=1000, **0.0225 at N=2000**
+  (~45ms per `runSimulation` call, single-threaded), 0.0198 at N=5000, 0.0151 at
+  N=10000 (the cap). **N=2000 is the recommended production default** — variance
+  already within about ±1.1 percentage points of the true rate, comfortably sub-100ms
+  even single-threaded, with diminishing returns beyond it. These are the concrete
+  numbers Milestone 6/7's worker timeout and Milestone 9's poll interval should cite,
+  per the plan's own instruction.
+
+### Deliberately not built (and why)
+
+- **The DB resolution layer is still not built** — unchanged from Milestone 3's own
+  note. `runSimulation` takes an already-resolved `ResolvedScenario`; nothing in this
+  codebase yet turns a stored `retirement_scenario` row plus live account balances into
+  one. Whoever wires Milestone 7's route handlers needs this and doesn't yet have it.
+- **No accumulation/contribution phase** — unchanged scope decision from Milestone 3,
+  inherited unmodified since `simulatePath` is the thing M5 calls.
+- **No default flat tax rate, no SWR-to-spending-figure translation** — both unchanged
+  open gaps from M1/M3, still M9's job.
+
+### Fable review
+
+Independent pass, no access to this session's own reasoning. Ran `npx tsc --noEmit` and
+the full `bootstrapEngine.test.ts` suite multiple times independently (including the
+property-based and convergence tests, the first statistical test suite in this
+codebase) to check for flakiness none was found — the tests use fixed seeds throughout,
+so "flaky" here could only mean a logic bug, not sampling luck. Independently
+re-measured the convergence numbers outside the test file (0.085/0.058/0.026/0.0225/
+0.0198 across N=200/500/1000/2000/5000) and got the cited figures almost to the digit;
+the actual test's own N=2000/10-seed run measured 0.0195, comfortably clear of its 0.05
+threshold, not suspiciously close to it. Hand-verified the geometric-mean regression
+test's arithmetic independently and confirmed it. Traced the shared-prefix monotonicity
+mechanism precisely (see judgment call above) and confirmed it holds exactly, including
+verifying no off-by-one in the block sampler's valid-start-index range (`historicalYears.length
+- blockLengthYears + 1` choices; maximum read index lands exactly on the array's last
+element, never past it). Confirmed the block bootstrap and gilt-as-bonds-proxy design
+decisions are both defensible, not just asserted. No genuine bugs found.
+
+Two cosmetic findings, both fixed: `bootstrapEngine.test.ts` was missing this
+milestone's own explicitly-named "100% loss year" and "inflation exceeding returns"
+tests at the bootstrap layer specifically (both were already mechanically covered via
+Milestone 3's own tests, but not per this milestone's own checklist) — two named tests
+added, using the same `historicalYears`/`blockLengthYears` dependency-injection point
+(`RunSimulationOptions`) as the existing edge-case tests, matching `fetchGlobalQuote`'s
+`fetchImpl` DI pattern. A doc comment misattributed its equity/gilt-blend quote to a
+`ResolvedScenario.equityAllocationRate` doc comment that doesn't exist — the real source
+is `ScenarioAssumptionsV1.equityAllocationPct` in `scenarioAssumptions.ts` — corrected.
+
+18 new tests in `bootstrapEngine.test.ts`, full suite 423 passed / 91 skipped (514
+total, up from 496). Typecheck and lint both clean.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
 2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner. Phase 2 adds `e2e/portfolio.spec.ts` to the same not-yet-in-CI backlog.
 3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done, deployed, and independently code-reviewed — see "Phase 2 — what shipped" and "Phase 2 code review" above.
 4. **Holdings-to-balance sync** — requested by the household after using Phase 2 live: adding/updating a holding never touches the account's own balance, so an account's stored balance and its holdings' live value can silently drift apart (see "Deliberately not built" above for the full note and the design question it raises — this isn't a one-line fix). Worth scoping and building before or alongside Phase 3, since it's a real gap in what's already shipped, not a new phase's feature.
-5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1, 2, 3, and 4 done (schema, RNG/shared types, deterministic core, UK return dataset) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **M5 (the randomized bootstrap engine) is next** — it's now unblocked (needs M2+M3+M4, all done) and is the longest remaining pole to M7→M9. M6 (worker-thread deploy spike) and M8 (scenario CRUD) remain available to run in parallel with M5 if a session wants a narrower, lower-risk task instead.
+5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1–5 done (schema, RNG/shared types, deterministic core, UK return dataset, and now the randomized bootstrap engine itself) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **The engine is functionally complete; M6 (worker-thread deploy spike) is next** — M7's route handlers depend on M1+M5(done)+M6, so M6 is now the only thing blocking M7. M8 (scenario CRUD) remains available to run in parallel with M6 if a session wants a narrower, lower-risk task instead. Also still needed before any of this is reachable by a household: the DB resolution layer (`ScenarioAssumptionsV1` + live account data → `ResolvedScenario`) that M3's own section flagged as not yet built by any milestone.
 6. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
 ## Notes for Phase 3

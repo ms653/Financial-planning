@@ -90,8 +90,11 @@ function applyAnnualReturn(balancePence: bigint, rateScaled: bigint): bigint {
  * (`planEndAge - currentAge`), floored at zero. A person already past their own
  * `planEndAge` at year 0 contributes nothing (and is simply never "alive" in the loop
  * below) without pulling the whole simulation's length negative.
+ *
+ * Exported for Milestone 5's bootstrap engine, which needs to know how many years of
+ * sampled returns a scenario actually requires.
  */
-function totalSimulationYears(scenario: ResolvedScenario): number {
+export function totalSimulationYears(scenario: ResolvedScenario): number {
   let maxYears = 0;
   for (const person of scenario.people) {
     const years = person.planEndAge - person.currentAge;
