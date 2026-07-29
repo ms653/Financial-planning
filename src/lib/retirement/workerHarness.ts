@@ -1,8 +1,7 @@
 /**
  * Spawns and cancels `simulationWorker.ts` runs. This is the real infrastructure M7's
- * route handlers will call directly (`POST` spawns, `POST .../cancel` cancels) — built
- * now, not as a throwaway test fixture, so M7 has a tested foundation rather than a
- * stub to rewrite.
+ * route handlers call directly (`POST /simulation-runs` spawns,
+ * `POST /simulation-runs/[id]/cancel` cancels).
  */
 
 import path from 'node:path';
@@ -10,6 +9,7 @@ import { Worker } from 'node:worker_threads';
 import { and, eq } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@/lib/db/schema';
+import type { ResolvedScenario } from '@/lib/retirement/engineTypes';
 import type { SimulationWorkerData } from '@/workers/simulationWorker';
 
 /**
@@ -17,25 +17,84 @@ import type { SimulationWorkerData } from '@/workers/simulationWorker';
  * writes the bundle to `.next/standalone/workers/simulationWorker.js`, and the
  * Dockerfile's `runner` stage copies `.next/standalone` to `/app`, so `server.js` and
  * `workers/simulationWorker.js` end up siblings under `process.cwd()`.
+ *
+ * `SIMULATION_WORKER_BUNDLE_PATH` overrides this — not a real deployment knob, only for
+ * the route-handler tests, which call `POST /simulation-runs` directly and so can't pass
+ * `workerPath` through `spawnSimulationWorker`'s options the way the M6/M7 worker-level
+ * tests do (the route handler itself takes no such parameter; adding one would leak a
+ * test-only concern into real API surface). Read at call time, not module-load time, so
+ * a test's `beforeAll` setting it before the route handler runs is honoured — matching
+ * `src/lib/env.ts`'s own "validated at point of use, not import time" posture.
  */
-const DEFAULT_WORKER_PATH = path.join(process.cwd(), 'workers/simulationWorker.js');
+function defaultWorkerPath(): string {
+  return process.env.SIMULATION_WORKER_BUNDLE_PATH ?? path.join(process.cwd(), 'workers/simulationWorker.js');
+}
+
+/**
+ * Live `Worker` instances, keyed by `simulation_run.id`, for the lifetime of this Node
+ * process. Needed because `POST /simulation-runs` (which creates the `Worker`) and
+ * `POST /simulation-runs/[id]/cancel` (which needs to call `.terminate()` on that same
+ * instance) are two separate HTTP requests — the object itself only lives in the first
+ * request's JS heap unless something keeps a reference. `globalThis`-cached the same
+ * way `src/lib/db/client.ts` caches its connection pool, so it survives Next.js
+ * module re-evaluation in dev. Entries are removed automatically once a worker exits,
+ * however it exits — normal completion, failure, or termination.
+ *
+ * A run with no entry here (the process restarted since it started, killing the old
+ * worker with it) isn't an error case `cancelSimulationRun` needs to special-case: it
+ * separates "write `cancelled`" from "terminate the thread" precisely so cancelling a
+ * run with nothing left to terminate still works.
+ */
+const globalForWorkers = globalThis as unknown as { __hfSimulationWorkers?: Map<number, Worker> };
+
+function workerRegistry(): Map<number, Worker> {
+  if (!globalForWorkers.__hfSimulationWorkers) {
+    globalForWorkers.__hfSimulationWorkers = new Map();
+  }
+  return globalForWorkers.__hfSimulationWorkers;
+}
+
+/** The live `Worker` for a run, if this process spawned it and it hasn't exited yet. */
+export function getRegisteredWorker(simulationRunId: number): Worker | undefined {
+  return workerRegistry().get(simulationRunId);
+}
 
 export interface SpawnSimulationWorkerOptions {
+  scenario: ResolvedScenario;
+  iterations: number;
+  seed: number;
   /** Override for tests, where no `.next/standalone` build exists — points at a bundle
    * built directly by the test itself. */
   workerPath?: string;
   timeoutMs?: number;
+  /** Test-only — see `SimulationWorkerData`'s own doc comment. Never set in production. */
+  testOnlyDelayMs?: number;
 }
 
 export function spawnSimulationWorker(
   simulationRunId: number,
-  options: SpawnSimulationWorkerOptions = {},
+  options: SpawnSimulationWorkerOptions,
 ): Worker {
   const data: SimulationWorkerData = {
     simulationRunId,
+    scenario: options.scenario,
+    iterations: options.iterations,
+    seed: options.seed,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.testOnlyDelayMs !== undefined ? { testOnlyDelayMs: options.testOnlyDelayMs } : {}),
   };
-  return new Worker(options.workerPath ?? DEFAULT_WORKER_PATH, { workerData: data });
+  const worker = new Worker(options.workerPath ?? defaultWorkerPath(), { workerData: data });
+
+  workerRegistry().set(simulationRunId, worker);
+  worker.once('exit', () => {
+    // Only delete our own entry — guards the (currently unreachable, since run ids are
+    // never reused) case of a second worker having already overwritten this one.
+    if (workerRegistry().get(simulationRunId) === worker) {
+      workerRegistry().delete(simulationRunId);
+    }
+  });
+
+  return worker;
 }
 
 /**

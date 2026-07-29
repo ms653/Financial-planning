@@ -11,6 +11,39 @@ import { households, retirementScenarios, simulationRuns } from '@/lib/db/schema
 import { buildSimulationWorkerBundle } from '@/workers/build';
 import { spawnSimulationWorker, cancelSimulationRun } from '@/lib/retirement/workerHarness';
 import { deserializeSimulationResult } from '@/lib/retirement/simulationResultCodec';
+import { percentStringToScaledFraction, type ResolvedScenario } from '@/lib/retirement/engineTypes';
+import { statePensionAnnualPence } from '@/lib/retirement/taxYearConfig';
+
+/**
+ * A small, fast, hand-built scenario — this file's own fixture, not a real
+ * `resolveScenario` output (that's exercised by `resolveScenario.integration.test.ts`
+ * and the route-handler tests). What M6/M7 need to prove here is that the worker
+ * pipeline itself works end-to-end, not that resolution is correct.
+ */
+function fixtureScenario(scenarioId: number): ResolvedScenario {
+  return {
+    scenarioId,
+    annualSpendingPence: 2_000_000n,
+    survivorAnnualSpendingPence: null,
+    inflationRate: percentStringToScaledFraction('2.500'),
+    equityAllocationRate: percentStringToScaledFraction('60.000'),
+    targetSuccessRate: percentStringToScaledFraction('90.000'),
+    flatEffectiveTaxRate: percentStringToScaledFraction('20.000'),
+    wrapperWithdrawalOrder: ['gia'],
+    people: [
+      {
+        personId: 1,
+        currentAge: 65,
+        retirementAge: 65,
+        statePensionClaimAge: 67,
+        statePensionAnnualPence: statePensionAnnualPence(),
+        pclsAge: null,
+        planEndAge: 90,
+      },
+    ],
+    startingBalancesPence: { gia: 50_000_000n },
+  };
+}
 
 /**
  * Milestone 6's required proof: a real worker_threads worker, spawned from a bundle
@@ -89,9 +122,14 @@ describe.skipIf(!connectionString)('simulationWorker against a real Postgres', (
   }
 
   it('runs a real worker end-to-end: running -> complete, with a real result written', async () => {
-    const { runId } = await seedRunningSimulation();
+    const { scenarioId, runId } = await seedRunningSimulation();
 
-    const worker = spawnSimulationWorker(runId, { workerPath: bundlePath });
+    const worker = spawnSimulationWorker(runId, {
+      workerPath: bundlePath,
+      scenario: fixtureScenario(scenarioId),
+      iterations: 200,
+      seed: 1,
+    });
     const exitCode = await waitForExit(worker);
     expect(exitCode).toBe(0);
 
@@ -107,7 +145,7 @@ describe.skipIf(!connectionString)('simulationWorker against a real Postgres', (
   });
 
   it('reports a run that overruns its budget as failed, not complete', async () => {
-    const { runId } = await seedRunningSimulation();
+    const { scenarioId, runId } = await seedRunningSimulation();
 
     // timeoutMs: 0 forces runWithBudgetCheck to always find the (non-zero-duration)
     // real computation over budget — see that function's own doc comment for why this
@@ -115,7 +153,13 @@ describe.skipIf(!connectionString)('simulationWorker against a real Postgres', (
     // runs the full computation, then reports failure instead of success because it
     // took longer than allowed. This is also the only path that exercises the worker's
     // `catch` branch/`status: 'failed'` write at all.
-    const worker = spawnSimulationWorker(runId, { workerPath: bundlePath, timeoutMs: 0 });
+    const worker = spawnSimulationWorker(runId, {
+      workerPath: bundlePath,
+      scenario: fixtureScenario(scenarioId),
+      iterations: 200,
+      seed: 1,
+      timeoutMs: 0,
+    });
     const exitCode = await waitForExit(worker);
     expect(exitCode).toBe(0);
 
@@ -127,16 +171,18 @@ describe.skipIf(!connectionString)('simulationWorker against a real Postgres', (
   });
 
   it('terminates a running worker on cancellation, and the row stays cancelled', async () => {
-    const { runId } = await seedRunningSimulation();
+    const { scenarioId, runId } = await seedRunningSimulation();
 
-    // Constructed directly rather than through spawnSimulationWorker, to pass the
-    // worker's test-only testOnlyDelayMs hook (not part of the harness's real, M7-facing
-    // contract): it awaits an idle timer before it starts computing, giving
-    // cancelSimulationRun a deterministic window in which terminate() is guaranteed to
-    // land while the worker is genuinely still running, not racing a fixture
-    // computation fast enough to finish first.
-    const worker = new Worker(bundlePath, {
-      workerData: { simulationRunId: runId, testOnlyDelayMs: 2000 },
+    // testOnlyDelayMs makes the worker await an idle timer before it starts computing,
+    // giving cancelSimulationRun a deterministic window in which terminate() is
+    // guaranteed to land while the worker is genuinely still running, not racing a
+    // fixture computation fast enough to finish first. Never set outside tests.
+    const worker = spawnSimulationWorker(runId, {
+      workerPath: bundlePath,
+      scenario: fixtureScenario(scenarioId),
+      iterations: 200,
+      seed: 1,
+      testOnlyDelayMs: 2000,
     });
 
     // Wait for the worker's own "I have actually started main()" signal before

@@ -5,14 +5,13 @@
  * and this file does the CPU-bound work off the request thread, writing the outcome
  * back to that same row.
  *
- * Milestone 6 scope: prove the whole path survives the Docker `output: 'standalone'`
- * build (see `src/workers/build.ts`) and that termination works — not wire up the real
- * scenario-resolution pipeline (M8/M9's job, since the DB resolution layer from
- * `ScenarioAssumptionsV1` + live account data doesn't exist yet). So this runs the real
- * `runSimulation` engine, not a literal no-op, but against a small hand-built fixture
- * scenario rather than one resolved from a real `retirement_scenario` row — proving the
- * bundle can load and execute real app code (bigint arithmetic, the JST dataset,
- * Drizzle writes) through esbuild, not just that a thread can start.
+ * Milestone 6 proved the deployment path with a hand-built fixture scenario. Milestone
+ * 7 wires in the real thing: the caller (`POST /api/retirement/simulation-runs`)
+ * resolves a real `ResolvedScenario` via `resolveScenario.ts` and passes it through
+ * `workerData` as-is — no bigint-to-string codec needed for this direction, since
+ * `new Worker(path, { workerData })` uses Node's structured-clone algorithm, which
+ * natively supports `bigint` (unlike `JSON.stringify`, which is exactly why
+ * `simulationResultCodec.ts` exists for the *outbound* result write below).
  */
 
 import { parentPort, workerData } from 'node:worker_threads';
@@ -20,12 +19,14 @@ import { and, eq } from 'drizzle-orm';
 import { getDb, getPool } from '@/lib/db/client';
 import { simulationRuns } from '@/lib/db/schema';
 import { runSimulation } from '@/lib/retirement/engine/bootstrapEngine';
-import { percentStringToScaledFraction, type ResolvedScenario } from '@/lib/retirement/engineTypes';
-import { statePensionAnnualPence } from '@/lib/retirement/taxYearConfig';
+import type { ResolvedScenario } from '@/lib/retirement/engineTypes';
 import { serializeSimulationResult } from '@/lib/retirement/simulationResultCodec';
 
 export interface SimulationWorkerData {
   simulationRunId: number;
+  scenario: ResolvedScenario;
+  iterations: number;
+  seed: number;
   /** Wall-clock compute budget, checked *after* the computation finishes — see
    * `runWithBudgetCheck`'s doc comment for why this can only detect an overrun, not
    * prevent one. */
@@ -44,31 +45,6 @@ class WorkerTimeoutError extends Error {
     super(`Simulation took ${elapsedMs.toFixed(1)}ms, exceeding its ${timeoutMs}ms compute budget`);
     this.name = 'WorkerTimeoutError';
   }
-}
-
-function fixtureScenario(scenarioId: number): ResolvedScenario {
-  return {
-    scenarioId,
-    annualSpendingPence: 2_000_000n,
-    survivorAnnualSpendingPence: null,
-    inflationRate: percentStringToScaledFraction('2.500'),
-    equityAllocationRate: percentStringToScaledFraction('60.000'),
-    targetSuccessRate: percentStringToScaledFraction('90.000'),
-    flatEffectiveTaxRate: percentStringToScaledFraction('20.000'),
-    wrapperWithdrawalOrder: ['gia'],
-    people: [
-      {
-        personId: 1,
-        currentAge: 65,
-        retirementAge: 65,
-        statePensionClaimAge: 67,
-        statePensionAnnualPence: statePensionAnnualPence(),
-        pclsAge: null,
-        planEndAge: 90,
-      },
-    ],
-    startingBalancesPence: { gia: 50_000_000n },
-  };
 }
 
 /**
@@ -103,8 +79,14 @@ function runWithBudgetCheck<T>(run: () => T, timeoutMs: number): T {
 }
 
 async function main(): Promise<void> {
-  const { simulationRunId, timeoutMs = DEFAULT_TIMEOUT_MS, testOnlyDelayMs } =
-    workerData as SimulationWorkerData;
+  const {
+    simulationRunId,
+    scenario,
+    iterations,
+    seed,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    testOnlyDelayMs,
+  } = workerData as SimulationWorkerData;
   const db = getDb();
 
   // Guards every write this worker makes: if the row has already moved off `running`
@@ -124,9 +106,8 @@ async function main(): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, testOnlyDelayMs));
     }
 
-    const scenario = fixtureScenario(simulationRunId);
     const result = runWithBudgetCheck(
-      () => runSimulation(scenario, { iterations: 200, seed: simulationRunId }),
+      () => runSimulation(scenario, { iterations, seed }),
       timeoutMs,
     );
 

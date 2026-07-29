@@ -1,12 +1,11 @@
 # Project Status
 
-Last updated: 2026-07-29 (Phase 3, Milestone 6 — the `worker_threads` deployment spike —
-implemented, tested, and verified end-to-end through a real `docker build` + run; see
-below. Milestone 5 shipped the same day, Milestone 3 the day before. Phase 2 was
-implemented, browser-verified, independently code-reviewed, and deployed to the
-household's real stack 2026-07-27; three post-deployment additions since — holdings
-editing, holdings totals, and balance-history editing — see the "Since Phase 2
-deployment" sections below)
+Last updated: 2026-07-29 (Phase 3, Milestone 7 — the compute-persist-poll route
+handlers, plus the DB resolution layer M3/M5/M6 all left unbuilt — implemented and
+tested; see below. Milestone 6 shipped the same day. Phase 2 was implemented,
+browser-verified, independently code-reviewed, and deployed to the household's real
+stack 2026-07-27; three post-deployment additions since — holdings editing, holdings
+totals, and balance-history editing — see the "Since Phase 2 deployment" sections below)
 
 ## Done
 
@@ -20,7 +19,8 @@ deployment" sections below)
 - **Phase 2 implementation** — portfolio tracking and live market-data pricing (Alpha Vantage). Details below. Deployed to the household's real stack via `./deploy.sh` 2026-07-27 — live now, not just merged.
 - **Phase 2 code review** (two independent passes, run in parallel, no access to each other's findings or to this document's own Phase 2 claims — see below) — one genuine high-severity bug (an uncaught exception could crash the page) and two medium ones fixed; test count now 409 (up from 358 at the end of Phase 1), all passing against a real Postgres, plus the full Playwright E2E suite (9/9) and a full browser walkthrough of both the priced and unpriced paths including a real Alpha Vantage call.
 - **Phase 3, Milestones 1–5** — the retirement Monte Carlo engine is functionally complete: `retirement_scenario`/`simulation_run` schema, seeded RNG and shared engine types, the deterministic zero-volatility decumulation core, a real UK historical return dataset (JST Macrohistory Database), and the randomized block-bootstrap sampler that runs the core thousands of times over sampled real returns to produce a success rate and percentile fan-chart bands. Each independently Fable-reviewed.
-- **Phase 3, Milestone 6** — the `worker_threads` deployment spike: proves the compute-persist-poll pattern's worker survives the Docker `output: 'standalone'` build and that both normal completion and forced cancellation update `simulation_run` correctly, verified with a real `docker build` + run, not just an integration test. Details below; still needed before a household can actually use any of this: the DB resolution layer, route handlers (M7, now unblocked), scenario CRUD (M8), and the UI (M9).
+- **Phase 3, Milestone 6** — the `worker_threads` deployment spike: proves the compute-persist-poll pattern's worker survives the Docker `output: 'standalone'` build and that both normal completion and forced cancellation update `simulation_run` correctly, verified with a real `docker build` + run, not just an integration test.
+- **Phase 3, Milestone 7** — the DB resolution layer (`resolveScenario`) and the three compute-persist-poll route handlers (`POST /api/retirement/simulation-runs`, `GET .../[id]`, `POST .../[id]/cancel`), including staleness reconciliation for a run whose worker never reports back. Details below; still needed before a household can actually use any of this: scenario CRUD (M8 — nothing yet creates a `retirement_scenario` row outside a test) and the UI (M9).
 
 ## Phase 2 — what shipped
 
@@ -953,18 +953,162 @@ suite 428 passed / 94 skipped without a scratch Postgres (522 total, up from 514
 M6, 516 after M6's own initial tests), all 522 passing against a real `TEST_DATABASE_URL`.
 Typecheck and lint both clean.
 
+## Phase 3, Milestone 7: compute-persist-poll route handlers
+
+The three things M3/M5/M6 all flagged and left unbuilt: the DB resolution layer, the
+route handlers that actually let a household trigger a run, and staleness
+reconciliation for a run whose worker never reports back. These are the first mutating
+route handlers in this codebase — `sameOriginGuard` (`src/lib/auth/csrf.ts`), tested
+since Phase 0 with zero call sites, finally has real callers.
+
+- **`src/lib/retirement/resolveScenario.ts`** — `resolveScenario(scenarioId,
+  householdId)`, the function `engineTypes.ts`'s original doc comment wrongly attributed
+  to Milestone 3. Turns a stored `retirement_scenario` row into a real `ResolvedScenario`:
+  parses the JSONB via `parseScenarioAssumptions`, resolves each person's State Pension
+  defaults from `taxYearConfig.ts` (or their scenario override), and aggregates starting
+  balances per drawdown wrapper type from `getAccountsWithBalances`. Returns `null` for
+  not-found-or-not-owned, matching `getAccountDetail`'s existing convention.
+- **`src/workers/simulationWorker.ts` rewired to take a real scenario.** M6's own
+  `fixtureScenario()` (always a spike placeholder, its own doc comment said so) moved
+  into `simulationWorker.integration.test.ts`, which now builds and passes it explicitly.
+  `SimulationWorkerData` gained `scenario`/`iterations`/`seed`, threaded straight through
+  from the route handler — **no bigint codec needed for this direction**: `workerData`
+  uses Node's structured-clone algorithm, which natively supports `bigint` (unlike
+  `JSON.stringify`, which is exactly why `simulationResultCodec.ts` exists for the
+  *outbound* result write). Confirmed by the route-handler tests actually passing, not
+  assumed from the structured-clone spec alone.
+- **Three new route handlers** under `src/app/api/retirement/simulation-runs/`:
+  - `POST /` — body `{ scenarioId, iterations? }`. `sameOriginGuard` first; validates
+    `iterations` against `bootstrapEngine.ts`'s `MAX_ITERATIONS` before touching the
+    database (bad input shouldn't become a `failed` run row); resolves the household via
+    the existing `getSetupState()`; `resolveScenario`s the scenario (404 if not found/not
+    owned); generates a fresh non-cryptographic seed; inserts the `running` row; spawns
+    the worker. A synchronous spawn failure is caught and written back as `failed`
+    immediately, not left for staleness reconciliation to eventually notice. Returns
+    `202` with the new row.
+  - `GET /[id]` — household-scoped (joins through `retirement_scenario.household_id`).
+    **Staleness reconciliation**: a `running` row older than 60s (double the worker's own
+    30s `DEFAULT_TIMEOUT_MS` budget, so a legitimately-still-computing run is never
+    mistaken for an abandoned one) is rewritten to `failed` before being returned. The
+    reconciling `UPDATE` is itself guarded by `WHERE status = 'running'`, so a run that
+    finishes in the window between the initial read and the reconciliation write doesn't
+    get its real result clobbered — the guard matches zero rows and the handler re-reads
+    instead of trusting its own stale guess. `result` is returned exactly as stored
+    (already the JSON-safe string-encoded form `simulationResultCodec.ts` writes) — never
+    round-tripped through `deserializeSimulationResult` first, which would produce real
+    `bigint`s only to have `Response.json`'s own `JSON.stringify` immediately reject them.
+  - `POST /[id]/cancel` — idempotent (cancelling an already-terminal run just returns its
+    current state, matching M6 Fable review's own finding that this is harmless). Looks
+    up a live `Worker` in `workerHarness.ts`'s new in-memory registry; if found, the real
+    `cancelSimulationRun` runs (guarded DB write + `terminate()`); if not — the process
+    restarted since the run started, so whatever worker there was already died with it —
+    just the same guarded DB write, with nothing left to terminate.
+- **`src/lib/retirement/workerHarness.ts`'s new `Map<simulationRunId, Worker>` registry**,
+  `globalThis`-cached the same way `src/lib/db/client.ts` caches its connection pool.
+  Needed because `POST /` (which creates the `Worker`) and `POST /[id]/cancel` (which
+  needs to call `.terminate()` on that exact instance) are two separate HTTP requests —
+  the object only lives in the first request's JS heap unless something keeps a
+  reference. Entries are removed automatically on each worker's own `exit` event,
+  however it exits.
+
+### Judgment calls worth knowing about
+
+- **Starting balances always come from `balance_snapshot`, uniformly across every
+  account type — never priced holdings, even for `holdsSecurities` accounts.**
+  `docs/STATUS.md` already documents that holdings and account balance can silently
+  drift apart (`addHolding` never writes `balance_snapshot`) and calls that "wanted, not
+  yet scoped." `resolveScenario` doesn't invent a hybrid heuristic (e.g. "prefer priced
+  holdings when available, fall back to balance otherwise") to paper over that — every
+  other part of the app (net worth, dashboard) already treats the account's recorded
+  balance as authoritative, and this does the same, inheriting the same documented
+  limitation rather than adding a second, untested way to resolve it.
+- **`statePensionClaimAge`, when not overridden, is derived from `taxYearConfig.ts`'s
+  `statePensionDate(dob)` by rounding the fractional age at that date *up* to the
+  nearest whole year** (conservative — assumes the State Pension arrives no earlier than
+  reality, never optimistic). New `ageAsOf`/`statePensionClaimAgeFromDate` helpers in
+  `resolveScenario.ts` — nothing existing in this codebase computed an age from a date of
+  birth (checked); `taxYearConfig.ts` deliberately works in dates, not ages, by M1's own
+  design. This only matters for the two narrow transitional birth-date bands (66→67,
+  67→68); the household's own real people (Alex b.1985, Jordan b.1987) are in the
+  flat-68 band, where `statePensionDate` always lands exactly on a birthday and this
+  reduces to an exact integer with no rounding at all. Both helpers are exported and
+  directly unit-tested (`resolveScenario.test.ts`) for the boundary cases, separately
+  from `resolveScenario.integration.test.ts`'s DB-backed wiring test.
+- **A running worker's cancel path needs an in-memory registry, not just the database.**
+  Covered above — the alternative (looking the worker up some other way) doesn't exist;
+  a `Worker` object is a live in-process handle with no serializable identity beyond
+  what the spawning process itself remembers.
+- **A fresh seed is generated per run** (`Math.floor(Math.random() * 2 ** 31)`, not
+  cryptographically random — `src/lib/retirement/rng.ts` already documents this module's
+  RNG as not needing crypto strength) so re-running the same scenario resamples rather
+  than always landing on an identical result, while still recording the seed on the row
+  for the reproducibility `docs/PROPOSAL.md` names as the whole point of a seeded RNG.
+
+### Deliberately not built (and why)
+
+- **No cancellation UI, no polling client, no Scenario Editor/Results screens** — that's
+  M9. This milestone is the API surface those screens will call.
+- **No route yet actually gets used by anything** — M8 (scenario CRUD) hasn't been built,
+  so there's no way for a household to create a `retirement_scenario` row at all outside
+  a test seeding one directly. `POST /simulation-runs` is fully functional against any
+  scenario that exists, but nothing in the app UI creates one yet.
+- **Contribution/accumulation-phase data still isn't wired in** — unchanged scope
+  decision from M3, inherited unmodified since `resolveScenario` only surfaces what
+  `runSimulation` already consumes.
+
+26 new tests: 7 unit (`ageAsOf`/`statePensionClaimAgeFromDate` boundary cases,
+`resolveScenario.test.ts`), 4 integration for `resolveScenario` itself, and 5 each
+across the three new route-handler test files (`POST /`, `GET /[id]`,
+`POST /[id]/cancel`). Full suite 548 passing (up from 522). Typecheck and lint both
+clean.
+
+### Fable review
+
+Independent pass, no access to this session's own reasoning — same posture as every
+prior milestone. Ran `npx tsc --noEmit`, `npm run lint`, and the full suite against its
+own scratch Postgres rather than trusting this session's reported results. Went further
+than reading: wrote and ran (then deleted) several throwaway scratch probes — a
+leap-year (29 February DOB) case for `ageAsOf`/`statePensionClaimAgeFromDate` hand-traced
+against `taxYearConfig.ts`'s real date-clamping behaviour; a real two-thread
+`node:worker_threads` script confirming `workerData`'s structured-clone algorithm
+genuinely preserves a `bigint` intact (`typeof === 'bigint'`, exact value, even nested)
+while `JSON.stringify` on the same value throws — the claim in `simulationWorker.ts`'s
+comment, verified empirically rather than accepted as asserted; `worker.terminate()`
+called twice concurrently and again on an already-exited worker, both resolving cleanly
+with no throw; and ten concurrent `GET` requests fired at the same artificially-stale
+`running` row, all ten converging on one identical reconciled response — the staleness
+guard's race-safety demonstrated under real concurrency, not just inspected.
+
+**No genuine bugs found** — the first milestone in this repo's own review history where
+independent re-derivation and active probing turned up nothing to fix. Specifically
+confirmed, worth recording so it isn't re-litigated: the `MM-DD` string-slice comparison
+in `statePensionClaimAgeFromDate` is safe because every date it ever sees is a
+strictly-zero-padded `YYYY-MM-DD` string (enforced by the `person.date_of_birth` column
+and `statePensionDate`'s own regex guard), so there's no single/double-digit ambiguity;
+`getAccountsWithBalances` never returns an empty-string `latestAmount` (always a real
+NUMERIC string or `null`), so `resolveScenario`'s ternary handling a genuine £0.00
+balance is safe; non-GBP `account.currency` is unreachable from any UI/API path today
+(confirmed against this repo's own prior finding that it never varies from its schema
+default), so `resolveScenario` ignoring it matches the app's existing posture rather
+than opening a new gap; the generated seed's `[0, 2^31 − 1]` range fits Postgres
+`integer` exactly with no floating-point rounding risk at that magnitude; and the
+household-scoping `WHERE` joins in `resolveScenario`/`GET /[id]`/`cancel/route.ts` are
+real, would-enforce-isolation conditions, not merely passing because only one household
+exists today (confirmed via `resolveScenario`'s own mismatched-householdId test, and via
+directly confirming `household_singleton`'s DB-level uniqueness).
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
 2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner. Phase 2 adds `e2e/portfolio.spec.ts` to the same not-yet-in-CI backlog.
 3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done, deployed, and independently code-reviewed — see "Phase 2 — what shipped" and "Phase 2 code review" above.
 4. **Holdings-to-balance sync** — requested by the household after using Phase 2 live: adding/updating a holding never touches the account's own balance, so an account's stored balance and its holdings' live value can silently drift apart (see "Deliberately not built" above for the full note and the design question it raises — this isn't a one-line fix). Worth scoping and building before or alongside Phase 3, since it's a real gap in what's already shipped, not a new phase's feature.
-5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1–6 done (schema, RNG/shared types, deterministic core, UK return dataset, the randomized bootstrap engine, and now the worker-thread deployment spike, verified end-to-end through a real `docker build` + run) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **M7 (compute-persist-poll route handlers) is next and now fully unblocked** — it depended on M1+M5+M6, all done. M8 (scenario CRUD) remains available to run in parallel with M7 if a session wants a narrower, lower-risk task instead — it only ever needed M1. Also still needed before any of this is reachable by a household: the DB resolution layer (`ScenarioAssumptionsV1` + live account data → `ResolvedScenario`) that M3's own section flagged as not yet built by any milestone — M7's route handlers need it too, and don't yet have it.
+5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1–7 done (schema, RNG/shared types, deterministic core, UK return dataset, the randomized bootstrap engine, the worker-thread deployment spike, and now the DB resolution layer plus the compute-persist-poll route handlers themselves) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **M8 (scenario CRUD) is next** — it only ever needed M1, and is now the only thing standing between "the API works" and "a household can actually create a scenario and see it run," since nothing yet writes a `retirement_scenario` row outside a test. M9 (the UI) needs both M7 (done) and M8.
 6. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
 ## Notes for Phase 3
 
-- `src/lib/auth/csrf.ts` (`sameOriginGuard`) is still implemented, tested and unused — neither Phase 1 nor Phase 2 added a route handler, only Server Actions (which carry Next's own Origin/Host check). The first mutating route handler must call it; that protection does not extend to route handlers. Phase 3's compute-persist-poll pattern (PROPOSAL.md's Compute execution model) is likely where the first one appears — a `simulation_run` status-polling endpoint is naturally a route handler, not a Server Action.
+- `src/lib/auth/csrf.ts` (`sameOriginGuard`) has real callers now — Milestone 7's `POST /api/retirement/simulation-runs` and `POST .../[id]/cancel`, the first mutating route handlers in this codebase (Phase 1/2 only ever added Server Actions, which carry Next's own Origin/Host check; `GET .../[id]` doesn't call it, being non-mutating, same reasoning as `/api/health`).
 - **Money never touches a float.** `src/lib/money.ts` parses to integer pence as `bigint` and back to NUMERIC strings; `numeric` columns come out of node-postgres as strings and stay that way. A `numericToPence`/`formatMoney` pair exists for every display path — new code should go through it rather than `Number(row.amount)`. Phase 2's `src/lib/portfolio/valuation.ts` extends the same discipline to sub-penny/fractional-share precision (`parseScaledDecimal`/`formatScaledDecimal`) — the Monte Carlo engine's compounding math should look to that module before reinventing fixed-point arithmetic, or before reaching for a float and relying on the reference-calculator tolerance test to catch it (Testing strategy in PROPOSAL.md is explicit that tolerance-matching alone isn't sufficient coverage).
 - **Watch out for `db.execute` with raw SQL**: unlike a typed `select()`, it returns the driver's raw values, so a `timestamptz` arrives as a *string*, not a `Date`. That mismatch typechecked happily and threw at render time during Phase 1 (`capturedAt.getTime is not a function`). `getAccountsWithBalances` converts explicitly and a regression test asserts it.
 - Both `*.integration.test.ts` suites share one scratch database and drop its schema, so `fileParallelism` is off in `vitest.config.ts`. A new DB-backed test file can rely on that. Phase 2's `quotes.integration.test.ts` follows the same pattern with an injected fake provider — Phase 3's `simulation_run` persistence layer should do the same rather than inventing a new DB-test convention.
