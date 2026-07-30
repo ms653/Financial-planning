@@ -1,11 +1,13 @@
 # Project Status
 
-Last updated: 2026-07-29 (Phase 3, Milestone 7 — the compute-persist-poll route
-handlers, plus the DB resolution layer M3/M5/M6 all left unbuilt — implemented and
-tested; see below. Milestone 6 shipped the same day. Phase 2 was implemented,
-browser-verified, independently code-reviewed, and deployed to the household's real
-stack 2026-07-27; three post-deployment additions since — holdings editing, holdings
-totals, and balance-history editing — see the "Since Phase 2 deployment" sections below)
+Last updated: 2026-07-29 (Phase 3, Milestone 8 — retirement scenario CRUD Server
+Actions — implemented and tested; see below. Milestones 6 and 7 shipped the same day.
+Phase 2 was implemented, browser-verified, independently code-reviewed, and deployed to
+the household's real stack 2026-07-27; three post-deployment additions since — holdings
+editing, holdings totals, and balance-history editing — see the "Since Phase 2
+deployment" sections below. **Note**: the household's live deployed stack still runs a
+build from before Milestone 3 — everything from M3 onward, including this milestone, is
+merged to `main`/pushed to GitHub but not yet deployed; see "Next steps" below)
 
 ## Done
 
@@ -20,7 +22,8 @@ totals, and balance-history editing — see the "Since Phase 2 deployment" secti
 - **Phase 2 code review** (two independent passes, run in parallel, no access to each other's findings or to this document's own Phase 2 claims — see below) — one genuine high-severity bug (an uncaught exception could crash the page) and two medium ones fixed; test count now 409 (up from 358 at the end of Phase 1), all passing against a real Postgres, plus the full Playwright E2E suite (9/9) and a full browser walkthrough of both the priced and unpriced paths including a real Alpha Vantage call.
 - **Phase 3, Milestones 1–5** — the retirement Monte Carlo engine is functionally complete: `retirement_scenario`/`simulation_run` schema, seeded RNG and shared engine types, the deterministic zero-volatility decumulation core, a real UK historical return dataset (JST Macrohistory Database), and the randomized block-bootstrap sampler that runs the core thousands of times over sampled real returns to produce a success rate and percentile fan-chart bands. Each independently Fable-reviewed.
 - **Phase 3, Milestone 6** — the `worker_threads` deployment spike: proves the compute-persist-poll pattern's worker survives the Docker `output: 'standalone'` build and that both normal completion and forced cancellation update `simulation_run` correctly, verified with a real `docker build` + run, not just an integration test.
-- **Phase 3, Milestone 7** — the DB resolution layer (`resolveScenario`) and the three compute-persist-poll route handlers (`POST /api/retirement/simulation-runs`, `GET .../[id]`, `POST .../[id]/cancel`), including staleness reconciliation for a run whose worker never reports back. Details below; still needed before a household can actually use any of this: scenario CRUD (M8 — nothing yet creates a `retirement_scenario` row outside a test) and the UI (M9).
+- **Phase 3, Milestone 7** — the DB resolution layer (`resolveScenario`) and the three compute-persist-poll route handlers (`POST /api/retirement/simulation-runs`, `GET .../[id]`, `POST .../[id]/cancel`), including staleness reconciliation for a run whose worker never reports back.
+- **Phase 3, Milestone 8** — retirement scenario CRUD (`createScenario`/`updateScenario`/`duplicateScenario`/`deleteScenario` Server Actions, plus read queries), the write path M7's API needed and didn't have. Details below; still needed before a household can actually use any of this: the UI (M9 — no route, page, or nav exists yet), and deploying M3 onward to the real stack.
 
 ## Phase 2 — what shipped
 
@@ -1097,14 +1100,155 @@ real, would-enforce-isolation conditions, not merely passing because only one ho
 exists today (confirmed via `resolveScenario`'s own mismatched-householdId test, and via
 directly confirming `household_singleton`'s DB-level uniqueness).
 
+## Phase 3, Milestone 8: retirement scenario CRUD
+
+Pure CRUD, needing only M1's schema: nothing until now let a household create a
+`retirement_scenario` row at all — M7's API had no scenario to run against outside a
+test seeding one directly. No UI, no route, no nav — that's M9, which needs both M7
+(done) and this.
+
+- **`src/lib/retirement/actions.ts`** — `createScenario`, `updateScenario`,
+  `duplicateScenario`, `deleteScenario`, mirroring `household/actions.ts`'s exact shape
+  (`fieldValues` → `requireHouseholdId()` → ownership-scoped lookups → `db.transaction`
+  → `logAndWrap` → `revalidatePath`). **`ActionResult` is imported directly from
+  `household/actions.ts`, not redefined** — `src/lib/ui/useActionForm.ts` is currently
+  hardcoded to that exact type, so M9 can use these actions with it unmodified.
+- **`src/lib/retirement/queries.ts`** — `getScenarios` (list, baseline first), `getScenario`
+  (single, `null` if not found/not owned), `getScenarioWithLatestRun` (joins the most
+  recent `simulation_run`, serving `DESIGN_SPEC.md`'s own flow text: "shows the most
+  recent scenario's assumptions and its last-computed results").
+
+### Judgment calls worth knowing about
+
+- **`DESIGN_SPEC.md` never actually specifies a "Duplicate" button or a scenario list
+  screen** — checked directly, not assumed. Its own Compare flow only offers "pick an
+  existing saved scenario" or "create a new one" (the ordinary New-scenario path).
+  `duplicateScenario` is the milestone plan's own named mechanism for supporting
+  "retire at 60 vs. 65" without a full what-if engine, kept per that plan's explicit
+  instruction — just not something the design doc itself calls for by that name, worth
+  knowing before M9 designs the actual UI around it.
+- **No new field-level validator invented.** `parseScenarioAssumptions` is already the
+  single source of truth for `ScenarioAssumptionsV1`'s shape. Rather than build a second
+  `FieldErrors`-keyed validator ahead of a form that doesn't exist yet (M9 hasn't
+  designed the Scenario Editor's actual fields), `createScenario`/`updateScenario` take
+  the assumptions as one JSON-encoded `assumptions` field and run it straight through
+  the existing parser, turning a thrown `ScenarioAssumptionsParseError` into a single
+  `formError`. `name`/`isBaseline` stay ordinary scalar fields.
+- **`personId` references are validated against real household people at write time**,
+  not left for `resolveScenario` to discover later at run time when a scenario actually
+  runs — fail at the boundary, matching this codebase's standing posture.
+- **The "exactly one baseline scenario" invariant is application-level, not
+  DB-enforced** (M1's own doc comment says so explicitly — no unique partial index backs
+  it, unlike `household_singleton`). `createScenario`/`updateScenario` setting
+  `isBaseline: true` unset it on the household's other scenarios inside the same
+  transaction. `duplicateScenario`'s copy always starts `isBaseline: false` regardless of
+  the source, since duplicating is for a comparison variant, not for replacing the
+  baseline.
+- **`duplicateScenario` re-validates the source's assumptions through
+  `parseScenarioAssumptions` rather than copying the stored JSONB blindly** — the source
+  row was valid when it was written, but the parser stays the single source of truth for
+  what's safe to persist under a new row, the same discipline every other write in this
+  file applies.
+- **`deleteScenario` added beyond the milestone plan's three named actions**, matching
+  the completeness bar every other entity in this codebase already has (accounts,
+  holdings, balance snapshots, pension contributions all have a delete path).
+  `simulation_run` already `ON DELETE CASCADE`s to its scenario (M1's own design — "a run
+  has no meaning without the scenario it simulated"), so deleting a scenario deletes its
+  run history too; not special-cased in the action, since the consequence belongs in
+  whatever confirmation copy M9's UI shows before calling it.
+
+### Deliberately not built (and why)
+
+- **No UI, route, or nav** — M9's job. `src/app/layout.tsx` is still a bare shell with no
+  nav component of any kind; a `/retirement` route tree doesn't exist yet.
+- **No default UK-calibrated assumptions pre-fill** — DESIGN_SPEC.md wants "sensible
+  UK-calibrated defaults pre-filled, not blank fields," but that's a form-rendering
+  concern for M9's actual Scenario Editor, not this action layer, which just validates
+  and persists whatever assumptions blob it's given.
+
+14 new tests (`scenarioCrud.integration.test.ts`, covering create/update/duplicate/delete
+happy paths, the baseline-invariant enforcement, rejecting a `personId` outside the
+household, malformed/rejected assumptions, not-found ownership checks, and the
+cascade-delete of `simulation_run` rows). Full suite 562 passing (up from 548). Typecheck
+and lint both clean.
+
+### Fable review
+
+Independent pass, no access to this session's own reasoning. Ran `npx tsc --noEmit`,
+`npm run lint`, and the full suite against its own scratch Postgres (562/562, matching
+the claimed count). Wrote and ran (then deleted) two throwaway scratch scripts probing
+the one genuine correctness question code-reading alone couldn't settle: a two-writer
+concurrency probe for the baseline invariant, and a re-validation-failure probe for
+`duplicateScenario`.
+
+**One real, empirically-reproduced bug, found and fixed**: the baseline-invariant
+transaction's own doc comment claimed two concurrent writers could never both land a
+`true` row — wrong, and disproved with real concurrent Postgres transactions, not just
+reasoned about. Two concurrent `createScenario(..., isBaseline: true)` calls on an
+empty table both committed, leaving two `true` rows (reproduced 3/3 runs); two
+concurrent `updateScenario` calls each targeting a different pre-existing scenario also
+both committed (also 3/3). Root cause: Postgres READ COMMITTED re-evaluates a blocked
+`UPDATE`'s `WHERE` clause only against the specific row it conflicted on, using that
+row's post-commit value — it never re-scans for a row the *other* transaction inserted
+or changed after the blocked statement's own scan began, so `unsetOtherBaselines` is
+structurally blind to a sibling transaction's own soon-to-be-true row. The review's own
+diagnosis: this needed a database backstop, the same shape `household_singleton`
+already uses for the equivalent single-row race, not more application-level transaction
+logic (which can't fix this under READ COMMITTED without much heavier locking).
+**Fixed**: a partial unique index, `retirement_scenario_one_baseline_per_household`
+(`ON retirement_scenario (household_id) WHERE is_baseline = true`, migration
+`drizzle/0006_certain_captain_marvel.sql`), plus `createScenario`/`updateScenario`
+catching the resulting `23505` and returning a clear "Another scenario just became the
+baseline. Reload and try again." rather than the generic save-failure banner.
+`unsetOtherBaselines` itself is kept as a first-line, best-effort step (correct and
+sufficient in the overwhelmingly common non-concurrent case) with its doc comment
+corrected to say plainly that it is not the actual invariant enforcement. Two new
+regression tests: one proving the database itself deterministically rejects a second
+baseline row (no race timing needed — the real, load-bearing guarantee), one checking
+the application-level "at most one baseline survives" invariant under concurrent calls
+without asserting exactly which one must lose (Promise.all doesn't reliably force two
+Node requests' underlying transactions to genuinely overlap, as this session's own first
+attempt at a stricter test discovered when it failed — both calls happened to succeed
+sequentially-enough to both correctly see and unset the other's already-committed row).
+- **Second finding, smaller, also fixed**: `duplicateScenario` never re-checked
+  `personId` household-membership, unlike `createScenario`/`updateScenario`, which both
+  do on every write. Currently unreachable (no `deletePerson` action exists anywhere in
+  this codebase to create a dangling reference), but a real inconsistency across the
+  three actions that persist an assumptions blob — fixed by adding the same
+  `allPersonIdsBelongToHousehold` check before `duplicateScenario`'s transaction, with a
+  regression test that manually deletes the referenced person (simulating the
+  not-yet-built delete path) and confirms duplication is now rejected.
+- **Third finding, cosmetic, also fixed**: `duplicateScenario`'s re-validation failure
+  fell through to the generic `"Couldn't save this right now"` instead of the specific
+  `ScenarioAssumptionsParseError` message `createScenario`/`updateScenario` both surface.
+  Fixed to match; regression test inserts a scenario with intentionally-invalid stored
+  assumptions (bypassing the action layer, simulating a row saved under looser rules a
+  later app version tightened) and confirms the specific error reaches the caller.
+
+**Checked and confirmed correct, worth recording so it isn't re-litigated**: `ON DELETE
+CASCADE` is real at the migration level (`drizzle/0004_retirement_scenario.sql`), not
+just the doc comment, and the delete test genuinely exercises it (inserts a real
+`simulation_run` row before deleting, not asserting against an already-empty table);
+`ActionResult` reuse from `household/actions.ts` typechecks cleanly end-to-end with no
+adapter or cast bridging the two modules; `personId` validation runs before any write,
+on every call, in both `createScenario` and `updateScenario`; household-scoping `WHERE`
+joins are genuine, would-enforce-isolation conditions, not merely passing because only
+one real household exists today; `getScenarios`' `desc(isBaseline), desc(createdAt)`
+ordering is correct (Postgres orders `false < true`, so `DESC` puts the baseline first).
+
+4 new tests from this review (2 for the baseline race, 2 for `duplicateScenario`'s
+gaps), on top of the 14 M8 shipped with. Full suite 566 passing (up from 548 before M8,
+562 after M8's own initial tests). Typecheck and lint both clean.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
 2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner. Phase 2 adds `e2e/portfolio.spec.ts` to the same not-yet-in-CI backlog.
 3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done, deployed, and independently code-reviewed — see "Phase 2 — what shipped" and "Phase 2 code review" above.
 4. **Holdings-to-balance sync** — requested by the household after using Phase 2 live: adding/updating a holding never touches the account's own balance, so an account's stored balance and its holdings' live value can silently drift apart (see "Deliberately not built" above for the full note and the design question it raises — this isn't a one-line fix). Worth scoping and building before or alongside Phase 3, since it's a real gap in what's already shipped, not a new phase's feature.
-5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1–7 done (schema, RNG/shared types, deterministic core, UK return dataset, the randomized bootstrap engine, the worker-thread deployment spike, and now the DB resolution layer plus the compute-persist-poll route handlers themselves) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **M8 (scenario CRUD) is next** — it only ever needed M1, and is now the only thing standing between "the API works" and "a household can actually create a scenario and see it run," since nothing yet writes a `retirement_scenario` row outside a test. M9 (the UI) needs both M7 (done) and M8.
-6. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
+5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1–8 done (schema, RNG/shared types, deterministic core, UK return dataset, the randomized bootstrap engine, the worker-thread deployment spike, the DB resolution layer plus compute-persist-poll route handlers, and now scenario CRUD) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **M9 (the UI) is next and now fully unblocked** — Scenario Editor, Results (fan chart), Comparison screens, per `docs/DESIGN_SPEC.md`'s screen inventory; it's the only thing left before a household can actually use any of this. No route, page, or nav exists yet anywhere in `src/app/` for retirement — `src/app/layout.tsx` is still a bare shell.
+6. **Deploy M3 onward to the real stack.** The household's live containers (`financial-planning-app-1`/`-db-1`) are still running a build from before Milestone 3 — confirmed by comparing the running image's build timestamp against the commit history, not assumed. Everything from the engine itself through M8's CRUD is merged to `main` and pushed to GitHub but has never been deployed. Worth deciding when: deploying now would ship real infrastructure (the migration, the worker bundle, the new route handlers) with nothing yet user-visible, since M9 doesn't exist — reasonable to bundle with M9, or to do earlier specifically to de-risk the migration/deploy mechanics separately from UI work. Either way, `./deploy.sh` is the runbook (dump → migrate → up → health check), same as every prior deploy.
+7. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
 ## Notes for Phase 3
 

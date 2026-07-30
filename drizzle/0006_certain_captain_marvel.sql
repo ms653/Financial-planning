@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "retirement_scenario_one_baseline_per_household" ON "retirement_scenario" USING btree ("household_id") WHERE "retirement_scenario"."is_baseline" = true;

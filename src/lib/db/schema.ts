@@ -628,10 +628,18 @@ export const retirementScenarios = pgTable(
 
     name: text('name').notNull(),
 
-    /** The scenario shown by default. Exactly one `true` row per household is an
-     * application-level invariant, not a database constraint — no `simulation_run`
-     * money is at stake in a race here the way `household_singleton` guards against, so
-     * a unique-partial-index backstop wasn't judged worth it. */
+    /** The scenario shown by default. Exactly one `true` row per household, enforced by
+     * `baselineUnique` below — not just the application-level `unsetOtherBaselines` step
+     * in `src/lib/retirement/actions.ts`. An earlier version of this comment judged a
+     * unique-partial-index backstop unnecessary ("no `simulation_run` money is at stake
+     * in a race here the way `household_singleton` guards against"); independent Fable
+     * review of Milestone 8 proved that judgment wrong empirically, not just in theory:
+     * two concurrent `createScenario`/`updateScenario` calls each setting
+     * `isBaseline: true` can both commit successfully under Postgres's default READ
+     * COMMITTED isolation, reproduced 3/3 runs against a real Postgres — a blocked
+     * `UPDATE`'s `WHERE` clause only re-evaluates the specific row it conflicted on, never
+     * a fresh scan for rows the other transaction inserted or changed after its own scan
+     * began. Same race class `household_singleton` already guards against; same fix. */
     isBaseline: boolean('is_baseline').notNull().default(false),
 
     /** Validate through `parseScenarioAssumptions` on every read and write — this
@@ -642,6 +650,15 @@ export const retirementScenarios = pgTable(
   },
   (table) => ({
     householdIdx: index('retirement_scenario_household_idx').on(table.householdId),
+    // Database backstop for the isBaseline invariant — see that column's own doc
+    // comment. A household can have any number of non-baseline scenarios, but this
+    // allows at most one row with is_baseline = true per household_id: the second of
+    // two concurrent writers trying to set isBaseline: true now fails loudly (a real
+    // 23505 unique violation) instead of silently succeeding, the same backstop shape
+    // household_singleton already uses for the equivalent single-row race.
+    baselineUnique: uniqueIndex('retirement_scenario_one_baseline_per_household')
+      .on(table.householdId)
+      .where(sql`${table.isBaseline} = true`),
   }),
 );
 
