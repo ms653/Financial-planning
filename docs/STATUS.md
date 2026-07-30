@@ -1,12 +1,10 @@
 # Project Status
 
-Last updated: 2026-07-30 (Phase 3, Milestone 9 — the Retirement Planner UI — implemented
-and tested; see below. Milestones 1–8 (the engine, compute-persist-poll API, and scenario
-CRUD) were deployed to the household's real stack via `./deploy.sh` earlier the same day;
-see the Milestones 1–8 deployment note preserved below. **Note**: M9 itself is not yet
-committed or deployed — it's implemented and fully verified in the working tree, but
-nothing has been pushed to GitHub or run against the live stack yet. See "Next steps"
-below)
+Last updated: 2026-07-30 (Phase 3, Milestone 9 — the Retirement Planner UI — implemented,
+independently Fable-reviewed (findings fixed), committed (`a850d0f`), pushed, and
+deployed to the household's real stack via `./deploy.sh` — no migration needed, M9 is
+application code only. The live stack now runs all of Phase 3, Milestones 1–9. See
+"Phase 3, Milestone 9" below for what shipped and the review findings)
 
 ## Done
 
@@ -1373,9 +1371,9 @@ duplicate-scenario scenario's own effect on the create→run→view journey.
 3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done, deployed, and independently code-reviewed — see "Phase 2 — what shipped" and "Phase 2 code review" above.
 4. **Holdings-to-balance sync** — requested by the household after using Phase 2 live: adding/updating a holding never touches the account's own balance, so an account's stored balance and its holdings' live value can silently drift apart (see "Deliberately not built" above for the full note and the design question it raises — this isn't a one-line fix). Worth scoping and building before or alongside Phase 3, since it's a real gap in what's already shipped, not a new phase's feature.
 5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. ~~M9 (the UI)~~ Done 2026-07-30 — see "Phase 3, Milestone 9" above. **Phase 3 is functionally complete**: engine, API, CRUD, and UI are all built and tested; the not-yet-named reference-tool reproduction check is the one item from the phase's own definition of done not yet ticked off.
-6. **Commit and push Milestone 9.** Everything above is implemented, tested (629 unit/integration tests, 4 E2E specs, a full `npm run build`), independently Fable-reviewed with all findings fixed, and browser-verified in the working tree, but nothing from this milestone has been committed or pushed to GitHub yet.
-7. **Deploy Milestone 9 to the real stack**, once committed. No schema/migration involved (`git status --porcelain -- drizzle` is clean — M9 is application code only), so this is a `git pull` + `docker compose build` + `docker compose up -d` on the deploy machine, no `deploy.sh` migration step needed, though running the full script is still correct and harmless. Milestones 1–8 are already live (deployed earlier the same day); this closes the gap so the live stack matches what's actually been tested.
-8. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
+6. ~~Commit and push Milestone 9.~~ Done — `a850d0f`, pushed to `origin/main`.
+7. ~~Deploy Milestone 9 to the real stack.~~ Done via `./deploy.sh` — no migration needed (M9 is application code only), containers recreated and healthy. The live stack now runs all of Phase 3, Milestones 1–9; a household member can reach `/retirement` from the nav today.
+8. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`. Phase 3's own remaining open item — naming and reproducing a specific published reference tool/scenario within a documented tolerance, per its definition of done — is the one thing left before Phase 3 itself is fully closed out, separate from starting Phase 4.
 
 ## Notes for Phase 3
 
