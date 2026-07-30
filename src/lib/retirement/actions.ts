@@ -27,7 +27,9 @@ import {
 
 const GENERIC_SAVE_ERROR = 'Couldn’t save this right now';
 
-function fail(formError: string = GENERIC_SAVE_ERROR): ActionResult {
+type ActionFailure = Extract<ActionResult, { ok: false }>;
+
+function fail(formError: string = GENERIC_SAVE_ERROR): ActionFailure {
   return { ok: false, errors: {}, formError };
 }
 
@@ -39,14 +41,14 @@ async function requireHouseholdId(): Promise<number> {
   return state.householdId;
 }
 
-function logAndWrap(scope: string, error: unknown): ActionResult {
+function logAndWrap(scope: string, error: unknown): ActionFailure {
   console.error(`[retirement] ${scope} failed:`, error);
   return fail();
 }
 
 type ParsedAssumptions =
   | { ok: true; value: ScenarioAssumptionsV1 }
-  | { ok: false; result: ActionResult };
+  | { ok: false; result: ActionFailure };
 
 function parseAssumptionsField(formData: FormData): ParsedAssumptions {
   const raw = formData.get('assumptions');
@@ -132,25 +134,33 @@ async function unsetOtherBaselines(
   await db.update(retirementScenarios).set({ isBaseline: false }).where(condition);
 }
 
-export async function createScenario(formData: FormData): Promise<ActionResult> {
+type InsertScenarioOutcome =
+  | { ok: true; scenarioId: number }
+  | { ok: false; result: ActionFailure };
+
+/**
+ * Shared body behind `createScenario` and `createScenarioReturningId` — validates,
+ * inserts, and returns the new row's id (or the failure to report). Both public
+ * exports differ only in what they hand back to the caller on success.
+ */
+async function insertScenario(formData: FormData): Promise<InsertScenarioOutcome> {
   const name = String(formData.get('name') ?? '').trim();
-  if (name === '') return fail('Enter a name for this scenario.');
+  if (name === '') return { ok: false, result: fail('Enter a name for this scenario.') };
   const isBaseline = String(formData.get('isBaseline') ?? '') === 'true';
 
   const parsed = parseAssumptionsField(formData);
-  if (!parsed.ok) return parsed.result;
+  if (!parsed.ok) return { ok: false, result: parsed.result };
   const assumptions = parsed.value;
 
-  let newScenarioId: number;
   try {
     const householdId = await requireHouseholdId();
     const personIds = assumptions.people.map((person) => person.personId);
     if (!(await allPersonIdsBelongToHousehold(householdId, personIds))) {
-      return fail('One of these people no longer exists in this household.');
+      return { ok: false, result: fail('One of these people no longer exists in this household.') };
     }
 
     const db = getDb();
-    newScenarioId = await db.transaction(async (tx) => {
+    const scenarioId = await db.transaction(async (tx) => {
       if (isBaseline) await unsetOtherBaselines(tx, householdId, null);
       const [created] = await tx
         .insert(retirementScenarios)
@@ -158,14 +168,45 @@ export async function createScenario(formData: FormData): Promise<ActionResult> 
         .returning({ id: retirementScenarios.id });
       return created!.id;
     });
+    return { ok: true, scenarioId };
   } catch (error) {
-    if (isBaselineConflict(error)) return fail(BASELINE_CONFLICT_MESSAGE);
-    return logAndWrap('createScenario', error);
+    if (isBaselineConflict(error)) return { ok: false, result: fail(BASELINE_CONFLICT_MESSAGE) };
+    return { ok: false, result: logAndWrap('createScenario', error) };
+  }
+}
+
+export async function createScenario(formData: FormData): Promise<ActionResult> {
+  const outcome = await insertScenario(formData);
+  if (!outcome.ok) return outcome.result;
+
+  revalidatePath('/retirement');
+  revalidatePath(`/retirement/${outcome.scenarioId}`);
+  return { ok: true };
+}
+
+export type CreateScenarioResult =
+  | { ok: true; scenarioId: number }
+  | { ok: false; errors: Record<string, never>; formError: string };
+
+/**
+ * Same as `createScenario`, but hands back the new row's id on success instead of just
+ * `{ ok: true }`. `ActionResult` deliberately carries no payload — every other caller in
+ * this codebase plugs into `useActionForm`, which only needs ok/errors — so widening it
+ * for one caller would leak a data shape into a type every other action returns too.
+ * Milestone 9's Scenario Editor needs the new id in the same client interaction that
+ * creates the scenario, to immediately start a simulation run against it. Additive
+ * sibling, not a replacement: `createScenario`'s own signature and behaviour are
+ * untouched.
+ */
+export async function createScenarioReturningId(formData: FormData): Promise<CreateScenarioResult> {
+  const outcome = await insertScenario(formData);
+  if (!outcome.ok) {
+    return { ok: false, errors: {}, formError: outcome.result.formError ?? GENERIC_SAVE_ERROR };
   }
 
   revalidatePath('/retirement');
-  revalidatePath(`/retirement/${newScenarioId}`);
-  return { ok: true };
+  revalidatePath(`/retirement/${outcome.scenarioId}`);
+  return { ok: true, scenarioId: outcome.scenarioId };
 }
 
 export async function updateScenario(formData: FormData): Promise<ActionResult> {

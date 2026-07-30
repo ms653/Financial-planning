@@ -1,13 +1,12 @@
 # Project Status
 
-Last updated: 2026-07-29 (Phase 3, Milestone 8 — retirement scenario CRUD Server
-Actions — implemented and tested; see below. Milestones 6 and 7 shipped the same day.
-Phase 2 was implemented, browser-verified, independently code-reviewed, and deployed to
-the household's real stack 2026-07-27; three post-deployment additions since — holdings
-editing, holdings totals, and balance-history editing — see the "Since Phase 2
-deployment" sections below. **Note**: the household's live deployed stack still runs a
-build from before Milestone 3 — everything from M3 onward, including this milestone, is
-merged to `main`/pushed to GitHub but not yet deployed; see "Next steps" below)
+Last updated: 2026-07-30 (Phase 3, Milestone 9 — the Retirement Planner UI — implemented
+and tested; see below. Milestones 1–8 (the engine, compute-persist-poll API, and scenario
+CRUD) were deployed to the household's real stack via `./deploy.sh` earlier the same day;
+see the Milestones 1–8 deployment note preserved below. **Note**: M9 itself is not yet
+committed or deployed — it's implemented and fully verified in the working tree, but
+nothing has been pushed to GitHub or run against the live stack yet. See "Next steps"
+below)
 
 ## Done
 
@@ -1240,15 +1239,143 @@ ordering is correct (Postgres orders `false < true`, so `DESC` puts the baseline
 gaps), on top of the 14 M8 shipped with. Full suite 566 passing (up from 548 before M8,
 562 after M8's own initial tests). Typecheck and lint both clean.
 
+## Phase 3, Milestone 9: Retirement Planner UI
+
+The three screens `docs/DESIGN_SPEC.md` specifies — Scenario Editor (`/retirement/new`,
+`/retirement/:id/edit`), Results (`/retirement/:id`), Comparison
+(`/retirement/compare?a=:id&b=:id`) — plus the bare `/retirement` entry point and the
+nav wiring, closing out the last gap between the engine (M1–M8) and a household actually
+being able to use it. `recharts` (new dependency) powers the fan chart, a deliberate
+departure from every other chart in the app (hand-rolled SVG) — chosen with the household
+for tooltip/touch quality, on the reasoning that it may also pay off for Phase 4's stock
+workbench later.
+
+**A real bug, found only by driving a real browser against a real worker-thread run** —
+matching Phase 1/2's own history of catching exactly this class of bug no unit test
+could see. The Scenario Editor's "dirty" indicator (whether the results shown are stale
+relative to unsaved edits) compared the current `name`/`isBaseline` fields against the
+component's fixed `initialName`/`initialIsBaseline` props — which never change again
+after mount. For a brand-new scenario, `initialName` is always `""`; typing any name at
+all (i.e. every real use) meant the editor read as permanently dirty, even the instant
+after a successful run, so the "View full results" link never appeared. Fixed by
+snapshotting `{name, isBaseline, values}` together at the moment of the *last successful
+run* and comparing against that instead of the static initial props
+(`ScenarioEditorForm.tsx`); `useScenarioRunner.run()` now returns whether it actually
+got as far as starting a run, since checking `formError` after an `await` on stale
+closure state proved unreliable. A regression test for the exact scenario (empty
+`initialName`, a name typed in, run to completion) now covers it.
+
+**A second, environment-level finding, not a code bug**: `workerHarness.ts`'s worker
+bundle path assumes the Docker `output: standalone` layout (`.next/standalone/workers/`)
+unconditionally — correct for the real deployed app (`deploy.sh`/`docker compose`,
+verified working end-to-end), but `next start` run directly on the host (which is what
+`playwright.config.ts`'s E2E `webServer` uses) puts the bundle in a different place
+relative to `process.cwd()`, so a simulation silently fails to start with
+`MODULE_NOT_FOUND` unless `SIMULATION_WORKER_BUNDLE_PATH` is set — the existing
+test-only override, previously only exercised by M6/M7's own narrower test suites, not
+by a full browser journey. Not fixed in `workerHarness.ts` itself (would mean guessing
+at a second, non-Docker deployment shape this app doesn't otherwise support) — worth
+knowing if `e2e/retirement.spec.ts` is ever run again outside this session: set
+`SIMULATION_WORKER_BUNDLE_PATH` to the absolute path of the built
+`.next/standalone/workers/simulationWorker.js` first.
+
+**Judgment calls made explicitly, several confirmed with the household before
+implementation**:
+- **"Run simulation" saves the scenario and starts a run in one sequence** — no separate
+  Save button, no autosave-on-blur. The design spec shows no Save button anywhere, and
+  its "Discard unsaved changes?" copy only makes sense under this reading.
+- **Success-band thresholds ("Strong"/"On track"/"At risk") are per-scenario**, relative
+  to that scenario's own `targetSuccessRatePct` (Strong ≥ target+10pp, On track ≥
+  target, At risk below) — confirmed with the household, including that this makes
+  "Strong" near-unreachable for an already-ambitious ≥90% target, by design.
+- **Only the browser tab that started a run locks its own editor** — confirmed with the
+  household. A different visit to the same scenario mid-run sees the Computing state but
+  stays editable, and can start an independent second run.
+- **Bare `/retirement` with zero scenarios ever created** → `redirect('/retirement/new')`;
+  otherwise → the household's baseline-first-then-newest scenario (`getScenarios`'
+  existing M8 ordering, not a second "most recently touched" notion).
+- **UK-calibrated defaults** for a brand-new scenario match what this codebase's own
+  existing tests already treat as canonical (inflation 2.5%, equity allocation 60%,
+  target success rate 90%, flat tax 20%) rather than inventing fresh numbers;
+  `annualSpending` (£30,000) is the one genuinely arbitrary figure, immediately editable.
+  Default withdrawal order (`cash → gia → cash_isa → ss_isa → lisa → sipp_pension`) is a
+  common UK decumulation convention, not the engine's own recommendation — it applies
+  whatever order it's given literally, with no optimisation, per M3's own design.
+- **The fan chart's age axis always plots `people[0]`** (the scenario's first-listed
+  person) and is computed from **the run's own `createdAt`, not "today"** — a run's
+  simulated ages are fixed at the moment it was created; recomputing from today's date on
+  a later page view would silently drift the axis out of sync with what was actually
+  simulated.
+
+**Deliberately scoped down, for time**: the Comparison screen's delta callout and
+assumptions-diff table are computed from each side's data **at page load**, not
+reactively if a re-run is triggered from that same screen without a reload — matching
+the spec's own "each side independently" framing without lifting both sides' polling
+state into one shared component. The wrapper-withdrawal-order editor is a fixed
+6-item reorderable list (up/down buttons), not a way to omit a wrapper the household
+doesn't hold — omitting one from a full list is functionally a no-op step, not
+incorrect, so this wasn't blocking.
+
+629 tests passing (up from 566). Typecheck, lint, and a full `npm run build` all clean,
+including the new `recharts` dependency. Browser-verified in both light and dark mode
+(fan chart, band indicator, comparison layout) via screenshot, separately from the
+automated E2E run.
+
+### Independent Fable review — three real, verified bugs found and fixed
+
+Held to this codebase's own established bar for these reviews (M8's own review
+reproduced its race condition 3/3 runs against a real Postgres before treating it as
+confirmed, not just theorized from reading the code) — the reviewer independently wrote
+reproduction tests for each finding before reporting it, not just read the code and
+guessed.
+
+1. **(High) A second "Run simulation" click from `/retirement/new` created a duplicate
+   scenario instead of updating the one just created.** `ScenarioEditorForm`'s
+   create-vs-update branch used the `scenarioId` *prop* (always `null` on the New
+   Scenario page, and never updated after mount — deliberately, to avoid remounting the
+   component mid-run via a URL change). So editing an assumption and running again,
+   without navigating away — an entirely ordinary workflow — silently created a second
+   "Baseline" row each time, and, if "Set as baseline" was checked, repeatedly stole the
+   baseline flag from the previous duplicate. Fixed with a local `effectiveScenarioId`
+   state, seeded from the prop and switched to the newly-created id once a save
+   succeeds — deliberately *not* a URL change, to preserve the no-remount property the
+   original code was already protecting.
+2. **(Medium) A genuine race window left the editor briefly unlocked while a run was
+   actually in flight.** `locked` was computed as `poll.run?.status === 'running'`, but
+   right after a run starts, `poll.run` is still `null` for one network round trip (its
+   own first poll hasn't resolved) — during that gap the fieldset was editable and "Run
+   simulation" was clickable again, which could re-trigger Finding 1 via a fast
+   double-click. Fixed by locking whenever a run is active and *not yet confirmed
+   terminal*, rather than only when it's confirmed running.
+3. **(Medium) Two fields' validation errors were invisible on an unblurred invalid
+   submit.** `pclsAge` and `statePensionClaimAge` produce field-keyed errors (not the
+   form-level banner), but the hand-maintained list of fields to force-`touched` on an
+   invalid "Run simulation" click omitted both — typing something unparseable into
+   either and clicking the button without blurring first made the click appear to do
+   nothing, no error anywhere. Fixed by deriving the touched set from the validator's own
+   returned error keys instead of a hand-maintained list, which can't drift out of sync
+   with the validator the same way again.
+
+A smaller, non-blocking gap was also fixed: `scenarioDiff.ts`'s per-person comparison
+covered retirement age, plan end age, and State Pension claim age, but not PCLS age or
+the State Pension override — two scenarios differing *only* in one of those showed no
+diff row at all, in tension with the spec's "only the fields that differ" promise.
+
+Each finding has a dedicated regression test reproducing the exact failure before the
+fix (`ScenarioEditorForm.test.tsx`, `useScenarioRunner.test.tsx`,
+`scenarioDiff.test.ts`), and the full E2E suite was re-run clean afterward, including the
+duplicate-scenario scenario's own effect on the create→run→view journey.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
 2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner. Phase 2 adds `e2e/portfolio.spec.ts` to the same not-yet-in-CI backlog.
 3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done, deployed, and independently code-reviewed — see "Phase 2 — what shipped" and "Phase 2 code review" above.
 4. **Holdings-to-balance sync** — requested by the household after using Phase 2 live: adding/updating a holding never touches the account's own balance, so an account's stored balance and its holdings' live value can silently drift apart (see "Deliberately not built" above for the full note and the design question it raises — this isn't a one-line fix). Worth scoping and building before or alongside Phase 3, since it's a real gap in what's already shipped, not a new phase's feature.
-5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. **In progress**: Milestones 1–8 done (schema, RNG/shared types, deterministic core, UK return dataset, the randomized bootstrap engine, the worker-thread deployment spike, the DB resolution layer plus compute-persist-poll route handlers, and now scenario CRUD) — see their sections above and the full milestone plan (ask if it's not in the session's context; not part of this repo). **M9 (the UI) is next and now fully unblocked** — Scenario Editor, Results (fan chart), Comparison screens, per `docs/DESIGN_SPEC.md`'s screen inventory; it's the only thing left before a household can actually use any of this. No route, page, or nav exists yet anywhere in `src/app/` for retirement — `src/app/layout.tsx` is still a bare shell.
-6. **Deploy M3 onward to the real stack.** The household's live containers (`financial-planning-app-1`/`-db-1`) are still running a build from before Milestone 3 — confirmed by comparing the running image's build timestamp against the commit history, not assumed. Everything from the engine itself through M8's CRUD is merged to `main` and pushed to GitHub but has never been deployed. Worth deciding when: deploying now would ship real infrastructure (the migration, the worker bundle, the new route handlers) with nothing yet user-visible, since M9 doesn't exist — reasonable to bundle with M9, or to do earlier specifically to de-risk the migration/deploy mechanics separately from UI work. Either way, `./deploy.sh` is the runbook (dump → migrate → up → health check), same as every prior deploy.
-7. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
+5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. ~~M9 (the UI)~~ Done 2026-07-30 — see "Phase 3, Milestone 9" above. **Phase 3 is functionally complete**: engine, API, CRUD, and UI are all built and tested; the not-yet-named reference-tool reproduction check is the one item from the phase's own definition of done not yet ticked off.
+6. **Commit and push Milestone 9.** Everything above is implemented, tested (629 unit/integration tests, 4 E2E specs, a full `npm run build`), independently Fable-reviewed with all findings fixed, and browser-verified in the working tree, but nothing from this milestone has been committed or pushed to GitHub yet.
+7. **Deploy Milestone 9 to the real stack**, once committed. No schema/migration involved (`git status --porcelain -- drizzle` is clean — M9 is application code only), so this is a `git pull` + `docker compose build` + `docker compose up -d` on the deploy machine, no `deploy.sh` migration step needed, though running the full script is still correct and harmless. Milestones 1–8 are already live (deployed earlier the same day); this closes the gap so the live stack matches what's actually been tested.
+8. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`.
 
 ## Notes for Phase 3
 

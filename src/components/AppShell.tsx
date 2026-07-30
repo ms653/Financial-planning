@@ -12,10 +12,9 @@ import { BackupWarningStrip } from '@/components/BackupWarningStrip';
  * get sidebar slots reserved but greyed out/hidden until built, so P1's nav doesn't need
  * restructuring later."
  *
- * Retirement Planner is rendered but disabled here. The design spec treats it as a P1
- * screen, but PROPOSAL.md's phased delivery puts it in Phase 3 (it needs the Monte Carlo
- * engine), so its slot stays reserved exactly as the spec asks — and says which phase,
- * rather than leaving a dead link that looks broken. Portfolio is unreserved as of Phase 2.
+ * Retirement Planner is unreserved as of Milestone 9 — the Monte Carlo engine (M1–M8)
+ * plus its UI (Scenario Editor, Results, Comparison) are both built now. Portfolio was
+ * unreserved as of Phase 2, the same way.
  *
  * What is deliberately *not* here is the connectivity badge. The design spec puts one in the
  * top chrome of every screen, but its three states (Connected / Offline / Syncing) only mean
@@ -36,7 +35,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { href: '/', label: 'Net Worth' },
   { href: '/accounts', label: 'Accounts' },
   { href: '/portfolio', label: 'Portfolio' },
-  { href: '/retirement', label: 'Retirement', comingIn: 'Phase 3' },
+  { href: '/retirement', label: 'Retirement' },
   { href: '/settings', label: 'Settings' },
 ];
 

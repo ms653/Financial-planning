@@ -12,6 +12,7 @@ import * as schema from '@/lib/db/schema';
 import { households, people, retirementScenarios, simulationRuns } from '@/lib/db/schema';
 import {
   createScenario,
+  createScenarioReturningId,
   deleteScenario,
   duplicateScenario,
   updateScenario,
@@ -186,6 +187,28 @@ describe.skipIf(!connectionString)('retirement scenario CRUD against a real Post
         code: '23505',
         constraint: 'retirement_scenario_one_baseline_per_household',
       });
+    });
+  });
+
+  describe('createScenarioReturningId', () => {
+    it('creates a scenario and returns its new id', async () => {
+      const result = await createScenarioReturningId(
+        form({ name: 'Baseline', assumptions: assumptionsJson() }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected ok');
+
+      const [household] = await db.select().from(households);
+      const detail = await getScenario(result.scenarioId, household!.id);
+      expect(detail!.name).toBe('Baseline');
+    });
+
+    it('returns the same formError shape as createScenario on failure, with no scenarioId', async () => {
+      const result = await createScenarioReturningId(form({ name: '', assumptions: assumptionsJson() }));
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('expected failure');
+      expect(result.formError).toMatch(/name/i);
+      expect('scenarioId' in result).toBe(false);
     });
   });
 
