@@ -1,10 +1,13 @@
 # Project Status
 
-Last updated: 2026-07-30 (Phase 3, Milestone 9 — the Retirement Planner UI — implemented,
-independently Fable-reviewed (findings fixed), committed (`a850d0f`), pushed, and
-deployed to the household's real stack via `./deploy.sh` — no migration needed, M9 is
-application code only. The live stack now runs all of Phase 3, Milestones 1–9. See
-"Phase 3, Milestone 9" below for what shipped and the review findings)
+Last updated: 2026-07-31 (**Phase 3 is fully closed out.** Milestone 9 — the Retirement
+Planner UI — shipped 2026-07-30 (implemented, independently Fable-reviewed, findings
+fixed, committed, pushed, deployed); a person-picker and opt-in guided setup wizard
+shipped 2026-07-31 after a real incident (a household scenario silently included young
+children); and the phase's last open item — naming and reproducing a specific published
+reference tool/scenario within a documented tolerance — is now done too, against the
+Trinity study. See "Phase 3 reference-tool validation" below for the methodology and
+results. The live stack runs all of Phase 3; next up is Phase 4 per "Next steps")
 
 ## Done
 
@@ -1418,16 +1421,72 @@ was missing — a `page.screenshot()` timing artifact immediately after
 (the light-mode capture and the DOM text content both confirmed the name was there
 all along).
 
+### Phase 3 reference-tool validation — Trinity study (2026-07-31)
+
+Phase 3's own definition of done, per `docs/PROPOSAL.md`'s Phased delivery table, had
+one item left unchecked since the phase began: naming a specific published reference
+tool/scenario and reproducing its output within a documented tolerance on matching
+inputs — "validated against a known calculator" wasn't a real criterion until a
+specific one was named and actually attempted. That's now done —
+`src/lib/retirement/engine/referenceValidation.test.ts` (new, 3 tests, all passing).
+
+**The reference tool named**: the **Trinity study** (Cooley, Hubbard & Walz, 1998) —
+the canonical, most-reproduced "safe withdrawal rate" success-rate methodology, and
+the origin of the widely-cited "4% rule".
+
+**A real methodological difference, disclosed rather than smoothed over**: Trinity's
+own method computes a success rate over *deterministic rolling historical windows*
+(every actual N-year stretch in its dataset) — not a randomized bootstrap Monte
+Carlo, which is what this codebase's own M5 sampler (`bootstrapEngine.ts`) does.
+Comparing the bootstrap's aggregate success rate directly against Trinity's
+rolling-window number would conflate two different sampling methodologies and not
+actually prove anything. Instead, this validation checks the piece that genuinely
+needs external checking — `simulatePath`'s decumulation mechanics (compounding,
+withdrawal, depletion) — using Trinity's *own* rolling-window method, over a real
+historical return dataset, calling the real production `simulatePath` directly
+(not a reimplementation of it).
+
+**Data source, precisely — not hand-transcribed from a summary**: the original
+1926–1995 Ibbotson data Trinity itself used is commercial (Ibbotson/Morningstar),
+not freely reproducible — the same real constraint that led several independent
+"updated Trinity study" analyses (Bogleheads, thepoorswiss.com, bestinterest.blog —
+found while researching this) to substitute a different public dataset and extend
+the window range. This validation does the same: Aswath Damodaran's (NYU Stern)
+historical returns dataset, downloaded and parsed directly (not scraped from a
+rendered web page, to avoid any transcription risk) — `histretSP.xls`, sheet
+"Nominal vs Real Data", columns "S&P 500 (Real)" and "T.Bond (Real)" (10-year US
+Treasury), both already inflation-adjusted total returns, 1928–2025 (98 years, 69
+rolling 30-year windows).
+
+**Results, three input combinations, each against an independently-sourced figure**:
+
+| Withdrawal rate | Allocation | Horizon | This engine's result | Reference figure(s) |
+|---|---|---|---|---|
+| 4% | 50/50 stock/bond | 30 years | **66/69 = 95.7%** | ~95–100% across multiple independent citations of the original study, a 1% fee variant, and Wade Pfau's own re-derivation |
+| 5% | 50/50 stock/bond | 30 years | **47/69 = 68.1%** | 68% (41/60), per retirementresearcher.com's own description of the original methodology on a different, older, shorter dataset — the closeness (68.1% vs. 68%) is corroborating, not depended on |
+| 3% | 50/50 stock/bond | 30 years | **69/69 = 100%** | 100%, per Wade Pfau's re-derivation ("every 30-year retiree still had money") |
+
+All three land inside their documented reference range, including the tight,
+independently-sourced 5% corroboration. Given commercial Ibbotson data isn't legally
+reproducible and even independent secondary sources of "the same" Trinity result
+don't agree with each other to the percentage point (95% vs. 96% vs. 98% vs. 100%,
+depending on dataset vintage and fee assumptions), this is judged sufficient to
+close out the phase's definition of done — the tolerance bands in the test file are
+ranges for exactly this reason, not one source's single decimal.
+
+Typecheck, lint, and the full suite (639 tests, up from 636) all clean. **Phase 3 is
+now fully closed out** — engine, API, CRUD, UI, and this validation.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
 2. ~~Run the Playwright E2E once.~~ Done — see "Playwright E2E" above. It found and fixed a real Guided Setup defect. Worth adding to CI now that it is known to pass; it needs a scratch Postgres and `npx playwright install chromium` on the runner. Phase 2 adds `e2e/portfolio.spec.ts` to the same not-yet-in-CI backlog.
 3. ~~Phase 2: portfolio tracking plus a market-data provider~~ Done, deployed, and independently code-reviewed — see "Phase 2 — what shipped" and "Phase 2 code review" above.
 4. **Holdings-to-balance sync** — requested by the household after using Phase 2 live: adding/updating a holding never touches the account's own balance, so an account's stored balance and its holdings' live value can silently drift apart (see "Deliberately not built" above for the full note and the design question it raises — this isn't a one-line fix). Worth scoping and building before or alongside Phase 3, since it's a real gap in what's already shipped, not a new phase's feature.
-5. Phase 3 per the Phased Delivery table: the retirement Monte Carlo engine (UK-calibrated withdrawal rate, State Pension as an income floor, seeded RNG per PROPOSAL.md's Compute execution model) plus the narrow retirement-timing scenario comparison. Definition of done includes naming and reproducing a specific published reference tool/scenario within a documented tolerance — not yet named. ~~M9 (the UI)~~ Done 2026-07-30 — see "Phase 3, Milestone 9" above. **Phase 3 is functionally complete**: engine, API, CRUD, and UI are all built and tested; the not-yet-named reference-tool reproduction check is the one item from the phase's own definition of done not yet ticked off.
+5. ~~Phase 3 per the Phased Delivery table~~ **Done, 2026-07-31.** Engine, API, CRUD, UI (M9), and the reference-tool validation (Trinity study, see "Phase 3 reference-tool validation" above) are all complete. Phase 3 is fully closed out.
 6. ~~Commit and push Milestone 9.~~ Done — `a850d0f`, pushed to `origin/main`.
 7. ~~Deploy Milestone 9 to the real stack.~~ Done via `./deploy.sh` — no migration needed (M9 is application code only), containers recreated and healthy. The live stack now runs all of Phase 3, Milestones 1–9; a household member can reach `/retirement` from the nav today.
-8. Continue in phase order through Phase 8 as specified in `docs/PROPOSAL.md`. Phase 3's own remaining open item — naming and reproducing a specific published reference tool/scenario within a documented tolerance, per its definition of done — is the one thing left before Phase 3 itself is fully closed out, separate from starting Phase 4.
+8. **Start Phase 4** (stock analysis workbench) per `docs/PROPOSAL.md`'s Phased delivery table — the next phase in sequence, now that Phase 3 is closed. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
 
 ## Notes for Phase 3
 
