@@ -26,6 +26,10 @@ afterEach(() => {
 });
 
 const PEOPLE = [{ personId: 1, name: 'Alex', currentAge: 41 }];
+const TWO_PEOPLE = [
+  { personId: 1, name: 'Alex', currentAge: 41 },
+  { personId: 2, name: 'Jordan', currentAge: 6 },
+];
 
 function baseAssumptions(): ScenarioAssumptionsV1 {
   return {
@@ -40,7 +44,78 @@ function baseAssumptions(): ScenarioAssumptionsV1 {
   };
 }
 
+/** Checks a person's inclusion checkbox in the "Who's this scenario for?" picker —
+ * required before any of that person's per-person fields exist in the DOM, since a
+ * new scenario now defaults to nobody selected. */
+async function selectPerson(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(screen.getByRole('checkbox', { name: new RegExp(name) }));
+}
+
 describe('ScenarioEditorForm', () => {
+  describe('person picker', () => {
+    it('defaults to nobody selected on a new scenario, and blocks "Run simulation" until someone is chosen — regression for a real incident where every household member (including young children) was included by default', async () => {
+      const user = userEvent.setup();
+      render(
+        <ScenarioEditorForm
+          people={TWO_PEOPLE}
+          scenarioId={null}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+
+      expect(screen.getByRole('checkbox', { name: /Alex/ })).not.toBeChecked();
+      expect(screen.getByRole('checkbox', { name: /Jordan/ })).not.toBeChecked();
+      expect(screen.queryByLabelText(/Alex's retirement age/i)).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Run simulation' }));
+
+      expect(await screen.findByText(/select at least one person/i)).toBeInTheDocument();
+      expect(createScenarioReturningId).not.toHaveBeenCalled();
+    });
+
+    it('defaults to whoever is already saved when editing an existing scenario', () => {
+      render(
+        <ScenarioEditorForm
+          people={TWO_PEOPLE}
+          scenarioId={42}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+
+      expect(screen.getByRole('checkbox', { name: /Alex/ })).toBeChecked();
+      expect(screen.getByRole('checkbox', { name: /Jordan/ })).not.toBeChecked();
+      expect(screen.getByLabelText(/Alex's retirement age/i)).toBeInTheDocument();
+      expect(screen.queryByLabelText(/Jordan's retirement age/i)).not.toBeInTheDocument();
+    });
+
+    it('preserves a person\'s entered fields across unselect/reselect rather than discarding them', async () => {
+      const user = userEvent.setup();
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={42}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+
+      const retirementAgeInput = screen.getByLabelText(/Alex's retirement age/i);
+      await user.clear(retirementAgeInput);
+      await user.type(retirementAgeInput, '62');
+
+      await selectPerson(user, 'Alex'); // unselect
+      expect(screen.queryByLabelText(/Alex's retirement age/i)).not.toBeInTheDocument();
+
+      await selectPerson(user, 'Alex'); // reselect
+      expect(screen.getByLabelText(/Alex's retirement age/i)).toHaveValue('62');
+    });
+  });
+
   it('shows the exact spec copy inline when retirement age is out of range, on blur', async () => {
     const user = userEvent.setup();
     render(
@@ -52,6 +127,7 @@ describe('ScenarioEditorForm', () => {
         initialAssumptions={baseAssumptions()}
       />,
     );
+    await selectPerson(user, 'Alex');
 
     const retirementAgeInput = screen.getByLabelText(/Alex's retirement age/i);
     await user.clear(retirementAgeInput);
@@ -72,6 +148,7 @@ describe('ScenarioEditorForm', () => {
         initialAssumptions={baseAssumptions()}
       />,
     );
+    await selectPerson(user, 'Alex');
 
     const retirementAgeInput = screen.getByLabelText(/Alex's retirement age/i);
     await user.clear(retirementAgeInput);
@@ -111,6 +188,7 @@ describe('ScenarioEditorForm', () => {
         initialAssumptions={baseAssumptions()}
       />,
     );
+    await selectPerson(user, 'Alex');
 
     await user.click(screen.getByRole('button', { name: 'Run simulation' }));
 
@@ -152,8 +230,8 @@ describe('ScenarioEditorForm', () => {
         initialAssumptions={baseAssumptions()}
       />,
     );
-
     await user.type(screen.getByLabelText('Scenario name'), 'Baseline');
+    await selectPerson(user, 'Alex');
     await user.click(screen.getByRole('button', { name: 'Run simulation' }));
 
     await waitFor(() => expect(startSimulationRun).toHaveBeenCalledWith(42));
@@ -189,8 +267,8 @@ describe('ScenarioEditorForm', () => {
         initialAssumptions={baseAssumptions()}
       />,
     );
-
     await user.type(screen.getByLabelText('Scenario name'), 'Baseline');
+    await selectPerson(user, 'Alex');
     await user.click(screen.getByRole('button', { name: 'Run simulation' }));
     await waitFor(() => expect(startSimulationRun).toHaveBeenNthCalledWith(1, 42));
 
@@ -217,6 +295,7 @@ describe('ScenarioEditorForm', () => {
         initialAssumptions={baseAssumptions()}
       />,
     );
+    await selectPerson(user, 'Alex');
 
     await user.click(screen.getByRole('button', { name: /Strategy/ }));
     await user.type(screen.getByLabelText(/Alex's PCLS age/i), 'abc');
@@ -240,10 +319,102 @@ describe('ScenarioEditorForm', () => {
         initialAssumptions={baseAssumptions()}
       />,
     );
+    await selectPerson(user, 'Alex');
 
     await user.click(screen.getByRole('button', { name: 'Run simulation' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Enter a name for this scenario.');
     expect(startSimulationRun).not.toHaveBeenCalled();
+  });
+
+  describe('guided wizard', () => {
+    it('is not shown by default — only the direct form renders on first paint', () => {
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName=""
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+      expect(screen.getByRole('button', { name: 'Guide me through this' })).toBeInTheDocument();
+      expect(screen.queryByText('Before you start')).not.toBeInTheDocument();
+    });
+
+    it('opens at the intro step, steps through Back/Next, and gates past the people step until someone is selected', async () => {
+      const user = userEvent.setup();
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName=""
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+
+      await user.click(screen.getByRole('button', { name: 'Guide me through this' }));
+      expect(screen.getByText('This models drawing down, not saving up yet.')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Next' }));
+      expect(screen.getByText('Who’s this for?')).toBeInTheDocument();
+      const nextButton = screen.getByRole('button', { name: 'Next' });
+      expect(nextButton).toBeDisabled();
+
+      await selectPerson(user, 'Alex');
+      expect(nextButton).toBeEnabled();
+
+      await user.click(nextButton);
+      expect(screen.getByText('These ages anchor the simulation.', { exact: false })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Back' }));
+      expect(screen.getByText('Who’s this for?')).toBeInTheDocument();
+    });
+
+    it('runs the same save-then-run sequence from the Review step as the direct form', async () => {
+      const user = userEvent.setup();
+      const completeRow = {
+        id: 7,
+        scenarioId: 42,
+        status: 'complete' as const,
+        seed: 1,
+        iterationCount: 2000,
+        result: { scenarioId: 42, seed: 1, iterationCount: 2000, successRate: 0.9, percentileBandsPence: {} },
+        errorDetail: null,
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      };
+      createScenarioReturningId.mockResolvedValue({ ok: true, scenarioId: 42 });
+      startSimulationRun.mockResolvedValue(completeRow);
+      fetchSimulationRun.mockResolvedValue(completeRow);
+
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+
+      await user.click(screen.getByRole('button', { name: 'Guide me through this' }));
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> people
+      await selectPerson(user, 'Alex');
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> when
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> spending
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> strategy
+      await user.click(screen.getByRole('button', { name: 'Skip — use sensible defaults' })); // -> review
+
+      expect(screen.getByText('Assumptions used')).toBeInTheDocument();
+      // Two "Run simulation" buttons exist while the wizard is open — the Review
+      // step's own, and the persistent bottom preview strip's (unchanged, still
+      // rendered alongside the wizard). The wizard's is first in DOM order.
+      await user.click(screen.getAllByRole('button', { name: 'Run simulation' })[0]!);
+
+      await waitFor(() => expect(createScenarioReturningId).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(startSimulationRun).toHaveBeenCalledWith(42));
+    });
   });
 });

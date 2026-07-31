@@ -38,6 +38,16 @@ async function logIn(page: Page) {
   await page.getByRole('button', { name: /unlock|sign in|continue/i }).click();
 }
 
+/** A new scenario now defaults to nobody selected in the "Who's this scenario for?"
+ * picker (a household previously had every member — including young children —
+ * included by default, with no way to leave anyone out; fixed after that incident).
+ * Per-person fields don't exist in the DOM until their person is checked here. */
+async function selectPeople(page: Page, names: string[]) {
+  for (const name of names) {
+    await page.getByRole('checkbox', { name: new RegExp(name) }).check();
+  }
+}
+
 /** Drives guided setup to a two-person, one-account household — the minimum a
  * retirement scenario needs (at least one person; a second exercises the
  * survivor-spending field and per-person "When" labelling). */
@@ -94,6 +104,7 @@ test('create, run, and view a scenario\'s results — full journey, real worker 
   await expect(page.getByRole('heading', { name: 'New scenario' })).toBeVisible();
 
   await page.getByLabel('Scenario name').fill('Baseline');
+  await selectPeople(page, ['Alex', 'Jordan']);
 
   // "When" — per-person fields are named, not generic (the spec's own two-person edge
   // case). Defaults are pre-filled, so only the ages actually need setting.
@@ -137,6 +148,7 @@ test('the editor unblocks once a run resolves, and Cancel works when it catches 
 
   await page.goto('/retirement/new');
   await page.getByLabel('Scenario name').fill('To cancel');
+  await selectPeople(page, ['Alex', 'Jordan']);
   await page.getByLabel(/Alex's retirement age/).fill('65');
   await page.getByLabel(/Jordan's retirement age/).fill('65');
   await page.getByLabel(/Alex's plan end age/).fill('95');
@@ -166,6 +178,7 @@ test('comparing two scenarios shows both results side by side, a delta callout, 
   async function createAndRun(name: string, retirementAge: string) {
     await page.goto('/retirement/new');
     await page.getByLabel('Scenario name').fill(name);
+    await selectPeople(page, ['Alex', 'Jordan']);
     await page.getByLabel(/Alex's retirement age/).fill(retirementAge);
     await page.getByLabel(/Jordan's retirement age/).fill('65');
     await page.getByLabel(/Alex's plan end age/).fill('95');

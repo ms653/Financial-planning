@@ -11,12 +11,17 @@ import type { ScenarioAssumptionsV1 } from '@/lib/retirement/scenarioAssumptions
 export function AssumptionsSummary({
   assumptions,
   personNames,
+  defaultOpen = false,
 }: {
   assumptions: ScenarioAssumptionsV1;
   personNames: ReadonlyMap<number, string>;
+  /** The Results screen wants this collapsed by default; the Scenario Wizard's
+   * Review step wants it open immediately, since the whole point of that step is
+   * to show what's about to run without an extra click. */
+  defaultOpen?: boolean;
 }) {
   return (
-    <details className="rounded-card border border-line bg-paper-raised">
+    <details open={defaultOpen} className="rounded-card border border-line bg-paper-raised">
       <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-content">
         Assumptions used
       </summary>

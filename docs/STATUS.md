@@ -1364,6 +1364,60 @@ fix (`ScenarioEditorForm.test.tsx`, `useScenarioRunner.test.tsx`,
 `scenarioDiff.test.ts`), and the full E2E suite was re-run clean afterward, including the
 duplicate-scenario scenario's own effect on the create→run→view journey.
 
+### Person-picker + guided setup wizard (2026-07-31)
+
+A real incident, not a hypothetical: the household's first live scenario included
+every household member — including two young children (ages 6 and 4) — because the
+Scenario Editor had no way to leave anyone out. Each selected person gets their own
+drawdown horizon, and the engine runs for as long as the *longest* one
+(`totalSimulationYears` in `deterministicCore.ts` takes the max across everyone
+listed), so the youngest child's default `planEndAge` alone stretched a real
+household's simulation out to roughly 90 years, producing a 1% success rate that
+looked like a financial crisis but was actually a data-entry problem with no way to
+fix it.
+
+**Fixed with two changes, both in `ScenarioEditorForm.tsx`:**
+
+- **A real person-picker.** `selectedPersonIds` (a `Set<number>`) now gates who's
+  actually included — the per-person When/Strategy fields only render, and only
+  validate/save, for selected people. **New scenarios default to nobody
+  selected**, forcing an explicit choice, mirroring `AccountForm.tsx`'s own
+  owner-picker precedent ("defaults to unselected... to avoid silent
+  misattribution") applied to the same class of problem. Editing an existing
+  scenario keeps whoever was already saved, unchanged. Unselecting someone
+  preserves their entered field values if reselected later — nothing is deleted,
+  only excluded from what's validated and saved via a `filteredValues` derivation
+  that never touches the underlying per-index field state.
+- **An opt-in guided wizard** (`ScenarioWizard.tsx`, new), reached via a "Guide me
+  through this" button — **not the default**, per the household's explicit ask.
+  Six steps (Before you start / Who's this for / When / Spending / Strategy /
+  Review) walk through the exact same render functions and validation the direct
+  form uses — the wizard owns no form state of its own, only which step is
+  showing, so it's structurally impossible for the two modes to drift onto
+  different values. The intro and review steps both state plainly, in the
+  household's own words from the conversation that prompted this: *"this models
+  drawing down, not saving up yet"* — the engine starts spending from each
+  selected person's current age immediately, never reads `retirementAge`, and
+  doesn't model years of saving between now and an intended retirement date.
+
+**One small permanent addition outside the wizard**: the "retirement age" field's
+hint text, in *both* modes, now reads "for reference only, doesn't yet affect the
+calculation" — so the engine's real limitation isn't only visible to someone who
+opts into the wizard.
+
+13 tests in `ScenarioEditorForm.test.tsx` (up from 6: 3 new person-picker tests, 3
+new wizard-flow tests, existing tests updated to select a person first now that
+selection is required), all passing. `e2e/retirement.spec.ts` updated the same way
+(a `selectPeople` helper checks the picker before touching per-person fields) and
+re-run clean, real browser, real worker execution. Typecheck, lint, build all clean.
+Browser-verified in light and dark mode via screenshot; confirmed via the DOM's own
+text content (not just visual inspection) that a person's name renders correctly in
+the picker after selection, since one dark-mode screenshot briefly looked like it
+was missing — a `page.screenshot()` timing artifact immediately after
+`page.emulateMedia()` in the verification script itself, not a real rendering bug
+(the light-mode capture and the DOM text content both confirmed the name was there
+all along).
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
