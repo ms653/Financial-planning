@@ -416,5 +416,46 @@ describe('ScenarioEditorForm', () => {
       await waitFor(() => expect(createScenarioReturningId).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(startSimulationRun).toHaveBeenCalledWith(42));
     });
+
+    it('lets a scenario be named from the Review step — regression for a real gap where the wizard never rendered the name field at all, so a brand-new scenario could never be named while guided', async () => {
+      const user = userEvent.setup();
+      createScenarioReturningId.mockResolvedValue({ ok: true, scenarioId: 42 });
+      startSimulationRun.mockResolvedValue({
+        id: 7,
+        scenarioId: 42,
+        status: 'running' as const,
+        seed: 1,
+        iterationCount: 2000,
+        result: null,
+        errorDetail: null,
+        createdAt: new Date().toISOString(),
+        completedAt: null,
+      });
+
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName="" // the real default on /retirement/new — the case that was broken
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+
+      await user.click(screen.getByRole('button', { name: 'Guide me through this' }));
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> people
+      await selectPerson(user, 'Alex');
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> when
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> spending
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> strategy
+      await user.click(screen.getByRole('button', { name: 'Skip — use sensible defaults' })); // -> review
+
+      await user.type(screen.getByLabelText('Scenario name'), 'Early retirement');
+      await user.click(screen.getAllByRole('button', { name: 'Run simulation' })[0]!);
+
+      await waitFor(() => expect(createScenarioReturningId).toHaveBeenCalledTimes(1));
+      const submittedFormData = createScenarioReturningId.mock.calls[0]![0] as FormData;
+      expect(submittedFormData.get('name')).toBe('Early retirement');
+    });
   });
 });

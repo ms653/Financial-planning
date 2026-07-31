@@ -32,6 +32,7 @@ const STEPS = [
 type StepKey = (typeof STEPS)[number]['key'];
 
 export interface ScenarioWizardProps {
+  renderNameFields: () => React.ReactNode;
   renderPersonPicker: () => React.ReactNode;
   renderWhenFields: () => React.ReactNode;
   renderSpendingFields: () => React.ReactNode;
@@ -54,6 +55,7 @@ const primaryButtonClass =
   'inline-flex min-h-[40px] items-center rounded-lg bg-ink-950 px-5 text-sm font-medium text-content-ink transition enabled:hover:bg-ink-800 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-brass dark:text-ink-950';
 
 export function ScenarioWizard({
+  renderNameFields,
   renderPersonPicker,
   renderWhenFields,
   renderSpendingFields,
@@ -197,11 +199,26 @@ export function ScenarioWizard({
                 simulation. Target success rate is the bar you’re aiming for, shown against your
                 actual result afterwards — it isn’t an input to the maths itself. The tax rate is
                 one simplified rate on taxable withdrawals only (ISA and tax-free lump sum
-                withdrawals are excluded automatically). Withdrawal order is applied exactly as
-                listed — not an optimiser.
+                withdrawals are excluded automatically). <strong className="font-medium text-content">PCLS</strong> is
+                the Pension Commencement Lump Sum — the 25% you can take tax-free from a pension;
+                “PCLS age” is when this scenario assumes you take it, leaving the rest to keep
+                growing. The <strong className="font-medium text-content">State Pension override</strong> lets
+                you replace the standard estimated amount with your own figure — useful if your
+                real State Pension forecast differs (e.g. from a gap in your National Insurance
+                record). Withdrawal order is applied exactly as listed — not an optimiser (a real
+                withdrawal-order optimiser is on the roadmap as a later, optional phase, not
+                something this build does yet).
               </p>
             </div>
-            {renderStrategyFields()}
+            {/* renderStrategyFields() is deliberately "bare" (no card of its own) —
+                the direct form embeds it inside its own collapsed "Strategy" box, so
+                giving it a second wrapper there would nest two cards. The wizard has
+                no such box, so without this it's the one step that renders without
+                the white card every other step gets, sitting straight on the
+                wizard's own tinted background instead. */}
+            <div className="rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6">
+              {renderStrategyFields()}
+            </div>
             <button
               type="button"
               onClick={() => goToStep('review')}
@@ -215,6 +232,10 @@ export function ScenarioWizard({
         {step.key === 'review' ? (
           <div className="space-y-4">
             <h2 className="font-serif text-2xl text-content">Review</h2>
+            <div className="rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6">
+              <h3 className="mb-4 text-sm font-medium text-content">Name this scenario</h3>
+              {renderNameFields()}
+            </div>
             {reviewAssumptions ? (
               <>
                 <AssumptionsSummary assumptions={reviewAssumptions} personNames={personNames} defaultOpen />

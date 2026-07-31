@@ -96,13 +96,20 @@ function Field({
   error?: string;
   children: React.ReactNode;
 }) {
+  // `flex h-full flex-col` + `mt-auto` on the input wrapper: label/hint text wraps to
+  // a different number of lines per column (e.g. "State Pension claim age" vs.
+  // "retirement age"), which otherwise leaves each column's input box starting at a
+  // different height within the same grid row. Grid's own row-stretch already makes
+  // this div as tall as the row's tallest cell; anchoring the input to the bottom of
+  // that (rather than letting it sit directly under however much text happens to be
+  // above it) is what actually lines every input up across a row.
   return (
-    <div>
+    <div className="flex h-full flex-col">
       <label htmlFor={htmlFor} className="block text-sm font-medium text-content">
         {label}
       </label>
       {hint ? <p className="mt-0.5 text-xs text-content-faint">{hint}</p> : null}
-      <div className="mt-1.5">{children}</div>
+      <div className="mt-auto pt-1.5">{children}</div>
       {error ? (
         <p role="alert" className="mt-1 text-xs text-clay">
           {error}
@@ -258,6 +265,31 @@ export function ScenarioEditorForm({
   // useScenarioRunner is mid-sequence starting the run, dropping the in-flight
   // activeRunId/Computing state exactly when the user most wants to see it. The "View
   // results"/"View full results" links are the way to reach the saved scenario's own URL.
+
+  function renderNameFields() {
+    return (
+      <div className="grid gap-5 sm:grid-cols-2">
+        <Field label="Scenario name" htmlFor="scenario-name">
+          <input
+            id="scenario-name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Baseline"
+            className={inputClass}
+          />
+        </Field>
+        <label className="mt-7 inline-flex min-h-[44px] cursor-pointer items-center gap-2 text-sm text-content-muted">
+          <input
+            type="checkbox"
+            checked={isBaseline}
+            onChange={(event) => setIsBaseline(event.target.checked)}
+            className="h-4 w-4 accent-brass"
+          />
+          Set as the baseline scenario
+        </label>
+      </div>
+    );
+  }
 
   function renderPersonPicker() {
     return (
@@ -450,7 +482,7 @@ export function ScenarioEditorForm({
               <Field
                 label={`${person.name}'s PCLS age`}
                 htmlFor={`pclsAge-${index}`}
-                hint="Leave blank to never take it within this plan"
+                hint="The 25% tax-free pension lump sum, taken at this age — leave blank to never take it within this plan"
                 error={errorFor(`people.${index}.pclsAge`)}
               >
                 <input
@@ -465,7 +497,7 @@ export function ScenarioEditorForm({
               <Field
                 label={`${person.name}'s State Pension override`}
                 htmlFor={`spOverride-${index}`}
-                hint="Leave blank to use the standard amount"
+                hint="Only if your real forecast differs from the standard estimate — leave blank otherwise"
                 error={errorFor(`people.${index}.statePensionAnnualOverride`)}
               >
                 <input
@@ -587,6 +619,7 @@ export function ScenarioEditorForm({
           </div>
         ) : null}
         <ScenarioWizard
+          renderNameFields={renderNameFields}
           renderPersonPicker={renderPersonPicker}
           renderWhenFields={renderWhenFields}
           renderSpendingFields={renderSpendingFields}
@@ -625,26 +658,7 @@ export function ScenarioEditorForm({
       </div>
 
       <fieldset disabled={locked} className="space-y-7 disabled:opacity-60">
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="Scenario name" htmlFor="scenario-name">
-            <input
-              id="scenario-name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Baseline"
-              className={inputClass}
-            />
-          </Field>
-          <label className="mt-7 inline-flex min-h-[44px] cursor-pointer items-center gap-2 text-sm text-content-muted">
-            <input
-              type="checkbox"
-              checked={isBaseline}
-              onChange={(event) => setIsBaseline(event.target.checked)}
-              className="h-4 w-4 accent-brass"
-            />
-            Set as the baseline scenario
-          </label>
-        </div>
+        {renderNameFields()}
 
         {renderPersonPicker()}
         {renderWhenFields()}
