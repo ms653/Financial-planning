@@ -96,3 +96,29 @@ export function quoteStaleAfterHours(): number {
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 24;
 }
+
+/**
+ * Financial Modeling Prep API key for the stock analysis workbench's fundamentals
+ * (Phase 4). Same nullable, gracefully-degrading shape as `alphaVantageApiKey` above —
+ * the template `alphaVantageApiKey`'s own doc comment names for "any future provider
+ * key": the workbench must work with zero fundamentals provider connected, not crash.
+ */
+export function fmpApiKey(): string | null {
+  const value = process.env.FMP_API_KEY;
+  return value && value.trim() !== '' ? value : null;
+}
+
+/**
+ * How stale cached fundamentals may get before a lookup triggers a refetch. Default
+ * 24h. Fundamentals (income statement, balance sheet, cash flow) change at most
+ * quarterly in reality, so this could be much longer than a quote's staleness window —
+ * kept the same as `quoteStaleAfterHours` for now since FMP's free tier (250 req/day)
+ * is far less constrained than Alpha Vantage's (25 req/day), so there's no pressing
+ * need to stretch it further yet.
+ */
+export function fundamentalsStaleAfterHours(): number {
+  const raw = process.env.FUNDAMENTALS_STALE_AFTER_HOURS;
+  if (!raw) return 24;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 24;
+}

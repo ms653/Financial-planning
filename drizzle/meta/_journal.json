@@ -50,6 +50,13 @@
       "when": 1785443110963,
       "tag": "0006_certain_captain_marvel",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785529873142,
+      "tag": "0007_tearful_vulcan",
+      "breakpoints": true
     }
   ]
 }

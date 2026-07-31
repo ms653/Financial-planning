@@ -1,13 +1,12 @@
 # Project Status
 
-Last updated: 2026-07-31 (**Phase 3 is fully closed out.** Milestone 9 — the Retirement
-Planner UI — shipped 2026-07-30 (implemented, independently Fable-reviewed, findings
-fixed, committed, pushed, deployed); a person-picker and opt-in guided setup wizard
-shipped 2026-07-31 after a real incident (a household scenario silently included young
-children); and the phase's last open item — naming and reproducing a specific published
-reference tool/scenario within a documented tolerance — is now done too, against the
-Trinity study. See "Phase 3 reference-tool validation" below for the methodology and
-results. The live stack runs all of Phase 3; next up is Phase 4 per "Next steps")
+Last updated: 2026-07-31 (**Phase 3 is fully closed out** — see "Phase 3 reference-tool
+validation" below for the closing Trinity study methodology and results. **Phase 4
+(stock analysis workbench) has begun**: Milestone 1 — schema, the FMP fundamentals
+provider boundary, and a watchlist — is implemented, tested (672 tests), and
+browser-verified; see "Phase 4, Milestone 1" below. Not yet committed, pushed, or
+deployed, and a real `FMP_API_KEY` is still needed from the household before FMP
+fundamentals lookups can be live-verified or used for real — see "Next steps")
 
 ## Done
 
@@ -1477,6 +1476,112 @@ ranges for exactly this reason, not one source's single decimal.
 Typecheck, lint, and the full suite (639 tests, up from 636) all clean. **Phase 3 is
 now fully closed out** — engine, API, CRUD, UI, and this validation.
 
+## Phase 4, Milestone 1: schema + FMP provider boundary + watchlist
+
+The first milestone of the stock analysis workbench (fundamentals lookup, DCF
+calculator, relative valuation, checklist, watchlist), per `docs/PROPOSAL.md`'s
+Phased delivery table. Scoped deliberately narrow — schema, provider boundary, and
+just enough UI (a watchlist) to prove the foundation works end to end — the same
+"ship the foundation first" shape Phase 3's own M1–M2 took before any engine logic
+existed. DCF/relative-valuation/checklist are later milestones, not part of this one.
+
+**A real provider-choice correction, verified live, not assumed**: the proposal's
+plan and Phase 2's own STATUS.md both pointed at Alpha Vantage or FMP for
+fundamentals. Alpha Vantage — already integrated for Phase 2's live quotes — has
+moved its fundamentals endpoints (income statement, balance sheet, cash flow) behind
+a paid plan since the proposal was researched; confirmed by fetching Alpha Vantage's
+own current docs, not assumed from memory. **Financial Modeling Prep (FMP)** — the
+proposal's own primary pick — still has a working free tier (250 requests/day, up to
+5 years of annual statements) and is what this milestone builds against, **US-listed
+tickers first** per the household's own decision: FMP's LSE/UK-ticker coverage is
+unverified (the free-tier demo key that would let a live check happen is no longer
+functional — confirmed by trying it directly against a real endpoint, not assumed
+either) and is deferred until a specific UK stock is actually being analyzed, rather
+than blocking this milestone on it.
+
+**Schema** (`src/lib/db/schema.ts`, migration `drizzle/0007_tearful_vulcan.sql`):
+three new tables, following established conventions exactly —
+`watchlist_item`/`stock_analysis` are household-scoped (mirroring
+`retirement_scenario`'s real-columns-plus-versioned-JSONB shape; `stock_analysis`'s
+`inputs` JSONB currently holds nothing but is ready for M2–M4 to each add their own
+typed sub-shape, the same way `ScenarioAssumptionsV1` grew incrementally), while
+`fundamentals_cache` is deliberately **not** household-scoped (mirroring
+`quote_cache`'s mutable-single-row-per-key shape) since a ticker's fundamentals are
+the same fact for every household. Both `(household_id, ticker)` unique constraints
+and `fundamentals_cache`'s `ticker` unique constraint, plus every `ON DELETE
+RESTRICT` FK, have dedicated integration tests in `schema.integration.test.ts` (the
+codebase's own standing rule: every constraint the app depends on gets a real-Postgres
+test, not just a Drizzle-builder assumption).
+
+**FMP provider boundary** (`src/lib/stocks/fmp.ts`, new) — mirrors
+`src/lib/portfolio/quotes.ts`'s exact shape: a typed result union rather than
+throwing, an injectable `fetchImpl` on every network call so tests never hit real
+FMP. **A disclosed, not-yet-live-verified gap**: FMP's exact error-response shape
+(invalid ticker vs. rate limit vs. bad key) is built from public documentation and
+community-reported behavior — an empty JSON array for an unknown ticker, a JSON
+object with an `"Error Message"` field (at HTTP 200, no distinct status to key off)
+for anything else, bucketed conservatively as `rate-limited` regardless of which
+specific error FMP actually meant, since that's the safer degrade. This needs the
+same live-call treatment `scripts/verify-quote-provider.ts` gave Alpha Vantage's
+GBX/GBP question, once a real `FMP_API_KEY` exists — **the household needs to get one**
+(free signup, no card, same pattern as `ALPHA_VANTAGE_API_KEY`) before this can be
+verified or used for real.
+
+**CRUD**: `src/lib/stocks/queries.ts` (`getWatchlist`), `src/lib/stocks/actions.ts`
+(`addToWatchlist`/`removeFromWatchlist`, reusing `ActionResult` from
+`household/actions.ts` and a locally-redefined `requireHouseholdId` — the same
+per-domain-module convention `retirement/actions.ts` already established, not a new
+one). A ticker validation regex is deliberately re-implemented rather than imported
+from `accounts/validation.ts` — a one-field form isn't worth reaching into an
+unrelated module for a rule that only happens to look the same today.
+
+**UI**: `/stocks` (new route + nav entry in `src/components/AppShell.tsx` — unlike
+Portfolio/Retirement before it, this is the *first* commit for the Stocks slot; no
+`comingIn: 'Phase 4'` placeholder ever existed to delete, confirmed via git history).
+A watchlist list + add/remove form, nothing else yet.
+
+**A real bug found and fixed by browser testing, not just unit tests** — the same
+category of bug this codebase's E2E suites have caught before (Phase 1's setup-step
+navigation bug, Phase 2's uncaught exception): `WatchlistForm`'s `onSuccess` handler
+unconditionally cleared the ticker field to empty. Submitting an already-watched
+ticker (a legitimate no-op success) while the user had already started typing the
+*next* ticker into the still-enabled field raced that clear against the new input —
+the field silently wiped the moment the earlier request resolved, discarding what
+the user had just typed. Fixed by only clearing the field if it still holds exactly
+what was submitted (a ref captured at submit time), not unconditionally. Regression
+test in `WatchlistForm.test.tsx`.
+
+**Explicit deviations from `docs/PROPOSAL.md`, documented rather than silently
+dropped**: no Zustand (the proposal names it for retirement-scenario and
+stock-analysis-workbench UI state; Phase 3's actual UI never needed it, confirmed
+`zustand` isn't installed anywhere in this codebase — continuing the established
+plain-`useState` convention for consistency, revisitable if a later, larger workbench
+screen genuinely needs cross-component state sharing). No compute-persist-poll /
+worker_thread for the DCF calculator, whenever M2 builds it — flagged now for when
+that milestone starts: a DCF calculation is closed-form arithmetic, not a
+thousands-of-iteration Monte Carlo, and PROPOSAL.md's own decision rule (under ~2s,
+synchronous is acceptable) applies.
+
+672 tests passing (up from 639: +9 `fmp.test.ts`, +7 `fmp.integration.test.ts`, +6
+`watchlistCrud.integration.test.ts`, +7 new constraint tests in
+`schema.integration.test.ts`, +3 `WatchlistForm.test.tsx` including the race
+regression, and the pre-existing `schema.integration.test.ts` table-count/TRUNCATE
+list updated for the three new tables). Typecheck, lint, and a full `npm run build`
+all clean. Browser-verified end to end (real Playwright run against a real scratch
+Postgres, not just described): Stocks nav entry, empty state, add a ticker,
+re-adding the same ticker is a no-op not a duplicate, an invalid ticker shows the
+exact field error, remove works — including the race-condition fix, confirmed fixed
+by the same test that first caught it broken.
+
+**Not done in this milestone, by design**: no fundamentals are actually fetched from
+FMP yet (nothing in the M1 UI triggers `ensureFreshFundamentals`) — `fmp.ts` and the
+cache are built and tested in isolation, ready for M2's DCF calculator to be their
+first real caller. No DCF/relative-valuation/checklist content. No E2E spec added to
+the permanent suite (`e2e/`) — the verification run used a throwaway spec, deleted
+after use, matching the plan's own call that M1's minimal UI doesn't yet justify a
+permanent E2E addition; worth adding once M5 ships the real workbench screen with
+something substantial to regress-test.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -1486,7 +1591,10 @@ now fully closed out** — engine, API, CRUD, UI, and this validation.
 5. ~~Phase 3 per the Phased Delivery table~~ **Done, 2026-07-31.** Engine, API, CRUD, UI (M9), and the reference-tool validation (Trinity study, see "Phase 3 reference-tool validation" above) are all complete. Phase 3 is fully closed out.
 6. ~~Commit and push Milestone 9.~~ Done — `a850d0f`, pushed to `origin/main`.
 7. ~~Deploy Milestone 9 to the real stack.~~ Done via `./deploy.sh` — no migration needed (M9 is application code only), containers recreated and healthy. The live stack now runs all of Phase 3, Milestones 1–9; a household member can reach `/retirement` from the nav today.
-8. **Start Phase 4** (stock analysis workbench) per `docs/PROPOSAL.md`'s Phased delivery table — the next phase in sequence, now that Phase 3 is closed. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
+8. ~~Start Phase 4~~ **In progress.** Milestone 1 (schema, FMP provider boundary, watchlist) is implemented, tested, and browser-verified — see "Phase 4, Milestone 1" above. **Not yet committed, pushed, or deployed.**
+9. **Get a real `FMP_API_KEY`** (free signup, no card, same pattern as `ALPHA_VANTAGE_API_KEY` — see `.env.example`) — needed before FMP's exact error-response shape can be live-verified (this milestone's error handling is built from documentation/community reports, not a confirmed live call, per its own doc comment in `src/lib/stocks/fmp.ts`) and before any real fundamentals lookup can happen at all.
+10. **Continue Phase 4**: Milestone 2 (DCF calculator — plain Server Action, not compute-persist-poll, per the decision already flagged in "Phase 4, Milestone 1" above), then relative valuation, the fundamentals checklist, and the full workbench screen (Milestone 5), per the milestone breakdown in this session's plan.
+11. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
 
 ## Notes for Phase 3
 

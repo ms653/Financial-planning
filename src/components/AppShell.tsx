@@ -14,7 +14,11 @@ import { BackupWarningStrip } from '@/components/BackupWarningStrip';
  *
  * Retirement Planner is unreserved as of Milestone 9 — the Monte Carlo engine (M1–M8)
  * plus its UI (Scenario Editor, Results, Comparison) are both built now. Portfolio was
- * unreserved as of Phase 2, the same way.
+ * unreserved as of Phase 2, the same way. Stocks is unreserved as of Phase 4 Milestone
+ * 1 — unlike Portfolio/Retirement before it, this is the *first* commit for its slot
+ * (confirmed via git history: no `comingIn: 'Phase 4'` placeholder ever existed here to
+ * delete), since M1 ships a working watchlist page rather than reserving the slot
+ * across several UI-less milestones the way Retirement's engine milestones did.
  *
  * What is deliberately *not* here is the connectivity badge. The design spec puts one in the
  * top chrome of every screen, but its three states (Connected / Offline / Syncing) only mean
@@ -36,6 +40,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { href: '/accounts', label: 'Accounts' },
   { href: '/portfolio', label: 'Portfolio' },
   { href: '/retirement', label: 'Retirement' },
+  { href: '/stocks', label: 'Stocks' },
   { href: '/settings', label: 'Settings' },
 ];
 

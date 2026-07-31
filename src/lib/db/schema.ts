@@ -736,3 +736,120 @@ export type NewRetirementScenario = typeof retirementScenarios.$inferInsert;
 export type SimulationRun = typeof simulationRuns.$inferSelect;
 export type NewSimulationRun = typeof simulationRuns.$inferInsert;
 export type SimulationRunStatusValue = (typeof simulationRunStatus.enumValues)[number];
+
+/* ------------------------------------------------------------------------------------
+ * Phase 4 — stock analysis workbench
+ * ---------------------------------------------------------------------------------- */
+
+/**
+ * A ticker a household is interested in but doesn't necessarily hold — distinct from
+ * `holding`, which represents an owned position inside a specific account.
+ *
+ * `(householdId, ticker)` is unique so adding an already-watched ticker is a no-op at
+ * the database layer, not a duplicate row the app has to de-duplicate itself.
+ */
+export const watchlistItems = pgTable(
+  'watchlist_item',
+  {
+    id: serial('id').primaryKey(),
+    householdId: integer('household_id')
+      .notNull()
+      .references(() => households.id, { onDelete: 'restrict' }),
+
+    /** As typed, uppercased at the app layer — same convention as `holding.ticker`. */
+    ticker: text('ticker').notNull(),
+
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().default(sql`now()`),
+  },
+  (table) => ({
+    householdIdx: index('watchlist_item_household_idx').on(table.householdId),
+    householdTickerUnique: uniqueIndex('watchlist_item_household_ticker_unique').on(
+      table.householdId,
+      table.ticker,
+    ),
+  }),
+);
+
+/**
+ * A household's analysis of one ticker — DCF inputs, relative-valuation inputs, and
+ * checklist state, as the phase's later milestones each add their own typed sub-shape
+ * to `inputs`. Same JSONB-with-versioning posture as `retirement_scenario.assumptions`
+ * (see that column's own doc comment): written and read atomically as one blob, never
+ * queried field-by-field, so normalising into columns would cost a migration every time
+ * the workbench grows an input and buy nothing in return. Validate through a typed
+ * `schemaVersion`-checked parser at every read/write, once Milestone 2 defines one —
+ * this column's Drizzle type is deliberately left untyped JSON, not `.$type<...>()`.
+ *
+ * Updated in place per `(householdId, ticker)`, unlike `simulation_run`'s append-only
+ * history: a stock analysis has no "re-run history" concept to preserve in this
+ * milestone — editing a DCF assumption replaces the previous one, it doesn't create a
+ * comparable past run the way a Monte Carlo re-run does.
+ */
+export const stockAnalyses = pgTable(
+  'stock_analysis',
+  {
+    id: serial('id').primaryKey(),
+    householdId: integer('household_id')
+      .notNull()
+      .references(() => households.id, { onDelete: 'restrict' }),
+
+    ticker: text('ticker').notNull(),
+
+    inputs: jsonb('inputs').notNull(),
+    ...timestamps,
+  },
+  (table) => ({
+    householdIdx: index('stock_analysis_household_idx').on(table.householdId),
+    householdTickerUnique: uniqueIndex('stock_analysis_household_ticker_unique').on(
+      table.householdId,
+      table.ticker,
+    ),
+  }),
+);
+
+/**
+ * Cached fundamentals data (income statement, balance sheet, cash flow) from the FMP
+ * provider boundary (`src/lib/stocks/fmp.ts`). Same mutable-single-row-per-key shape as
+ * `quote_cache` (see that table's own doc comment for the append-only-vs-mutable
+ * reasoning) — fundamentals are re-fetchable market data with no household-authored
+ * history to protect.
+ *
+ * Deliberately **not** household-scoped, unlike every other Phase 4 table above:
+ * a ticker's fundamentals are the same fact for every household, so keying by
+ * `household_id` as well as `ticker` would fetch and store the same FMP response twice
+ * for no reason — the opposite of `watchlist_item`/`stock_analysis`, which really are
+ * per-household (two households can watch the same ticker with different notes, or
+ * hold different DCF assumptions for it, but neither can have a different income
+ * statement for it).
+ */
+export const fundamentalsCache = pgTable(
+  'fundamentals_cache',
+  {
+    id: serial('id').primaryKey(),
+
+    /** Bare ticker, e.g. `AAPL` — no exchange suffix. FMP's own free-tier coverage is
+     * being verified against US-listed tickers first (see docs/STATUS.md); an
+     * exchange-suffix convention can be added if/when LSE coverage is confirmed,
+     * mirroring `resolveProviderSymbol`'s role for `quote_cache`. */
+    ticker: text('ticker').notNull(),
+
+    /** Raw fetched statements as FMP returns them, JSONB. `null` means "checked as of
+     * `fetchedAt`, provider had nothing for this ticker" — distinct from no row at all
+     * ("never checked"), the same `quote_cache.price` convention for the same reason:
+     * it lets staleness-based refetch logic skip a ticker that will never resolve
+     * without re-spending API budget on it every page load. */
+    statements: jsonb('statements'),
+
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull(),
+  },
+  (table) => ({
+    tickerUnique: uniqueIndex('fundamentals_cache_ticker_unique').on(table.ticker),
+  }),
+);
+
+export type WatchlistItem = typeof watchlistItems.$inferSelect;
+export type NewWatchlistItem = typeof watchlistItems.$inferInsert;
+export type StockAnalysis = typeof stockAnalyses.$inferSelect;
+export type NewStockAnalysis = typeof stockAnalyses.$inferInsert;
+export type FundamentalsCache = typeof fundamentalsCache.$inferSelect;
+export type NewFundamentalsCache = typeof fundamentalsCache.$inferInsert;

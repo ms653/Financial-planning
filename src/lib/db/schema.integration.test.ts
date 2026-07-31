@@ -8,6 +8,7 @@ import {
   accounts,
   balanceSnapshots,
   debtTerms,
+  fundamentalsCache,
   holdings,
   households,
   people,
@@ -15,6 +16,8 @@ import {
   quoteCache,
   retirementScenarios,
   simulationRuns,
+  stockAnalyses,
+  watchlistItems,
 } from '@/lib/db/schema';
 import { sumNumeric, penceToNumeric } from '@/lib/money';
 
@@ -64,7 +67,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
 
   beforeEach(async () => {
     await pool.query(
-      'TRUNCATE TABLE balance_snapshot, holding, debt_terms, account, pension_contribution, person, household, quote_cache, simulation_run, retirement_scenario RESTART IDENTITY CASCADE;',
+      'TRUNCATE TABLE balance_snapshot, holding, debt_terms, account, pension_contribution, person, household, quote_cache, simulation_run, retirement_scenario, watchlist_item, stock_analysis, fundamentals_cache RESTART IDENTITY CASCADE;',
     );
   });
 
@@ -99,7 +102,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
   }
 
   describe('migration', () => {
-    it('creates all eleven tables', async () => {
+    it('creates all fourteen tables', async () => {
       const { rows } = await pool.query<{ table_name: string }>(
         "select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'",
       );
@@ -109,6 +112,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
         'backup_run',
         'balance_snapshot',
         'debt_terms',
+        'fundamentals_cache',
         'holding',
         'household',
         'pension_contribution',
@@ -116,6 +120,8 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
         'quote_cache',
         'retirement_scenario',
         'simulation_run',
+        'stock_analysis',
+        'watchlist_item',
       ]);
     });
 
@@ -635,6 +641,80 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
       const { rows } = await pool.query<{ constraint_name: string }>(
         `select constraint_name from information_schema.table_constraints
           where table_schema = 'public' and table_name = 'quote_cache' and constraint_type = 'FOREIGN KEY'`,
+      );
+      expect(rows).toEqual([]);
+    });
+  });
+
+  describe('watchlist_item / stock_analysis / fundamentals_cache (Phase 4)', () => {
+    it('refuses to delete a household that still has a watchlist item', async () => {
+      const householdId = await seedHousehold();
+      await db.insert(watchlistItems).values({ householdId, ticker: 'AAPL' });
+
+      await expect(db.delete(households).where(eq(households.id, householdId))).rejects.toThrow(
+        /violates foreign key constraint/,
+      );
+    });
+
+    it('refuses to delete a household that still has a stock analysis', async () => {
+      const householdId = await seedHousehold();
+      await db.insert(stockAnalyses).values({ householdId, ticker: 'AAPL', inputs: { schemaVersion: 1 } });
+
+      await expect(db.delete(households).where(eq(households.id, householdId))).rejects.toThrow(
+        /violates foreign key constraint/,
+      );
+    });
+
+    it('rejects a second watchlist row for the same household and ticker', async () => {
+      const householdId = await seedHousehold();
+      await db.insert(watchlistItems).values({ householdId, ticker: 'AAPL' });
+
+      await expect(db.insert(watchlistItems).values({ householdId, ticker: 'AAPL' })).rejects.toThrow(
+        /watchlist_item_household_ticker_unique|duplicate key/,
+      );
+    });
+
+    it('rejects a second stock_analysis row for the same household and ticker', async () => {
+      const householdId = await seedHousehold();
+      await db.insert(stockAnalyses).values({ householdId, ticker: 'AAPL', inputs: { schemaVersion: 1 } });
+
+      await expect(
+        db.insert(stockAnalyses).values({ householdId, ticker: 'AAPL', inputs: { schemaVersion: 1 } }),
+      ).rejects.toThrow(/stock_analysis_household_ticker_unique|duplicate key/);
+    });
+
+    it('allows a null statements value on fundamentals_cache — a confirmed "no data for this ticker" result, not an error', async () => {
+      await db.insert(fundamentalsCache).values({ ticker: 'NOTATICKER', statements: null, fetchedAt: new Date() });
+      const [row] = await db.select().from(fundamentalsCache);
+      expect(row!.statements).toBeNull();
+    });
+
+    it('rejects a second fundamentals_cache row for the same ticker', async () => {
+      const fetchedAt = new Date();
+      await db.insert(fundamentalsCache).values({ ticker: 'AAPL', statements: { a: 1 }, fetchedAt });
+
+      await expect(
+        db.insert(fundamentalsCache).values({ ticker: 'AAPL', statements: { a: 2 }, fetchedAt }),
+      ).rejects.toThrow(/fundamentals_cache_ticker_unique|duplicate key/);
+    });
+
+    it('supports an idempotent upsert on the ticker constraint, which is how ensureFreshFundamentals writes', async () => {
+      const fetchedAt = new Date();
+      await db.insert(fundamentalsCache).values({ ticker: 'AAPL', statements: { a: 1 }, fetchedAt });
+      await db
+        .insert(fundamentalsCache)
+        .values({ ticker: 'AAPL', statements: { a: 2 }, fetchedAt })
+        .onConflictDoUpdate({ target: fundamentalsCache.ticker, set: { statements: { a: 2 }, fetchedAt } });
+
+      const rows = await db.select().from(fundamentalsCache);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.statements).toEqual({ a: 2 });
+    });
+
+    it('has no FK to household on fundamentals_cache — a ticker\'s fundamentals belong to no household', async () => {
+      const { rows } = await pool.query<{ constraint_name: string }>(
+        `select constraint_name from information_schema.table_constraints
+          where table_schema = 'public' and table_name = 'fundamentals_cache' and constraint_type = 'FOREIGN KEY'`,
       );
       expect(rows).toEqual([]);
     });
