@@ -120,6 +120,91 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
           valuation methods this workbench will show side by side as more are built.
         </p>
 
+        <details open className="mt-4 rounded-card border border-line bg-paper">
+          <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-content">
+            How to read this
+          </summary>
+          <div className="space-y-4 border-t border-line px-4 pb-4 pt-3 text-sm leading-relaxed text-content-muted">
+            <p>
+              A DCF estimates what a company might actually be worth, based on the cash
+              it’s expected to generate — rather than just its current share price,
+              which can move on sentiment and short-term news as much as on the
+              business itself. The idea: a business is worth the cash it produces for
+              its owners over time, adjusted for the fact that money today is worth
+              more than the same money years from now.
+            </p>
+            <p>
+              This is only ever an estimate, and a sensitive one — small changes to the
+              assumptions below can swing the result a lot. That’s the reason this
+              workbench is meant to show several valuation methods side by side once
+              they’re built, not treat any single number as a verdict.
+            </p>
+            <div>
+              <p className="font-medium text-content">The assumptions</p>
+              <ul className="mt-1.5 list-disc space-y-1.5 pl-4">
+                <li>
+                  <strong className="font-medium text-content">FCF growth rate</strong> —
+                  how fast you expect free cash flow (cash left over after running and
+                  reinvesting in the business) to grow each year during the projection
+                  period. Higher assumptions produce a higher estimated value, so it’s
+                  worth being conservative rather than optimistic.
+                </li>
+                <li>
+                  <strong className="font-medium text-content">Discount rate</strong> —
+                  the annual return you’d want to make this worth the risk (sometimes
+                  called the “required rate of return”). A higher discount rate makes
+                  future cash worth less today, which lowers the estimated value. Many
+                  investors use somewhere around 8–12% for an established company.
+                </li>
+                <li>
+                  <strong className="font-medium text-content">Terminal growth rate</strong>{' '}
+                  — after the projection years end, the model assumes cash flow keeps
+                  growing at this slower, sustainable rate forever. Keep it
+                  conservative — often close to long-run inflation or GDP growth
+                  (2–3%), never as high as the earlier growth-phase years.
+                </li>
+                <li>
+                  <strong className="font-medium text-content">Projection years</strong>{' '}
+                  — how many years to forecast explicitly before switching to the
+                  terminal-value shortcut. Confidently predicting cash flow gets harder
+                  the further out you go, which is exactly why the terminal value
+                  exists rather than projecting forever.
+                </li>
+              </ul>
+            </div>
+            <div>
+              <p className="font-medium text-content">The result</p>
+              <ul className="mt-1.5 list-disc space-y-1.5 pl-4">
+                <li>
+                  <strong className="font-medium text-content">Intrinsic value per share</strong>{' '}
+                  — what this calculation estimates the stock is worth, given the
+                  assumptions above. Not a price prediction — an estimate of the
+                  underlying business’s value.
+                </li>
+                <li>
+                  <strong className="font-medium text-content">vs. market price</strong> —
+                  if the intrinsic value is higher than the market price, that reads as
+                  “undervalued” (the market price sits below what the maths says the
+                  business is worth); if lower, “overvalued.” Treat this as one input
+                  among several, not a verdict.
+                </li>
+                <li>
+                  <strong className="font-medium text-content">Year-by-year projection</strong>{' '}
+                  — each year’s projected free cash flow, and what that’s worth in
+                  today’s money once discounted.
+                </li>
+                <li>
+                  <strong className="font-medium text-content">Terminal value</strong> — a
+                  single estimate covering all the cash flow beyond the projection
+                  years. It’s often the majority of the total value, which is worth
+                  knowing — the terminal growth rate assumption matters more than it
+                  might look.
+                </li>
+              </ul>
+            </div>
+          </div>
+        </details>
+
         <div className="mt-5">
           {!fmpApiKey() ? (
             <p className="text-sm text-content-faint">
@@ -128,8 +213,11 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
             </p>
           ) : fundamentalsView?.statements == null ? (
             <p className="text-sm text-content-faint">
-              No fundamentals available for {ticker} yet — this could be an unsupported
-              ticker, or the provider genuinely has nothing for it.
+              No fundamentals available for {ticker} — either this ticker isn’t
+              recognised, or it needs a paid FMP plan. This happens even for some
+              large, well-known companies — FMP’s free tier only covers a subset of
+              tickers for financial statements specifically, and which ones isn’t
+              published anywhere to check in advance.
             </p>
           ) : !baseInputs ? (
             <p className="text-sm text-content-faint">
