@@ -180,7 +180,7 @@ describe('deriveDcfBaseInputs', () => {
   function statements(overrides: Partial<FmpStatements> = {}): FmpStatements {
     return {
       incomeStatements: [{ date: '2025-12-31', weightedAverageShsOutDil: 1_000_000 }],
-      balanceSheets: [{ date: '2025-12-31', totalDebt: 5_000_000, cashAndCashEquivalents: 2_000_000 }],
+      balanceSheets: [{ date: '2025-12-31', netDebt: 3_000_000 }],
       cashFlowStatements: [{ date: '2025-12-31', freeCashFlow: 1_234_567 }],
       ...overrides,
     };
@@ -190,9 +190,14 @@ describe('deriveDcfBaseInputs', () => {
     const result = deriveDcfBaseInputs(statements());
     expect(result).toEqual({
       baseFcfPence: 123_456_700n, // £1,234,567.00 -> pence
-      netDebtPence: 300_000_000n, // (5,000,000 - 2,000,000) -> pence
+      netDebtPence: 300_000_000n, // £3,000,000.00 -> pence, read directly from `netDebt`
       dilutedShares: 1_000_000n,
     });
+  });
+
+  it('a net cash position (negative netDebt) is preserved as negative pence', () => {
+    const result = deriveDcfBaseInputs(statements({ balanceSheets: [{ date: '2025-12-31', netDebt: -500_000 }] }));
+    expect(result?.netDebtPence).toBe(-50_000_000n);
   });
 
   it('returns null when any statement array is empty', () => {

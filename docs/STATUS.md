@@ -4,11 +4,12 @@ Last updated: 2026-08-01 (**Phase 3 is fully closed out** — see "Phase 3 refer
 validation" below for the closing Trinity study methodology and results. **Phase 4
 (stock analysis workbench) is under way**: Milestone 1 (schema, the FMP fundamentals
 provider boundary, a watchlist) shipped, committed, pushed, and deployed to the live
-stack — `7bd4214`. **Milestone 2 (DCF calculator)** is implemented, tested (698 tests),
-and browser-verified — see "Phase 4, Milestone 2" below — but **not yet committed,
-pushed, or deployed**. A real `FMP_API_KEY` (and `ALPHA_VANTAGE_API_KEY`, already used
-by Phase 2) are still needed from the household before fundamentals/quote lookups are
-anything more than the graceful "not configured" state — see "Next steps")
+stack — `7bd4214`. **Milestone 2 (DCF calculator)** is implemented and tested (700
+tests) — see "Phase 4, Milestone 2" below. The household obtained a real `FMP_API_KEY`
+today and it immediately caught a real bug (M2's fundamentals fetches were silently
+calling FMP's retired "Legacy" endpoints and would have failed forever) — see "FMP live
+verification" below for the fix and everything else it confirmed. **Not yet committed,
+pushed, or deployed.**)
 
 ## Done
 
@@ -1658,6 +1659,45 @@ screen, or checklist yet (M3/M4) — this ticket page will grow more sections, n
 replaced. No E2E spec added to the permanent suite, same reasoning as M1 (a throwaway
 spec was used and deleted; worth a permanent one once M5's full workbench screen exists).
 
+### FMP live verification (2026-08-01): a real bug caught before it shipped further
+
+The household obtained a real `FMP_API_KEY` and it was used immediately to verify M2's
+two disclosed assumptions — and found a genuine, would-have-been-permanent bug in the
+process, the same value `verify-quote-provider.ts` proved for Alpha Vantage in Phase 2.
+
+**The bug**: `fmp.ts` called `/api/v3/{endpoint}/{symbol}` — FMP's own docs describe
+these as "Legacy" endpoints, and a real call returned `{"Error Message": "Legacy
+Endpoint... only available for legacy users who have valid subscriptions prior August
+31, 2025"}`. Every fundamentals fetch would have failed for this household's key
+(issued today) silently forever — "silently" in the sense that the app itself would
+have degraded gracefully (that part worked as designed), but nobody would have known
+*why* fundamentals never loaded without this check. **Fixed**: the current endpoints are
+under `/stable/...`, with the ticker as a `?symbol=` query parameter instead of a path
+segment.
+
+**Everything else checked out**: field names (`freeCashFlow`, `totalDebt`,
+`cashAndCashEquivalents`, `weightedAverageShsOutDil`) were all correct against real
+`AAPL`/`MSFT` responses — the earlier research pass that caught FMP's own GitHub docs
+repo copy-paste error was sound. Arrays are genuinely newest-first. A ticker the free
+tier won't serve (tested with a deliberately fake symbol) returns **HTTP 402**, plain
+text, not JSON — now mapped to `not-found` rather than the generic `network-error`
+branch, so it's cached as a permanent answer instead of retried every staleness window.
+A bad API key returns HTTP 200 with a JSON `{"Error Message": ...}` body — confirmed
+live, not just documented elsewhere.
+
+**One additional improvement made during this pass**: `deriveDcfBaseInputs` now reads
+FMP's own `netDebt` field directly instead of computing `totalDebt -
+cashAndCashEquivalents` itself — confirmed exactly consistent for `AAPL` (both gave
+76,443,000,000), and simpler/more robust to trust the provider's own figure than
+re-derive it.
+
+New permanent script, `scripts/verify-fmp-provider.ts` (`npm run stocks:verify-fmp`),
+mirroring `verify-quote-provider.ts`'s role — run against the real key as part of this
+verification (`AAPL`/`MSFT` resolved correctly, the fake ticker came back `not-found`
+as expected). 700 tests passing (up from 698: a regression test for the HTTP 402
+handling, plus a net-cash-position case for the `netDebt` change). Typecheck, lint, and
+build all clean after the fix.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -1668,9 +1708,9 @@ spec was used and deleted; worth a permanent one once M5's full workbench screen
 6. ~~Commit and push Milestone 9.~~ Done — `a850d0f`, pushed to `origin/main`.
 7. ~~Deploy Milestone 9 to the real stack.~~ Done via `./deploy.sh` — no migration needed (M9 is application code only), containers recreated and healthy. The live stack now runs all of Phase 3, Milestones 1–9; a household member can reach `/retirement` from the nav today.
 8. ~~Start Phase 4~~ **In progress.** Milestone 1 (schema, FMP provider boundary, watchlist) shipped — committed (`7bd4214`), pushed, and deployed to the live stack.
-9. ~~Milestone 2 (DCF calculator)~~ Implemented, tested (698 tests), and browser-verified — see "Phase 4, Milestone 2" above. **Not yet committed, pushed, or deployed.**
-10. **Commit, push, and deploy Milestone 2.**
-11. **Get real `FMP_API_KEY`/`ALPHA_VANTAGE_API_KEY` values live-checked against `/stocks/[ticker]`** (Alpha Vantage's key already exists from Phase 2 — this is about actually visiting the page with it, not obtaining a new key) — needed before FMP's exact error-response shape and array ordering can be live-verified (both disclosed as unconfirmed in `src/lib/stocks/fmp.ts`/`dcf.ts`'s own doc comments) and before any real fundamentals lookup happens for real, not just against pre-seeded test data.
+9. ~~Milestone 2 (DCF calculator)~~ Implemented and tested — see "Phase 4, Milestone 2" above. **Not yet committed, pushed, or deployed.**
+10. ~~Get a real `FMP_API_KEY` and live-verify it~~ **Done, 2026-08-01** — see "FMP live verification" above. Caught and fixed a real bug (Legacy-endpoint URLs that would have failed forever), confirmed field names/array ordering/error shapes, added a permanent `scripts/verify-fmp-provider.ts`. 700 tests passing.
+11. **Commit, push, and deploy Milestone 2** (including the FMP fix — the version currently live from Milestone 1 has the endpoint bug, so this is the first genuinely-working fundamentals fetch on the real stack).
 12. **Continue Phase 4**: Milestone 3 (relative valuation, quality/balance-sheet screens), Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
 13. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
 

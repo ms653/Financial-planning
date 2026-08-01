@@ -39,10 +39,11 @@ describe('fetchFundamentals', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     const urls = fetchImpl.mock.calls.map((call) => new URL(call[0] as string));
-    expect(urls[0]!.pathname).toBe('/api/v3/income-statement/AAPL');
-    expect(urls[1]!.pathname).toBe('/api/v3/balance-sheet-statement/AAPL');
-    expect(urls[2]!.pathname).toBe('/api/v3/cash-flow-statement/AAPL');
+    expect(urls[0]!.pathname).toBe('/stable/income-statement');
+    expect(urls[1]!.pathname).toBe('/stable/balance-sheet-statement');
+    expect(urls[2]!.pathname).toBe('/stable/cash-flow-statement');
     for (const url of urls) {
+      expect(url.searchParams.get('symbol')).toBe('AAPL');
       expect(url.searchParams.get('period')).toBe('annual');
       expect(url.searchParams.get('limit')).toBe('5');
       expect(url.searchParams.get('apikey')).toBe('my-key');
@@ -59,6 +60,24 @@ describe('fetchFundamentals', () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
     await fetchFundamentals('NOTATICKER', 'key', fetchImpl);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression for a real, live-verified finding: a ticker this plan won't serve
+  // fundamentals for responds HTTP 402 with a plain-text (non-JSON) body — confirmed
+  // 2026-08-01 with a real API key against a deliberately-fake symbol. Treated as
+  // not-found (a permanent, cacheable answer for this ticker on this plan), not
+  // network-error — and specifically never reaches `response.json()`, which would
+  // throw on the real plain-text body.
+  it('treats HTTP 402 as not-found, without attempting to parse the body as JSON', async () => {
+    const jsonSpy = vi.fn(() => {
+      throw new Error('should never be called for a 402');
+    });
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 402, json: jsonSpy } as unknown as Response);
+
+    const result = await fetchFundamentals('NOTATICKERXYZ', 'key', fetchImpl);
+
+    expect(result).toEqual({ status: 'not-found' });
+    expect(jsonSpy).not.toHaveBeenCalled();
   });
 
   it('treats a non-array object response (an "Error Message" shape) as rate-limited', async () => {

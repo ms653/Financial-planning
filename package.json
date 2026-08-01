@@ -17,6 +17,7 @@
     "db:studio": "drizzle-kit studio",
     "passphrase:hash": "tsx scripts/hash-passphrase.ts",
     "portfolio:verify-quotes": "tsx scripts/verify-quote-provider.ts",
+    "stocks:verify-fmp": "tsx scripts/verify-fmp-provider.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

@@ -10,19 +10,35 @@
  * unit tests never make a real FMP call (no msw/nock in this codebase, same reasoning
  * `quotes.ts` documents).
  *
- * **A real, disclosed gap**: FMP's exact error-response shape (invalid ticker vs. rate
- * limit vs. bad key) is not yet live-verified against a real API key — the household
- * hasn't obtained one yet as of Milestone 1 (see `docs/STATUS.md`). This module's error
- * handling is built from FMP's public documentation and community-reported behavior
- * (an empty JSON array for an unknown ticker; a JSON object carrying an `"Error
- * Message"` field, at HTTP 200, for other failures — no distinct HTTP status to key
- * off, the same "field-shape check, not a status code" situation `quotes.ts` documents
- * for Alpha Vantage's `Note`/`Information` fields), **not** a live-verified fact the
- * way `LSE_QUOTES_ARE_GBX` below it in `quotes.ts` is. Every non-array object response
- * is bucketed as `rate-limited` rather than guessing which specific error FMP meant —
- * the safer degrade (keep serving cached data, marked stale) regardless of the true
- * cause. Revisit once a real key exists and a live call can settle this the way
- * `scripts/verify-quote-provider.ts` settled the GBX/GBP question for Alpha Vantage.
+ * **Live-verified 2026-08-01** against a real, freshly-issued `FMP_API_KEY` (real curl
+ * calls, not docs-reading) — this replaced Milestone 2's original, docs-derived
+ * assumptions, and one of them was wrong in a way that would have made every fetch fail
+ * silently forever:
+ *
+ * - **The endpoint family this module originally called (`/api/v3/...`, path-segment
+ *   symbol) is FMP's "Legacy" tier and returns a JSON `{"Error Message": "Legacy
+ *   Endpoint..."}` for any key issued after 31 Aug 2025** — including this household's.
+ *   The **current** endpoints are under `/stable/...`, with the ticker as a `?symbol=`
+ *   query parameter, not a path segment. Confirmed working end-to-end for `AAPL` and
+ *   `MSFT` with the exact field names this module already expected
+ *   (`freeCashFlow`/`totalDebt`/`netDebt`/`cashAndCashEquivalents`/
+ *   `weightedAverageShsOutDil`) — the field-name research was right; only the URL shape
+ *   was wrong.
+ * - **Arrays are confirmed newest-first**: `AAPL`'s first element was FY2025
+ *   (`date: "2025-09-27"`), second FY2024 — `[0]` = most recent, as `dcf.ts` assumed.
+ * - **A ticker the free tier won't serve fundamentals for returns HTTP 402**, plain
+ *   text (not JSON — `response.json()` would throw on it), mentioning a required
+ *   subscription upgrade — confirmed with a deliberately-fake symbol. Treated as
+ *   `not-found` (see `fetchFmpStatement` below), not `network-error`: it is a permanent
+ *   answer for that ticker on this plan, not a transient failure worth retrying every
+ *   time the staleness window passes.
+ * - **A bad API key returns HTTP 200 with a JSON `{"Error Message": "Invalid API
+ *   KEY..."}` body** — confirmed directly, not just documented elsewhere online. Real
+ *   rate-limiting almost certainly shares this same object-with-`Error Message` shape
+ *   (FMP's own internal convention, now seen twice), so it stays bucketed as
+ *   `rate-limited` below — the safer degrade (keep serving cached data, marked stale)
+ *   regardless of which specific error this bucket actually meant, same reasoning as
+ *   before, now on firmer ground than a documentation guess.
  *
  * **US-listed tickers first, per the household's own decision** (`docs/STATUS.md`):
  * `resolveFmpTicker` below is currently the identity function — bare ticker in, bare
@@ -34,7 +50,7 @@ import { inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
 import { fundamentalsCache } from '@/lib/db/schema';
 
-const FMP_BASE_URL = 'https://financialmodelingprep.com/api/v3';
+const FMP_BASE_URL = 'https://financialmodelingprep.com/stable';
 
 /** One period's worth of a financial statement, as FMP returns it — deliberately kept
  * as `unknown` here, not a typed shape. This module's job is fetching and caching the
@@ -68,7 +84,11 @@ async function fetchFmpStatement(
   apiKey: string,
   fetchImpl: typeof fetch,
 ): Promise<StatementFetchResult> {
-  const url = new URL(`${FMP_BASE_URL}/${endpoint}/${ticker}`);
+  // `/stable/...`, symbol as a query param — see this file's own doc comment for why,
+  // confirmed by a real failed call under the old `/api/v3/{endpoint}/{symbol}` shape
+  // before this was fixed.
+  const url = new URL(`${FMP_BASE_URL}/${endpoint}`);
+  url.searchParams.set('symbol', ticker);
   url.searchParams.set('period', 'annual');
   url.searchParams.set('limit', '5'); // FMP's free tier: up to 5 years of annual statements
   url.searchParams.set('apikey', apiKey);
@@ -78,6 +98,16 @@ async function fetchFmpStatement(
     response = await fetchImpl(url.toString());
   } catch (error) {
     return { status: 'network-error', message: error instanceof Error ? error.message : String(error) };
+  }
+
+  // A ticker this plan won't serve fundamentals for responds HTTP 402 with a plain-text
+  // (not JSON) body — confirmed live, see this file's own doc comment. Treated as
+  // `not-found`, not folded into the generic `!response.ok` branch below: it's a
+  // permanent answer for this ticker on this plan, worth caching as such (so it isn't
+  // re-fetched every time the staleness window passes), not a transient error to log
+  // and retry.
+  if (response.status === 402) {
+    return { status: 'not-found' };
   }
 
   if (!response.ok) {
@@ -91,9 +121,11 @@ async function fetchFmpStatement(
     return { status: 'network-error', message: 'Response was not valid JSON' };
   }
 
-  // See this file's own doc comment: this bucketing is provisional, not yet
-  // live-verified. A successful call returns a JSON array (possibly empty, for an
-  // unknown ticker); anything else is treated as a provider error.
+  // A successful call returns a JSON array (possibly empty); a JSON *object* — carrying
+  // an `"Error Message"` field in every case seen so far — is a provider error. See
+  // this file's own doc comment: confirmed live for a bad API key, not just documented
+  // elsewhere; real rate-limiting is assumed (not yet independently confirmed) to share
+  // this same shape.
   if (!Array.isArray(body)) {
     return { status: 'rate-limited' };
   }

@@ -226,12 +226,19 @@ export interface DcfBaseInputs {
  * gap in the rule, because the source is third-party JSON this codebase doesn't control,
  * not a value it computed itself.
  *
- * **A second disclosed, not-yet-live-verified assumption**: index `[0]` is read as "the
- * most recent fiscal year," on the widely-documented convention that FMP returns these
- * arrays newest-first. Not yet confirmed against a real API response (same
- * no-working-key gap `fmp.ts`'s own doc comment already flags for the error-response
- * shape) — worth a real sanity check once a live `FMP_API_KEY` exists, alongside that
- * one.
+ * **Index `[0]` = most recent fiscal year — confirmed live, 2026-08-01**, not just the
+ * widely-documented convention this originally assumed. A real call against `AAPL`
+ * returned `date: "2025-09-27"` (FY2025) first, `"2024-09-28"` (FY2024) second —
+ * genuinely newest-first, cross-checked at the same time `fmp.ts`'s own error-response
+ * shape was confirmed (see that file's doc comment for the full verification, including
+ * a real endpoint-URL bug that verification pass also caught and fixed).
+ *
+ * **Reads `netDebt` directly rather than computing `totalDebt - cashAndCashEquivalents`
+ * itself** — also decided during the same live-verification pass. FMP exposes `netDebt`
+ * as its own field, and a real `AAPL` response confirmed it's exactly consistent with
+ * the subtraction (both gave 76,443,000,000) — reading the provider's own authoritative
+ * figure directly is simpler and more robust to edge cases (e.g. a company where "net
+ * debt" isn't just `totalDebt - cash` by some other convention) than re-deriving it.
  */
 export function deriveDcfBaseInputs(statements: FmpStatements): DcfBaseInputs | null {
   const latestCashFlow = statements.cashFlowStatements[0];
@@ -240,17 +247,14 @@ export function deriveDcfBaseInputs(statements: FmpStatements): DcfBaseInputs | 
   if (!latestCashFlow || !latestBalanceSheet || !latestIncome) return null;
 
   const freeCashFlow = latestCashFlow.freeCashFlow;
-  const totalDebt = latestBalanceSheet.totalDebt;
-  const cash = latestBalanceSheet.cashAndCashEquivalents;
+  const netDebt = latestBalanceSheet.netDebt;
   const dilutedSharesRaw = latestIncome.weightedAverageShsOutDil;
 
   if (
     typeof freeCashFlow !== 'number' ||
     !Number.isFinite(freeCashFlow) ||
-    typeof totalDebt !== 'number' ||
-    !Number.isFinite(totalDebt) ||
-    typeof cash !== 'number' ||
-    !Number.isFinite(cash) ||
+    typeof netDebt !== 'number' ||
+    !Number.isFinite(netDebt) ||
     typeof dilutedSharesRaw !== 'number' ||
     !Number.isFinite(dilutedSharesRaw) ||
     dilutedSharesRaw < 0
@@ -260,7 +264,7 @@ export function deriveDcfBaseInputs(statements: FmpStatements): DcfBaseInputs | 
 
   return {
     baseFcfPence: BigInt(Math.round(freeCashFlow * 100)),
-    netDebtPence: BigInt(Math.round((totalDebt - cash) * 100)),
+    netDebtPence: BigInt(Math.round(netDebt * 100)),
     dilutedShares: BigInt(Math.round(dilutedSharesRaw)),
   };
 }
