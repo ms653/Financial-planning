@@ -1,12 +1,14 @@
 # Project Status
 
-Last updated: 2026-07-31 (**Phase 3 is fully closed out** — see "Phase 3 reference-tool
+Last updated: 2026-08-01 (**Phase 3 is fully closed out** — see "Phase 3 reference-tool
 validation" below for the closing Trinity study methodology and results. **Phase 4
-(stock analysis workbench) has begun**: Milestone 1 — schema, the FMP fundamentals
-provider boundary, and a watchlist — is implemented, tested (672 tests), and
-browser-verified; see "Phase 4, Milestone 1" below. Not yet committed, pushed, or
-deployed, and a real `FMP_API_KEY` is still needed from the household before FMP
-fundamentals lookups can be live-verified or used for real — see "Next steps")
+(stock analysis workbench) is under way**: Milestone 1 (schema, the FMP fundamentals
+provider boundary, a watchlist) shipped, committed, pushed, and deployed to the live
+stack — `7bd4214`. **Milestone 2 (DCF calculator)** is implemented, tested (698 tests),
+and browser-verified — see "Phase 4, Milestone 2" below — but **not yet committed,
+pushed, or deployed**. A real `FMP_API_KEY` (and `ALPHA_VANTAGE_API_KEY`, already used
+by Phase 2) are still needed from the household before fundamentals/quote lookups are
+anything more than the graceful "not configured" state — see "Next steps")
 
 ## Done
 
@@ -1582,6 +1584,80 @@ after use, matching the plan's own call that M1's minimal UI doesn't yet justify
 permanent E2E addition; worth adding once M5 ships the real workbench screen with
 something substantial to regress-test.
 
+## Phase 4, Milestone 2: DCF calculator
+
+The first of the workbench's four valuation methods, and the first real caller of M1's
+`fmp.ts`/`fundamentals_cache` — nothing exercised them beyond their own isolated tests
+until now. Standard, deliberately simple textbook DCF: base free cash flow grown at one
+uniform annual rate over a user-set horizon, terminal value via the Gordon Growth Model
+(no exit-multiple option yet — that needs peer data M3's relative valuation hasn't
+built), discounted to present value, minus net debt, divided by diluted shares
+outstanding, compared against the live market price.
+
+**FMP field names verified against a real documented example, not assumed or copied
+from a broken source.** A research pass found FMP's own GitHub docs repos unreliable —
+the `balance-sheet-statement-api` README's example JSON turned out to be a byte-for-byte
+copy-paste of the *income statement* example, mislabeled. Cross-checked instead against
+FMP's own docs site (via a Wayback Machine snapshot showing real Apple 10-K figures,
+since the live docs now require a key to render) and current search results. Fields
+used: `freeCashFlow` (cash flow statement), `totalDebt`/`cashAndCashEquivalents`
+(balance sheet), `weightedAverageShsOutDil` (income statement, already confirmed in
+M1). **Two things this still can't fully confirm without a real key** — FMP's exact
+error-response shape (already flagged in M1) and whether these arrays are genuinely
+newest-first — both documented directly in `dcf.ts`'s own doc comments as open items
+for whenever a real `FMP_API_KEY` exists.
+
+**Money/rate math reuses this codebase's existing fixed-point techniques rather than
+inventing new ones** — the plan's central design bet, and it held up under test.
+`roundDiv` (`valuation.ts`, already documented as reusable "for other fixed-point
+domains") and an iterative year-by-year bigint compounding technique mirroring
+`retirement/engine/deterministicCore.ts`'s `applyAnnualReturn` — growth and discounting
+are both loops, never a closed-form `(1+r)^N` power. `dcf.test.ts` includes a fully
+exact, hand-verified case (0% growth, 100% discount rate, chosen so every intermediate
+step divides evenly — £100,000 base FCF, 1,000,000 shares → exactly 10p/share, checked
+by hand before writing the assertion) alongside the parser/edge-case coverage — 19 tests,
+all passing on the first real run against the hand-worked numbers.
+
+**One disclosed, narrow exception to "money never touches a float"**, in
+`deriveDcfBaseInputs`: FMP returns statement figures as JSON numbers, not this
+codebase's usual NUMERIC-as-string shape. Converted to bigint pence immediately on
+read, once — never carried as a float through `computeDcf`'s own maths. Documented as a
+deliberate exception (third-party JSON in, converted at the boundary), not a silent gap.
+
+**Shipped**: `src/lib/stocks/dcf.ts` (types, parser, pure calculation, fundamentals
+mapper), `saveDcfInputs` (additive in `actions.ts`, upserting `stock_analysis` on
+`(householdId, ticker)` — no append-only run history, unlike `simulation_run`: a DCF
+has no equivalent "re-run to compare" concept, editing assumptions just replaces them),
+`getStockAnalysis` (additive in `queries.ts` — M1 left this unbuilt since nothing
+needed it yet), the `/stocks/[ticker]` route (recomputes live on every load, no
+persisted result row and no compute-persist-poll — a closed-form calculation over a
+handful of years is fast enough that PROPOSAL.md's own "under ~2s, synchronous is
+acceptable" rule applies, the decision M1's own entry already flagged for whenever this
+milestone started), and `DcfForm.tsx` (a single form-level error banner rather than a
+per-field validator module — proportionate for four fields, the same scope call
+`retirement/actions.ts` made for its own form before Milestone 9 built a bigger one).
+Watchlist entries now link to their ticker page.
+
+**Live market price reused, not rebuilt**: `fetchGlobalQuote`/`normalizeQuotePrice`
+(`quotes.ts`) already take a bare symbol with no holding/account context, and
+`quote_cache` already caches by symbol — a watchlist ticker's quote request shares a
+cache row with any existing USD holding of the same ticker.
+
+698 tests passing (up from 672: +19 `dcf.test.ts`, +7 `dcfCrud.integration.test.ts`).
+Typecheck, lint, and a full `npm run build` all clean. Browser-verified end to end with
+two real scenarios, not just described: (1) realistic fundamentals + a quote seeded
+directly into the cache (no real FMP/Alpha Vantage call needed, both fresh) — add AAPL
+to the watchlist, open its page, confirm the computed intrinsic value and market-price
+comparison render correctly, edit an assumption, save, reload, confirm it persisted,
+expand the year-by-year table; (2) no `FMP_API_KEY` set at all — confirms the graceful
+"no key configured" message renders instead of a crash, and the form still works so
+assumptions can be saved ahead of fundamentals being available.
+
+**Not done in this milestone, by design**: no relative valuation, quality/balance-sheet
+screen, or checklist yet (M3/M4) — this ticket page will grow more sections, not get
+replaced. No E2E spec added to the permanent suite, same reasoning as M1 (a throwaway
+spec was used and deleted; worth a permanent one once M5's full workbench screen exists).
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -1591,10 +1667,12 @@ something substantial to regress-test.
 5. ~~Phase 3 per the Phased Delivery table~~ **Done, 2026-07-31.** Engine, API, CRUD, UI (M9), and the reference-tool validation (Trinity study, see "Phase 3 reference-tool validation" above) are all complete. Phase 3 is fully closed out.
 6. ~~Commit and push Milestone 9.~~ Done — `a850d0f`, pushed to `origin/main`.
 7. ~~Deploy Milestone 9 to the real stack.~~ Done via `./deploy.sh` — no migration needed (M9 is application code only), containers recreated and healthy. The live stack now runs all of Phase 3, Milestones 1–9; a household member can reach `/retirement` from the nav today.
-8. ~~Start Phase 4~~ **In progress.** Milestone 1 (schema, FMP provider boundary, watchlist) is implemented, tested, and browser-verified — see "Phase 4, Milestone 1" above. **Not yet committed, pushed, or deployed.**
-9. **Get a real `FMP_API_KEY`** (free signup, no card, same pattern as `ALPHA_VANTAGE_API_KEY` — see `.env.example`) — needed before FMP's exact error-response shape can be live-verified (this milestone's error handling is built from documentation/community reports, not a confirmed live call, per its own doc comment in `src/lib/stocks/fmp.ts`) and before any real fundamentals lookup can happen at all.
-10. **Continue Phase 4**: Milestone 2 (DCF calculator — plain Server Action, not compute-persist-poll, per the decision already flagged in "Phase 4, Milestone 1" above), then relative valuation, the fundamentals checklist, and the full workbench screen (Milestone 5), per the milestone breakdown in this session's plan.
-11. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
+8. ~~Start Phase 4~~ **In progress.** Milestone 1 (schema, FMP provider boundary, watchlist) shipped — committed (`7bd4214`), pushed, and deployed to the live stack.
+9. ~~Milestone 2 (DCF calculator)~~ Implemented, tested (698 tests), and browser-verified — see "Phase 4, Milestone 2" above. **Not yet committed, pushed, or deployed.**
+10. **Commit, push, and deploy Milestone 2.**
+11. **Get real `FMP_API_KEY`/`ALPHA_VANTAGE_API_KEY` values live-checked against `/stocks/[ticker]`** (Alpha Vantage's key already exists from Phase 2 — this is about actually visiting the page with it, not obtaining a new key) — needed before FMP's exact error-response shape and array ordering can be live-verified (both disclosed as unconfirmed in `src/lib/stocks/fmp.ts`/`dcf.ts`'s own doc comments) and before any real fundamentals lookup happens for real, not just against pre-seeded test data.
+12. **Continue Phase 4**: Milestone 3 (relative valuation, quality/balance-sheet screens), Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
+13. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
 
 ## Notes for Phase 3
 

@@ -3,14 +3,16 @@
 import { revalidatePath } from 'next/cache';
 import { and, eq } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
-import { watchlistItems } from '@/lib/db/schema';
+import { stockAnalyses, watchlistItems } from '@/lib/db/schema';
 import { getSetupState } from '@/lib/household/queries';
 import type { ActionResult } from '@/lib/household/actions';
+import { DcfInputsParseError, parseDcfInputs } from '@/lib/stocks/dcf';
 
 /**
- * Watchlist CRUD, Phase 4 Milestone 1. Mirrors `src/lib/retirement/actions.ts`'s exact
- * shape — `ActionResult` reused directly from `household/actions.ts` (not redefined,
- * same reason: so `useActionForm` works with these unmodified), a locally-redefined
+ * Stocks CRUD — watchlist (Phase 4 Milestone 1) and DCF assumptions (Milestone 2).
+ * Mirrors `src/lib/retirement/actions.ts`'s exact shape — `ActionResult` reused
+ * directly from `household/actions.ts` (not redefined, same reason: so
+ * `useActionForm` works with these unmodified), a locally-redefined
  * `requireHouseholdId` (that helper isn't exported from `household/actions.ts`; every
  * domain module that needs it defines its own copy — the existing, established
  * convention, not a new one invented here).
@@ -82,5 +84,59 @@ export async function removeFromWatchlist(formData: FormData): Promise<ActionRes
   }
 
   revalidatePath('/stocks');
+  return { ok: true };
+}
+
+/**
+ * DCF assumptions, Phase 4 Milestone 2. Takes `ticker` plus one JSON-encoded `inputs`
+ * field — mirroring `retirement/actions.ts`'s `createScenario`/`updateScenario`
+ * (a whole-blob field validated through the same typed parser the engine itself uses,
+ * `parseDcfInputs`, rather than four separate scalar FormData fields) — appropriate
+ * here for the same reason it was there: the parser is the single source of truth for
+ * the shape, and duplicating its rules as per-field FormData parsing would be a second
+ * copy to drift out of sync.
+ *
+ * Upserts on `(householdId, ticker)` — a stock analysis has no append-only run history
+ * to preserve the way `simulation_run` does (see `stock_analysis`'s own schema doc
+ * comment); editing DCF assumptions replaces the previous ones outright.
+ */
+export async function saveDcfInputs(formData: FormData): Promise<ActionResult> {
+  const parsedTicker = parseTicker(formData.get('ticker'));
+  if (!parsedTicker.ok) return { ok: false, errors: { ticker: parsedTicker.error } };
+
+  const raw = formData.get('inputs');
+  if (typeof raw !== 'string' || raw === '') {
+    return { ok: false, errors: {}, formError: 'Missing DCF inputs.' };
+  }
+
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { ok: false, errors: {}, formError: 'DCF inputs must be valid JSON.' };
+  }
+
+  let inputs;
+  try {
+    inputs = parseDcfInputs(json);
+  } catch (error) {
+    const message = error instanceof DcfInputsParseError ? error.message : GENERIC_SAVE_ERROR;
+    return { ok: false, errors: {}, formError: message };
+  }
+
+  try {
+    const householdId = await requireHouseholdId();
+    await getDb()
+      .insert(stockAnalyses)
+      .values({ householdId, ticker: parsedTicker.value, inputs })
+      .onConflictDoUpdate({
+        target: [stockAnalyses.householdId, stockAnalyses.ticker],
+        set: { inputs, updatedAt: new Date() },
+      });
+  } catch (error) {
+    return logAndWrap('saveDcfInputs', error);
+  }
+
+  revalidatePath(`/stocks/${parsedTicker.value}`);
   return { ok: true };
 }
