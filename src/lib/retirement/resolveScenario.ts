@@ -18,7 +18,7 @@
 
 import { and, eq, inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
-import { people, pensionContributions, retirementScenarios } from '@/lib/db/schema';
+import { people, pensionContributions, regularContributions, retirementScenarios } from '@/lib/db/schema';
 import { getAccountsWithBalances } from '@/lib/household/queries';
 import { numericToPence } from '@/lib/money';
 import { todayIso } from '@/lib/accounts/validation';
@@ -74,7 +74,7 @@ export async function resolveScenario(
   // (amount + employerAmount) into pence — a person can have more than one recorded
   // pension, and both the member's own and their employer's contribution land in the
   // same sipp_pension wrapper during accumulation (deterministicCore.ts).
-  const contributionRows = await db
+  const pensionContributionRows = await db
     .select({
       personId: pensionContributions.personId,
       amount: pensionContributions.amount,
@@ -82,13 +82,58 @@ export async function resolveScenario(
     })
     .from(pensionContributions)
     .where(inArray(pensionContributions.personId, personIds));
-  const annualContributionPenceByPersonId = new Map<number, bigint>();
-  for (const row of contributionRows) {
+  const pensionContributionPenceByPersonId = new Map<number, bigint>();
+  for (const row of pensionContributionRows) {
     const rowTotalPence = numericToPence(row.amount) + numericToPence(row.employerAmount);
-    annualContributionPenceByPersonId.set(
+    pensionContributionPenceByPersonId.set(
       row.personId,
-      (annualContributionPenceByPersonId.get(row.personId) ?? 0n) + rowTotalPence,
+      (pensionContributionPenceByPersonId.get(row.personId) ?? 0n) + rowTotalPence,
     );
+  }
+
+  // Archived accounts are excluded by getAccountsWithBalances's own default — an
+  // archived account shouldn't feed a live simulation's starting balance or its
+  // regular contributions, same as it's already excluded from the net worth total and
+  // trend chart. Fetched before resolving people/contributions below, since both need
+  // to know each account's owner and wrapper type.
+  const accountsWithBalances = await getAccountsWithBalances(householdId);
+  const accountOwnerById = new Map(accountsWithBalances.map((account) => [account.id, account.personId]));
+  const accountTypeById = new Map(accountsWithBalances.map((account) => [account.id, account.type]));
+
+  // Phase 4.4's follow-up: every regular_contribution row (Cash/GIA/ISA/LISA — never
+  // sipp_pension, that's the pension_contribution query above), split by the owning
+  // account's personId. A personal account's own owner isn't necessarily one of
+  // `assumptions.people` — that contribution is simply never read below (no
+  // retirementAge to gate it by), not guessed at. A joint account (personId null) has
+  // no single owner to gate on at all, so it goes into the household-wide bucket
+  // instead, gated in the engine on `householdFullyRetired` rather than an age.
+  const personalContributionsByPersonId = new Map<number, Partial<Record<DrawdownAccountType, bigint>>>();
+  const jointAnnualContributionsPence: Partial<Record<DrawdownAccountType, bigint>> = {};
+  if (accountsWithBalances.length > 0) {
+    const regularContributionRows = await db
+      .select({ accountId: regularContributions.accountId, amount: regularContributions.amount })
+      .from(regularContributions)
+      .where(
+        inArray(
+          regularContributions.accountId,
+          accountsWithBalances.map((account) => account.id),
+        ),
+      );
+    for (const row of regularContributionRows) {
+      const type = accountTypeById.get(row.accountId);
+      if (!type || !DRAWDOWN_TYPE_SET.has(type)) continue; // defensive; write-time already excludes debt/property
+      const drawdownType = type as DrawdownAccountType;
+      const amountPence = numericToPence(row.amount);
+      const ownerId = accountOwnerById.get(row.accountId) ?? null;
+
+      if (ownerId === null) {
+        jointAnnualContributionsPence[drawdownType] = (jointAnnualContributionsPence[drawdownType] ?? 0n) + amountPence;
+      } else {
+        const existing = personalContributionsByPersonId.get(ownerId) ?? {};
+        existing[drawdownType] = (existing[drawdownType] ?? 0n) + amountPence;
+        personalContributionsByPersonId.set(ownerId, existing);
+      }
+    }
   }
 
   const today = todayIso();
@@ -100,6 +145,11 @@ export async function resolveScenario(
         `Scenario ${scenarioId} references person ${person.personId}, not found in household ${householdId}`,
       );
     }
+    const pensionPence = pensionContributionPenceByPersonId.get(person.personId);
+    const annualContributionsPence: Partial<Record<DrawdownAccountType, bigint>> = {
+      ...personalContributionsByPersonId.get(person.personId),
+      ...(pensionPence ? { sipp_pension: pensionPence } : {}),
+    };
     return {
       personId: person.personId,
       currentAge: ageAsOf(dob, today),
@@ -111,14 +161,10 @@ export async function resolveScenario(
         : statePensionAnnualPence(),
       pclsAge: person.pclsAge ?? null,
       planEndAge: person.planEndAge,
-      annualContributionPence: annualContributionPenceByPersonId.get(person.personId) ?? 0n,
+      annualContributionsPence,
     };
   });
 
-  // Archived accounts are excluded by getAccountsWithBalances's own default — an
-  // archived account shouldn't feed a live simulation's starting balance, same as it's
-  // already excluded from the net worth total and trend chart.
-  const accountsWithBalances = await getAccountsWithBalances(householdId);
   const startingBalancesPence: Partial<Record<DrawdownAccountType, bigint>> = {};
   for (const account of accountsWithBalances) {
     if (!DRAWDOWN_TYPE_SET.has(account.type)) continue; // excludes debt/property
@@ -140,5 +186,6 @@ export async function resolveScenario(
     wrapperWithdrawalOrder: assumptions.wrapperWithdrawalOrder,
     people: resolvedPeople,
     startingBalancesPence,
+    jointAnnualContributionsPence,
   };
 }

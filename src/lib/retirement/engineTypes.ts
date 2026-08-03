@@ -85,14 +85,16 @@ export interface ResolvedPerson {
   pclsAge: number | null;
   planEndAge: number;
   /**
-   * This person's own annual pension contribution while still working — the sum of
-   * every `pension_contribution` row's `amount` + `employerAmount` (Phase 1's schema;
-   * `src/lib/db/schema.ts`), resolved live the same way `startingBalancesPence` is,
-   * never stored in the scenario's own JSONB. `0n` when the person has no recorded
-   * contributions. **Disclosed simplification**: applied to `sipp_pension` exactly as
-   * entered, with no relief-at-source grossing-up — see `deterministicCore.ts`.
+   * This person's own annual contributions while still working, by wrapper —
+   * `sipp_pension` from `pension_contribution` (`amount` + `employerAmount`, Phase
+   * 4.4), every other key from this person's own (non-joint) `regular_contribution`
+   * rows (Phase 4.4's follow-up — `src/lib/db/schema.ts`). Both resolved live the same
+   * way `startingBalancesPence` is, never stored in the scenario's own JSONB. A wrapper
+   * with no recorded contribution simply has no key here, not a `0n` entry.
+   * **Disclosed simplifications**: applied to each wrapper exactly as entered, with no
+   * relief-at-source grossing-up on the pension side — see `deterministicCore.ts`.
    */
-  annualContributionPence: bigint;
+  annualContributionsPence: Partial<Record<DrawdownAccountType, bigint>>;
 }
 
 /**
@@ -121,6 +123,12 @@ export interface ResolvedScenario {
    * `holding` at run time — deliberately never stored in the scenario's own JSONB, per
    * Milestone 1's "derive, don't duplicate" design decision. */
   startingBalancesPence: Partial<Record<DrawdownAccountType, bigint>>;
+  /** Annual contributions from jointly-owned (`person_id IS NULL`) accounts' own
+   * `regular_contribution` rows, by wrapper (Phase 4.4's follow-up). A joint account
+   * has no single owner's `retirementAge` to gate a contribution by, so these apply
+   * household-wide instead — while `!householdFullyRetired` (`deterministicCore.ts`),
+   * not tied to any one person's own working/retired state. */
+  jointAnnualContributionsPence: Partial<Record<DrawdownAccountType, bigint>>;
 }
 
 /** One simulated year, within one simulated path. */

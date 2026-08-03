@@ -12,6 +12,7 @@ import {
   validateHouseholdName,
   validatePensionContribution,
   validatePerson,
+  validateRegularContribution,
 } from '@/lib/accounts/validation';
 import { ACCOUNT_TYPES, accountTypeMeta, taxWrapperForType } from '@/lib/accounts/types';
 import { accountType, overpaymentAllowanceBasis, pensionContributionMethod } from '@/lib/db/schema';
@@ -481,6 +482,37 @@ describe('validateHolding', () => {
   it('rejects more precision than NUMERIC(18,6) holds', () => {
     const result = validateHolding({ ticker: 'VWRL', quantity: '1.1234567', costBasis: '1200' });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('validateRegularContribution', () => {
+  it('accepts an amount with a ticker, upper-cased', () => {
+    const result = validateRegularContribution({ amount: '2400', ticker: 'vwrl' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual({ amount: '2400.00', ticker: 'VWRL' });
+  });
+
+  it('accepts a blank ticker — a plain cash contribution', () => {
+    const result = validateRegularContribution({ amount: '2400', ticker: '' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual({ amount: '2400.00', ticker: '' });
+  });
+
+  it('rejects a malformed ticker', () => {
+    const result = validateRegularContribution({ amount: '2400', ticker: 'not a ticker!' });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects a blank amount', () => {
+    const result = validateRegularContribution({ amount: '', ticker: '' });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects a zero or negative amount', () => {
+    expect(validateRegularContribution({ amount: '0', ticker: '' }).ok).toBe(false);
+    expect(validateRegularContribution({ amount: '-100', ticker: '' }).ok).toBe(false);
   });
 });
 

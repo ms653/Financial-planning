@@ -193,6 +193,9 @@ async function PortfolioBody({ householdId }: { householdId: number }) {
         ownerName: holding.ownerName,
         quantity: holding.quantity,
         currency: holding.accountCurrency,
+        regularContribution: holding.regularContributionAmount
+          ? `${formatMoney(numericToPence(holding.regularContributionAmount), { showPence: true })}/year`
+          : null,
       }));
 
       const gl = t.valuePence !== null ? gainLoss(t.totalCostBasisPence, t.valuePence) : null;

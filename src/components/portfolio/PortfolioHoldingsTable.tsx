@@ -20,6 +20,10 @@ export interface PortfolioHoldingAccountView {
   ownerName: string | null;
   quantity: string;
   currency: string;
+  /** Pre-formatted, e.g. "+ £2,400/year" — this account's own regular contribution
+   * toward this exact ticker, if any. Read-only here; managed on the account's own
+   * detail page. */
+  regularContribution: string | null;
 }
 
 export interface PortfolioHoldingGainLoss {
@@ -168,6 +172,9 @@ export function PortfolioHoldingsTable({ rows }: { rows: PortfolioHoldingRowView
                             <span className="tabular text-content-faint">
                               {account.quantity} {row.ticker}
                               {account.currency !== 'GBP' ? ` (${account.currency})` : ''}
+                              {account.regularContribution ? (
+                                <span className="ml-2 text-sage">+ {account.regularContribution}</span>
+                              ) : null}
                             </span>
                           </li>
                         ))}

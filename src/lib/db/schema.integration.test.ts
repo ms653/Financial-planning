@@ -67,7 +67,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
 
   beforeEach(async () => {
     await pool.query(
-      'TRUNCATE TABLE balance_snapshot, holding, debt_terms, account, pension_contribution, person, household, quote_cache, simulation_run, retirement_scenario, watchlist_item, stock_analysis, fundamentals_cache, roadmap_order RESTART IDENTITY CASCADE;',
+      'TRUNCATE TABLE balance_snapshot, holding, regular_contribution, debt_terms, account, pension_contribution, person, household, quote_cache, simulation_run, retirement_scenario, watchlist_item, stock_analysis, fundamentals_cache, roadmap_order RESTART IDENTITY CASCADE;',
     );
   });
 
@@ -102,7 +102,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
   }
 
   describe('migration', () => {
-    it('creates all fifteen tables', async () => {
+    it('creates all sixteen tables', async () => {
       const { rows } = await pool.query<{ table_name: string }>(
         "select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'",
       );
@@ -118,6 +118,7 @@ describe.skipIf(!connectionString)('schema against real Postgres', () => {
         'pension_contribution',
         'person',
         'quote_cache',
+        'regular_contribution',
         'retirement_scenario',
         'roadmap_order',
         'simulation_run',

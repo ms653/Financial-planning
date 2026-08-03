@@ -2,7 +2,7 @@ import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { AppShell } from '@/components/AppShell';
 import { ResultsBody, type PreRetirementContribution } from '@/components/retirement/ResultsBody';
-import { getPeopleWithPensions, getSetupState } from '@/lib/household/queries';
+import { getPeopleWithPensions, getRegularContributionAmounts, getSetupState } from '@/lib/household/queries';
 import { getScenarios, getScenarioWithLatestRun } from '@/lib/retirement/queries';
 import { parseScenarioAssumptions } from '@/lib/retirement/scenarioAssumptions';
 import { ageAsOf } from '@/lib/retirement/personAge';
@@ -38,28 +38,56 @@ export default async function ScenarioResultsPage({ params }: { params: { scenar
   const referencePersonName = referencePerson?.name ?? 'This person';
   const referencePersonDob = referencePerson?.dateOfBirth ?? '2000-01-01';
 
-  // Phase 4.4: who's still short of their own retirementAge, and what they're assumed
-  // to be contributing until then — surfaced here (not just silently baked into the
-  // simulation) so the household can see and correct it via Settings if it's stale.
+  // Phase 4.4 (and its follow-up): who's still short of their own retirementAge, and
+  // what they're assumed to be contributing until then — pension plus every personal
+  // regular_contribution — surfaced here (not just silently baked into the simulation)
+  // so the household can see and correct it via Settings/the account page if it's
+  // stale. Regular_contribution rows on a jointly-owned account have no single
+  // person's retirementAge to attribute to, so they're totalled separately below.
   const today = todayIso();
+  const regularContributionAmounts = await getRegularContributionAmounts(setup.householdId);
+  const personalRegularContributionPenceById = new Map<number, bigint>();
+  let jointRegularContributionPence = 0n;
+  for (const row of regularContributionAmounts) {
+    const pence = numericToPence(row.amount);
+    if (row.personId === null) {
+      jointRegularContributionPence += pence;
+    } else {
+      personalRegularContributionPenceById.set(
+        row.personId,
+        (personalRegularContributionPenceById.get(row.personId) ?? 0n) + pence,
+      );
+    }
+  }
+
   const preRetirementContributions: PreRetirementContribution[] = assumptions.people.flatMap((assumptionPerson) => {
     const person = people.find((p) => p.id === assumptionPerson.personId);
     if (!person) return [];
     const currentAge = ageAsOf(person.dateOfBirth, today);
     if (currentAge >= assumptionPerson.retirementAge) return [];
-    const annualContributionPence = person.pensionContributions.reduce(
+    const pensionPence = person.pensionContributions.reduce(
       (sum, c) => sum + numericToPence(c.amount) + numericToPence(c.employerAmount),
       0n,
     );
+    const totalPence = pensionPence + (personalRegularContributionPenceById.get(person.id) ?? 0n);
+    if (totalPence === 0n) return [];
     return [
       {
         personId: person.id,
         name: person.name,
         retirementAge: assumptionPerson.retirementAge,
-        annualContribution: formatMoney(annualContributionPence),
+        annualContribution: formatMoney(totalPence),
       },
     ];
   });
+
+  // Joint contributions apply household-wide until every included person has retired
+  // (deterministicCore.ts's householdFullyRetired gate) — shown only alongside at
+  // least one still-working person, the same condition that keeps them landing.
+  const jointAnnualContribution =
+    jointRegularContributionPence > 0n && preRetirementContributions.length > 0
+      ? formatMoney(jointRegularContributionPence)
+      : null;
 
   const otherScenarios = (await getScenarios(setup.householdId)).filter((s) => s.id !== scenarioId);
 
@@ -148,6 +176,7 @@ export default async function ScenarioResultsPage({ params }: { params: { scenar
         scenarioUpdatedAtIso={scenario.updatedAt.toISOString()}
         editHref={`/retirement/${scenarioId}/edit`}
         preRetirementContributions={preRetirementContributions}
+        jointAnnualContribution={jointAnnualContribution}
       />
     </AppShell>
   );

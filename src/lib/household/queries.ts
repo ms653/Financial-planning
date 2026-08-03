@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
 import {
   accounts,
@@ -8,12 +8,14 @@ import {
   households,
   people,
   pensionContributions,
+  regularContributions,
 } from '@/lib/db/schema';
 import type {
   AccountTypeValue,
   DebtTerms,
   Holding,
   PensionContribution,
+  RegularContribution,
   TaxWrapperValue,
 } from '@/lib/db/schema';
 
@@ -220,6 +222,7 @@ export interface AccountDetail extends AccountWithBalance {
   history: Array<{ id: number; amount: string; snapshotDate: string; capturedAt: Date }>;
   holdings: Holding[];
   debtTerms: DebtTerms | null;
+  regularContributions: RegularContribution[];
 }
 
 /**
@@ -272,6 +275,12 @@ export async function getAccountDetail(
 
   const [terms] = await db.select().from(debtTerms).where(eq(debtTerms.accountId, accountId)).limit(1);
 
+  const accountRegularContributions = await db
+    .select()
+    .from(regularContributions)
+    .where(eq(regularContributions.accountId, accountId))
+    .orderBy(asc(regularContributions.id));
+
   const latest = history.at(-1) ?? null;
 
   return {
@@ -283,6 +292,7 @@ export async function getAccountDetail(
     history,
     holdings: accountHoldings,
     debtTerms: terms ?? null,
+    regularContributions: accountRegularContributions,
   };
 }
 
@@ -298,6 +308,9 @@ export interface PortfolioHoldingRow {
   accountCurrency: string;
   /** null = jointly owned by the household, same convention as `AccountWithBalance`. */
   ownerName: string | null;
+  /** NUMERIC(14,2) string, annual — this account's own `regular_contribution` row for
+   * this exact ticker, if any. Read-only here; managed on the account detail page. */
+  regularContributionAmount: string | null;
 }
 
 /**
@@ -333,9 +346,24 @@ export async function getPortfolioHoldings(householdId: number): Promise<Portfol
     .where(and(eq(accounts.householdId, householdId), eq(accounts.archived, false)))
     .orderBy(asc(holdings.ticker));
 
+  // Regular contributions targeting a specific ticker (not a plain cash contribution,
+  // which has nothing to attach to a holding row) — matched by (accountId, ticker), the
+  // same soft pairing `regular_contribution.ticker` was designed around rather than a
+  // foreign key to `holding` (a regular purchase can be recorded before the first
+  // purchase lands as a holding at all).
+  const contributionRows = await db
+    .select({ accountId: regularContributions.accountId, ticker: regularContributions.ticker, amount: regularContributions.amount })
+    .from(regularContributions)
+    .innerJoin(accounts, eq(accounts.id, regularContributions.accountId))
+    .where(and(eq(accounts.householdId, householdId), isNotNull(regularContributions.ticker)));
+  const contributionByAccountAndTicker = new Map(
+    contributionRows.map((row) => [`${row.accountId}:${row.ticker}`, row.amount]),
+  );
+
   return rows.map((row) => ({
     ...row,
     ownerName: row.personId === null ? null : row.ownerName,
+    regularContributionAmount: contributionByAccountAndTicker.get(`${row.accountId}:${row.ticker}`) ?? null,
   }));
 }
 
@@ -436,6 +464,30 @@ export async function getPeopleWithPensions(householdId: number): Promise<Person
     ...person,
     pensionContributions: contributions.filter((row) => row.personId === person.id),
   }));
+}
+
+export interface RegularContributionAmount {
+  /** null = a jointly-owned account's contribution — no single person to attribute it to. */
+  personId: number | null;
+  /** NUMERIC(14,2) string — left unsummed, matching this file's own "NUMERIC stays a
+   * string here" convention; a caller sums via numericToPence, same as it already does
+   * for pensionContributions. */
+  amount: string;
+}
+
+/** Every `regular_contribution` row across the household, with just enough account
+ * context (`personId`) to attribute it to a person or the joint bucket — for the
+ * retirement results page's "Before retirement" note (Phase 4.4's follow-up). Not
+ * filtered by account type: only non-pension, non-debt, non-property accounts ever get
+ * a row in the first place (enforced at the action layer), same trust-the-invariant
+ * posture `getPortfolioHoldings` already takes toward `holdsSecurities`. */
+export async function getRegularContributionAmounts(householdId: number): Promise<RegularContributionAmount[]> {
+  const db = getDb();
+  return db
+    .select({ personId: accounts.personId, amount: regularContributions.amount })
+    .from(regularContributions)
+    .innerJoin(accounts, eq(accounts.id, regularContributions.accountId))
+    .where(eq(accounts.householdId, householdId));
 }
 
 /**

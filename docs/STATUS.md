@@ -14,18 +14,21 @@ quality/balance-sheet health). **Phase 4 is now fully complete**: Milestone 4
 `buildWorkbenchSummary`, extracted from `/stocks/[ticker]`, now drives per-row price/
 DCF-signal/checklist badges on the watchlist list page too) are both implemented and
 tested — see "Phase 4, Milestone 4" and "Phase 4, Milestone 5" below. **Phase 4.4
-(retirement accumulation phase) is also now complete** — the engine models
-saving/contributing between now and retirement instead of starting every path already
-retired, resolving the deferral Phase 3 Milestone 3 flagged; see "Phase 4.4: retirement
-accumulation phase" below. **Also shipped, outside Phase 4**: net worth chart
-stale-gap segments + hover tooltip, a real debt-chart sign-flip bug fix, a zero-pinned
+(retirement accumulation phase) is also now complete, including its own household-
+requested follow-up** — the engine models saving/contributing between now and
+retirement instead of starting every path already retired (resolving the deferral
+Phase 3 Milestone 3 flagged), and now covers regular contributions to GIA/ISA/LISA/
+cash accounts (personal and joint), not just pensions; see "Phase 4.4: retirement
+accumulation phase" and "Phase 4.4 follow-up: regular contributions to non-pension
+accounts" below. **Also shipped, outside Phase 4**: net worth chart stale-gap
+segments + hover tooltip, a real debt-chart sign-flip bug fix, a zero-pinned
 debt-chart baseline, the same hover tooltip reused on per-account charts, and a new
 in-app Roadmap tab with drag-and-drop reprioritization — see "Net worth chart:
 stale-gap segments + hover tooltip," its follow-up, and "In-app Roadmap tab" below.
 `src/lib/roadmap/data.ts` is now the single source of truth for phase status/scope/
 dependencies; `docs/PROPOSAL.md`'s Phased Delivery table is generated from it and
 CI-enforced to stay that way. A new `CLAUDE.md` records the "check the roadmap before
-planning" instruction. 765 tests passing. **Committed, pushed, and deployed to the
+planning" instruction. 782 tests passing. **Committed, pushed, and deployed to the
 live stack.**)
 
 ## Done
@@ -2184,6 +2187,67 @@ field's corrected hint text, in both light and dark.
 `ROADMAP_ITEMS`' Phase 4.4 entry updated to `status: 'done'` and `docs/PROPOSAL.md`'s
 generated table re-synced.
 
+## Phase 4.4 follow-up: regular contributions to non-pension accounts
+
+Household-raised, immediately after Phase 4.4 shipped: could the same accumulation
+mechanics cover a "regular purchase" on a Portfolio holding, and cash savings too, not
+just pensions? Real design work, not a small bolt-on — worked through with the
+household before building: where this gets managed (the account detail page, matching
+how holdings themselves already work — Portfolio only ever displays a read-only
+rollup, and cash accounts don't appear there at all) and how a jointly-owned account's
+contribution gets gated in the engine (no single owner's `retirementAge` to use, so it
+lands household-wide instead, while `!householdFullyRetired` — the same flag that
+already gates withdrawal, just inverted).
+
+**Schema**: new `regular_contribution` table (`src/lib/db/schema.ts`,
+`drizzle/0009_burly_war_machine.sql`) — `accountId`, an optional `ticker` (null = a
+plain cash contribution; set = a recurring purchase of that security, which need not
+be held yet), an annual `amount`. Deliberately separate from `pension_contribution`
+(which keeps its own `method`/`employerAmount` fields — they don't generalise) and
+not valid for `debt`/`property` (not drawdown wrappers) or `sipp_pension` (already has
+its own mechanism), enforced at the action layer.
+
+**Engine, generalised**: `ResolvedPerson.annualContributionPence` (one bigint,
+pension-only) becomes `annualContributionsPence` (a map, one entry per wrapper —
+`sipp_pension` from `pension_contribution` exactly as before, every other key from
+this person's own `regular_contribution` rows). `ResolvedScenario` gains
+`jointAnnualContributionsPence` for jointly-owned accounts. `deterministicCore.ts`'s
+year-loop reordered so the alive/`householdFullyRetired` computation runs first (it
+never depended on balance state, and the new joint-contribution step needs it) — new
+step order: alive/retired/State-Pension check, growth, contributions (personal +
+joint), PCLS, withdrawal.
+
+**UI**: new `RegularContributionsPanel.tsx` (mirrors `HoldingsPanel`'s list + inline
+form) on the account detail page for any non-debt/property/sipp_pension account — one
+component for both shapes, with a `allowTicker` prop hiding the ticker field entirely
+for cash-only accounts. The Portfolio holdings table gets a read-only "+ £X/year"
+annotation next to a matching holding's account row. The results page's "Before
+retirement" note (Phase 4.4's own addition) now sums pension *and* personal regular
+contributions per person, plus a new "Joint accounts: £X/year" line.
+
+**Tests**: `validateRegularContribution` (blank-ticker-means-cash, malformed ticker,
+non-positive amount); new `regularContributionCrud.integration.test.ts` (add/update/
+delete against real Postgres, rejecting a debt/property/sipp_pension account); new
+`deterministicCore.test.ts` cases (a person contributing to more than one wrapper at
+once; a joint contribution landing while not fully retired and stopping the same year
+withdrawal would start); a new `resolveScenario.integration.test.ts` case seeding a
+personal GIA contribution (ticker + cash, summed), a joint Cash ISA contribution, and
+an account owned by a person *not* included in the scenario (confirmed skipped, not
+guessed at — no `retirementAge` to gate it by).
+
+782 tests passing (up from 765). Typecheck, lint, and build all clean. Browser-verified
+against a throwaway dev server and scratch Postgres: a personal GIA (a ticker-based
+contribution alongside its actual holding), a personal Cash ISA (ticker field absent
+from the form entirely), and a joint GIA (cash) — all three showed correctly on their
+own account pages, the GIA's contribution appeared as "+ £1,200.00/year" next to the
+matching holding on Portfolio, and the retirement results page's note correctly
+summed pension + GIA + Cash ISA into one per-person figure plus a separate joint line,
+with the fan chart itself visibly reflecting the extra contributions (a higher median
+outcome than Phase 4.4 alone produced for the same household). Light and dark.
+
+`ROADMAP_ITEMS`' Phase 4.4 entry (`detail`) updated to describe the extended scope;
+`docs/PROPOSAL.md`'s generated table re-synced. No status change — already `done`.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -2206,8 +2270,9 @@ generated table re-synced.
 18. ~~Milestone 4 (fundamentals checklist)~~ Implemented and tested — see "Phase 4, Milestone 4" above.
 19. ~~Milestone 5 (watchlist UI polish + the full workbench screen)~~ **Done — Phase 4 is fully complete.** See "Phase 4, Milestone 5" above.
 20. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
-21. ~~Phase 4.4 (retirement accumulation phase)~~ **Done** — see "Phase 4.4: retirement accumulation phase" above. 765 tests passing. **Committed, pushed, and deployed to the live stack.**
-22. **Next phase**: Phase 4.5 (Cash Allocation Advisor) is next on the roadmap — its `dependsOn` (Phase 1, Phase 3, Phase 4.4) are all now done.
+21. ~~Phase 4.4 (retirement accumulation phase)~~ **Done** — see "Phase 4.4: retirement accumulation phase" above.
+22. ~~Phase 4.4 follow-up: regular contributions to non-pension accounts (GIA/ISA/LISA/cash, personal and joint)~~ **Done, household-requested** — see "Phase 4.4 follow-up" above. 782 tests passing. **Committed, pushed, and deployed to the live stack.**
+23. **Next phase**: Phase 4.5 (Cash Allocation Advisor) is next on the roadmap — its `dependsOn` (Phase 1, Phase 3, Phase 4.4) are all now done.
 
 ## Notes for Phase 3
 

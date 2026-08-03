@@ -3,6 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { UpdateBalanceDrawer } from '@/components/accounts/UpdateBalanceDrawer';
 import { HoldingsPanel } from '@/components/accounts/HoldingsPanel';
+import { RegularContributionsPanel } from '@/components/accounts/RegularContributionsPanel';
 import { BalanceHistoryPanel } from '@/components/accounts/BalanceHistoryPanel';
 import { AccountTypeBadge, ArchivedBadge, TaxWrapperBadge } from '@/components/ui/Badges';
 import { FreshnessLine } from '@/components/ui/States';
@@ -11,12 +12,15 @@ import { accountTypeMeta } from '@/lib/accounts/types';
 import { OVERPAYMENT_BASIS_LABELS, todayIso } from '@/lib/accounts/validation';
 import {
   addHolding,
+  addRegularContribution,
   deleteBalanceSnapshot,
   deleteHolding,
+  deleteRegularContribution,
   setAccountArchived,
   updateBalance,
   updateBalanceSnapshot,
   updateHolding,
+  updateRegularContribution,
 } from '@/lib/household/actions';
 import { getAccountDetail, getSetupState } from '@/lib/household/queries';
 import { pointPixelCoordinates, seriesToPath, seriesToSegments } from '@/lib/networth/series';
@@ -56,6 +60,12 @@ async function toggleArchived(formData: FormData) {
 async function removeHolding(formData: FormData) {
   'use server';
   await deleteHolding(formData);
+}
+
+/** Same reasoning as `removeHolding`. */
+async function removeRegularContribution(formData: FormData) {
+  'use server';
+  await deleteRegularContribution(formData);
 }
 
 /** Same reasoning as `removeHolding` — a bare single-button form has nothing to render an
@@ -314,6 +324,24 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
                 : null,
               unpricedCount,
             }}
+          />
+        </div>
+      ) : null}
+
+      {!isDebt && account.type !== 'property' && account.type !== 'sipp_pension' ? (
+        <div className="mt-5">
+          <RegularContributionsPanel
+            accountId={account.id}
+            allowTicker={meta.holdsSecurities}
+            contributions={account.regularContributions.map((contribution) => ({
+              id: contribution.id,
+              ticker: contribution.ticker,
+              amount: `${formatMoney(numericToPence(contribution.amount), { showPence: true })}/year`,
+              amountRaw: contribution.amount,
+            }))}
+            addAction={addRegularContribution}
+            editAction={updateRegularContribution}
+            deleteAction={removeRegularContribution}
           />
         </div>
       ) : null}

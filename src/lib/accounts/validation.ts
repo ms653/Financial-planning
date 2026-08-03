@@ -576,6 +576,50 @@ export function validateHolding(raw: Record<string, unknown>): Validated<Holding
 }
 
 /* ---------------------------------------------------------------------------------
+ * Regular contribution
+ * ------------------------------------------------------------------------------- */
+
+export interface RegularContributionInput {
+  amount: string;
+  /** `''` (blank) means a plain cash contribution — never stored as `''` itself, the
+   * caller maps that to `null` for the nullable `ticker` column. */
+  ticker: string;
+}
+
+/**
+ * Ticker is optional here, unlike `validateHolding`'s required one: blank means "this
+ * money just adds to the account's cash balance," which is the only sensible meaning
+ * for a `cash`/`cash_isa` account (never has a `holding` row to attach a ticker to)
+ * and a legitimate choice for an investment account too (uninvested cash sitting
+ * there before the household decides what to buy).
+ */
+export function validateRegularContribution(raw: Record<string, unknown>): Validated<RegularContributionInput> {
+  const errors: FieldErrors = {};
+
+  const amountRaw = cleanString(raw.amount);
+  let amount = '';
+  if (amountRaw === '') {
+    errors.amount = 'Enter a yearly contribution amount.';
+  } else {
+    const parsed = parseMoneyInput(amountRaw);
+    if (!parsed.ok) errors.amount = 'Enter an amount like 2400.';
+    else if (parsed.pence <= 0n) errors.amount = 'A contribution needs to be above zero.';
+    else amount = penceToNumeric(parsed.pence);
+  }
+
+  const tickerRaw = cleanString(raw.ticker).toUpperCase();
+  let ticker = '';
+  if (tickerRaw !== '' && !/^[A-Z0-9.\-:]{1,20}$/.test(tickerRaw)) {
+    errors.ticker = 'Tickers are letters, digits, dots and dashes — or leave blank for cash.';
+  } else {
+    ticker = tickerRaw;
+  }
+
+  if (Object.keys(errors).length > 0) return { ok: false, errors };
+  return { ok: true, value: { amount, ticker } };
+}
+
+/* ---------------------------------------------------------------------------------
  * Household
  * ------------------------------------------------------------------------------- */
 

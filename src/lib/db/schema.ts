@@ -374,6 +374,44 @@ export const holdings = pgTable(
 );
 
 /**
+ * A regular (annual) contribution into a non-pension account — Phase 4.4's follow-up.
+ * `pension_contribution` above stays pension-only (it needs `method`/`employerAmount`
+ * for tax treatment that doesn't generalise); this is the equivalent for everywhere
+ * else money regularly goes: a Cash ISA standing order, a GIA/S&S ISA/LISA regular
+ * purchase.
+ *
+ * `ticker` is nullable and deliberately not a foreign key to `holding`: null means a
+ * plain cash contribution to the account's own balance (the only sensible meaning for
+ * a `cash`/`cash_isa` account, which never holds a `holding` row at all); a ticker
+ * means a recurring purchase of that security, which can be recorded before the first
+ * purchase has actually landed as a `holding` row.
+ *
+ * `amount` is annual, no `frequency` column — the same reasoning
+ * `pension_contribution`'s own doc comment already gives (an unused column would be a
+ * guess; add one later if monthly entry turns out to be what's wanted).
+ *
+ * Not valid for `debt`/`property` accounts (not drawdown wrappers at all) or
+ * `sipp_pension` (already has `pension_contribution` — one mechanism per wrapper, not
+ * two competing ones). Enforced at the action layer, not a DB constraint, matching
+ * `addHolding`'s own posture toward its account-type assumptions.
+ */
+export const regularContributions = pgTable(
+  'regular_contribution',
+  {
+    id: serial('id').primaryKey(),
+    accountId: integer('account_id')
+      .notNull()
+      .references(() => accounts.id, { onDelete: 'cascade' }),
+    ticker: text('ticker'),
+    amount: money('amount').notNull(),
+    ...timestamps,
+  },
+  (table) => ({
+    accountIdx: index('regular_contribution_account_idx').on(table.accountId),
+  }),
+);
+
+/**
  * Cached market-data quotes (Phase 2).
  *
  * Deliberately the opposite shape from `balance_snapshot` above: this is a **mutable,
@@ -580,6 +618,8 @@ export type Account = typeof accounts.$inferSelect;
 export type NewAccount = typeof accounts.$inferInsert;
 export type Holding = typeof holdings.$inferSelect;
 export type NewHolding = typeof holdings.$inferInsert;
+export type RegularContribution = typeof regularContributions.$inferSelect;
+export type NewRegularContribution = typeof regularContributions.$inferInsert;
 export type QuoteCache = typeof quoteCache.$inferSelect;
 export type NewQuoteCache = typeof quoteCache.$inferInsert;
 export type BalanceSnapshot = typeof balanceSnapshots.$inferSelect;

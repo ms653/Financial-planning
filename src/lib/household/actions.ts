@@ -12,6 +12,7 @@ import {
   households,
   people,
   pensionContributions,
+  regularContributions,
   type AccountTypeValue,
 } from '@/lib/db/schema';
 import { getSetupState } from '@/lib/household/queries';
@@ -24,6 +25,7 @@ import {
   validateHouseholdName,
   validatePensionContribution,
   validatePerson,
+  validateRegularContribution,
   type FieldErrors,
 } from '@/lib/accounts/validation';
 import { numericToPence, penceToNumeric } from '@/lib/money';
@@ -823,5 +825,124 @@ export async function deleteHolding(formData: FormData): Promise<ActionResult> {
   }
 
   revalidatePath(`/accounts/${accountId}`);
+  return { ok: true };
+}
+
+/* ---------------------------------------------------------------------------------
+ * Regular contributions
+ * ------------------------------------------------------------------------------- */
+
+/** `debt`/`property` aren't drawdown wrappers at all; `sipp_pension` already has
+ * `pension_contribution` — one mechanism per wrapper, not two competing ones. Checked
+ * here (not a DB constraint), matching `addHolding`'s own posture toward its
+ * account-type assumptions. */
+const REGULAR_CONTRIBUTION_INELIGIBLE_TYPES: ReadonlySet<AccountTypeValue> = new Set([
+  'debt',
+  'property',
+  'sipp_pension',
+]);
+
+export async function addRegularContribution(formData: FormData): Promise<ActionResult> {
+  const accountId = Number.parseInt(String(formData.get('accountId') ?? ''), 10);
+  if (!Number.isInteger(accountId)) {
+    return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+  }
+
+  const parsed = validateRegularContribution(fieldValues(formData));
+  if (!parsed.ok) return parsed;
+
+  try {
+    const householdId = await requireHouseholdId();
+    const db = getDb();
+    const [account] = await db
+      .select({ id: accounts.id, type: accounts.type })
+      .from(accounts)
+      .where(and(eq(accounts.id, accountId), eq(accounts.householdId, householdId)))
+      .limit(1);
+    if (!account || REGULAR_CONTRIBUTION_INELIGIBLE_TYPES.has(account.type)) {
+      return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+    }
+
+    await db.insert(regularContributions).values({
+      accountId,
+      ticker: parsed.value.ticker === '' ? null : parsed.value.ticker,
+      amount: parsed.value.amount,
+    });
+  } catch (error) {
+    return logAndWrap('addRegularContribution', error);
+  }
+
+  revalidatePath(`/accounts/${accountId}`);
+  revalidatePath('/portfolio');
+  return { ok: true };
+}
+
+export async function updateRegularContribution(formData: FormData): Promise<ActionResult> {
+  const contributionId = Number.parseInt(String(formData.get('contributionId') ?? ''), 10);
+  if (!Number.isInteger(contributionId)) {
+    return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+  }
+
+  const parsed = validateRegularContribution(fieldValues(formData));
+  if (!parsed.ok) return parsed;
+
+  try {
+    // Scoped by household, joining through the owning account — same pattern as
+    // updateHolding, and the real accountId is resolved from the row itself rather
+    // than trusted from the form.
+    const householdId = await requireHouseholdId();
+    const db = getDb();
+    const [owned] = await db
+      .select({ accountId: regularContributions.accountId })
+      .from(regularContributions)
+      .innerJoin(accounts, eq(regularContributions.accountId, accounts.id))
+      .where(and(eq(regularContributions.id, contributionId), eq(accounts.householdId, householdId)))
+      .limit(1);
+    if (!owned) return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+
+    await db
+      .update(regularContributions)
+      .set({
+        ticker: parsed.value.ticker === '' ? null : parsed.value.ticker,
+        amount: parsed.value.amount,
+        updatedAt: new Date(),
+      })
+      .where(eq(regularContributions.id, contributionId));
+
+    revalidatePath(`/accounts/${owned.accountId}`);
+    revalidatePath('/portfolio');
+  } catch (error) {
+    return logAndWrap('updateRegularContribution', error);
+  }
+
+  return { ok: true };
+}
+
+export async function deleteRegularContribution(formData: FormData): Promise<ActionResult> {
+  const contributionId = Number.parseInt(String(formData.get('contributionId') ?? ''), 10);
+  if (!Number.isInteger(contributionId)) {
+    return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+  }
+
+  let accountId: number;
+  try {
+    const householdId = await requireHouseholdId();
+    const db = getDb();
+    const [owned] = await db
+      .select({ accountId: regularContributions.accountId })
+      .from(regularContributions)
+      .innerJoin(accounts, eq(regularContributions.accountId, accounts.id))
+      .where(and(eq(regularContributions.id, contributionId), eq(accounts.householdId, householdId)))
+      .limit(1);
+    if (!owned) return { ok: false, errors: {}, formError: GENERIC_SAVE_ERROR };
+    accountId = owned.accountId;
+
+    await db.delete(regularContributions).where(eq(regularContributions.id, contributionId));
+  } catch (error) {
+    return logAndWrap('deleteRegularContribution', error);
+  }
+
+  revalidatePath(`/accounts/${accountId}`);
+  revalidatePath('/portfolio');
   return { ok: true };
 }

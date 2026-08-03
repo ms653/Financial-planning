@@ -3,7 +3,15 @@ import { Pool } from 'pg';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import * as schema from '@/lib/db/schema';
-import { accounts, balanceSnapshots, households, people, pensionContributions, retirementScenarios } from '@/lib/db/schema';
+import {
+  accounts,
+  balanceSnapshots,
+  households,
+  people,
+  pensionContributions,
+  regularContributions,
+  retirementScenarios,
+} from '@/lib/db/schema';
 import { taxWrapperForType } from '@/lib/accounts/types';
 import { todayIso } from '@/lib/accounts/validation';
 import { penceToNumeric } from '@/lib/money';
@@ -223,8 +231,71 @@ describe.skipIf(!connectionString)('resolveScenario against a real Postgres', ()
 
     const alexResolved = resolved!.people.find((p) => p.personId === alex!.id)!;
     const jordanResolved = resolved!.people.find((p) => p.personId === jordan!.id)!;
-    expect(alexResolved.annualContributionPence).toBe(800_000n); // (5000+2000+1000+0) * 100
-    expect(jordanResolved.annualContributionPence).toBe(0n);
+    expect(alexResolved.annualContributionsPence.sipp_pension).toBe(800_000n); // (5000+2000+1000+0) * 100
+    expect(jordanResolved.annualContributionsPence).toEqual({});
+  });
+
+  it('sums regular_contribution rows into personal or joint contributions, by the owning account, skipping an owner not in this scenario', async () => {
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    const householdId = household!.id;
+
+    const [alex] = await db
+      .insert(people)
+      .values({ householdId, name: 'Alex', dateOfBirth: dobYearsAgo(40) })
+      .returning();
+    const [jordan] = await db
+      .insert(people)
+      .values({ householdId, name: 'Jordan', dateOfBirth: dobYearsAgo(38) })
+      .returning();
+
+    // Alex's own GIA: a regular purchase (ticker set) and a plain cash top-up
+    // (ticker null) — both should sum into the same gia key.
+    const [alexGia] = await db
+      .insert(accounts)
+      .values({ householdId, personId: alex!.id, name: 'Alex GIA', type: 'gia', taxWrapper: 'gia' })
+      .returning();
+    await db.insert(regularContributions).values([
+      { accountId: alexGia!.id, ticker: 'VWRL', amount: '1200.00' },
+      { accountId: alexGia!.id, ticker: null, amount: '300.00' },
+    ]);
+
+    // A joint Cash ISA — no single owner, so this should land in the household-wide
+    // bucket, not either person's own contributions.
+    const [jointIsa] = await db
+      .insert(accounts)
+      .values({ householdId, personId: null, name: 'Joint Cash ISA', type: 'cash_isa', taxWrapper: 'isa' })
+      .returning();
+    await db.insert(regularContributions).values([{ accountId: jointIsa!.id, ticker: null, amount: '2400.00' }]);
+
+    // Jordan's own account, but Jordan isn't included in this scenario's people below
+    // — this contribution has no retirementAge to gate on and must be skipped, not
+    // guessed at.
+    const [jordanGia] = await db
+      .insert(accounts)
+      .values({ householdId, personId: jordan!.id, name: 'Jordan GIA', type: 'gia', taxWrapper: 'gia' })
+      .returning();
+    await db.insert(regularContributions).values([{ accountId: jordanGia!.id, ticker: null, amount: '999.00' }]);
+
+    const assumptions = {
+      schemaVersion: 1,
+      annualSpending: '30000.00',
+      inflationPct: '2.500',
+      equityAllocationPct: '60.000',
+      targetSuccessRatePct: '90.000',
+      flatEffectiveTaxRatePct: '20.000',
+      wrapperWithdrawalOrder: ['gia'],
+      people: [{ personId: alex!.id, retirementAge: 65, planEndAge: 95 }], // Jordan deliberately excluded
+    };
+    const [scenario] = await db
+      .insert(retirementScenarios)
+      .values({ householdId, name: 'Baseline', assumptions })
+      .returning();
+
+    const resolved = await resolveScenario(scenario!.id, householdId);
+
+    const alexResolved = resolved!.people.find((p) => p.personId === alex!.id)!;
+    expect(alexResolved.annualContributionsPence.gia).toBe(150_000n); // (1200 + 300) * 100
+    expect(resolved!.jointAnnualContributionsPence.cash_isa).toBe(240_000n);
   });
 
   it('returns null for a scenario that does not exist', async () => {

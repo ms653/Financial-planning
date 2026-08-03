@@ -193,10 +193,11 @@ function buildScenario(withdrawalRatePercent: bigint, equityAllocationRate: bigi
         statePensionAnnualPence: 0n,
         pclsAge: null,
         planEndAge: 65 + horizonYears,
-        annualContributionPence: 0n,
+        annualContributionsPence: {},
       },
     ],
     startingBalancesPence: { gia: STARTING_BALANCE_PENCE },
+    jointAnnualContributionsPence: {},
   };
 }
 

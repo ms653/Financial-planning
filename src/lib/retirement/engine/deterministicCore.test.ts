@@ -16,7 +16,7 @@ function person(overrides: Partial<ResolvedPerson> & { personId: number }): Reso
     statePensionAnnualPence: 0n,
     pclsAge: null,
     planEndAge: 95,
-    annualContributionPence: 0n,
+    annualContributionsPence: {},
     ...overrides,
   };
 }
@@ -33,6 +33,7 @@ function scenario(overrides: Partial<ResolvedScenario> = {}): ResolvedScenario {
     wrapperWithdrawalOrder: ['gia'],
     people: [person({ personId: 1 })],
     startingBalancesPence: {},
+    jointAnnualContributionsPence: {},
     ...overrides,
   };
 }
@@ -200,7 +201,7 @@ describe('runDeterministicPath — named edge cases from PROPOSAL.md Testing str
             currentAge: 60,
             retirementAge: 63,
             planEndAge: 65,
-            annualContributionPence: 100_000n, // £1,000/yr
+            annualContributionsPence: { sipp_pension: 100_000n }, // £1,000/yr
           }),
         ],
       });
@@ -228,7 +229,7 @@ describe('runDeterministicPath — named edge cases from PROPOSAL.md Testing str
             currentAge: 63,
             retirementAge: 64,
             planEndAge: 66, // planEndAge - currentAge = 3 simulated years (ages 63, 64, 65)
-            annualContributionPence: 200_000n, // £2,000/yr
+            annualContributionsPence: { sipp_pension: 200_000n }, // £2,000/yr
           }),
         ],
       });
@@ -265,6 +266,53 @@ describe('runDeterministicPath — named edge cases from PROPOSAL.md Testing str
       // Year 2: person 2 turns 65 — both now retired, withdrawal starts.
       expect(outcome.path[2]!.totalBalancePence).toBe(1_500_000n);
       expect(outcome.path[3]!.totalBalancePence).toBe(1_000_000n);
+    });
+
+    it('a person contributing to more than one wrapper at once (not just sipp_pension) lands each in its own wrapper', () => {
+      const s = scenario({
+        annualSpendingPence: 0n,
+        people: [
+          person({
+            personId: 1,
+            currentAge: 60,
+            retirementAge: 62,
+            planEndAge: 63,
+            annualContributionsPence: { gia: 50_000n, cash_isa: 30_000n },
+          }),
+        ],
+      });
+
+      const outcome = runDeterministicPath(s, pct(0));
+
+      expect(outcome.path[0]!.balancesByWrapperPence.gia).toBe(50_000n);
+      expect(outcome.path[0]!.balancesByWrapperPence.cash_isa).toBe(30_000n);
+      expect(outcome.path[1]!.balancesByWrapperPence.gia).toBe(100_000n);
+      expect(outcome.path[1]!.balancesByWrapperPence.cash_isa).toBe(60_000n);
+      // Age 62 === retirementAge: retired, no further contribution to either wrapper.
+      expect(outcome.path[2]!.balancesByWrapperPence.gia).toBe(100_000n);
+      expect(outcome.path[2]!.balancesByWrapperPence.cash_isa).toBe(60_000n);
+    });
+
+    it('a joint account’s regular contribution lands while the household hasn’t fully retired, and stops the same year it has', () => {
+      const s = scenario({
+        annualSpendingPence: 0n, // isolates contribution from the withdrawal mechanic
+        jointAnnualContributionsPence: { gia: 40_000n },
+        people: [
+          person({ personId: 1, currentAge: 65, retirementAge: 65, planEndAge: 68 }), // already retired
+          person({ personId: 2, currentAge: 63, retirementAge: 65, planEndAge: 68 }), // retires in 2 years
+        ],
+      });
+
+      const outcome = runDeterministicPath(s, pct(0));
+
+      // Years 0–1: person 2 hasn't retired yet — household isn't fully retired, so the
+      // joint contribution keeps landing regardless of person 1's own retirementAge.
+      expect(outcome.path[0]!.totalBalancePence).toBe(40_000n);
+      expect(outcome.path[1]!.totalBalancePence).toBe(80_000n);
+      // Year 2 onward: person 2 has now retired too — household is fully retired, so
+      // the joint contribution stops, same year withdrawal would start.
+      expect(outcome.path[2]!.totalBalancePence).toBe(80_000n);
+      expect(outcome.path[3]!.totalBalancePence).toBe(80_000n);
     });
   });
 

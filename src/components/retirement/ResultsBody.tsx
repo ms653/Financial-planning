@@ -27,8 +27,9 @@ export interface PreRetirementContribution {
   personId: number;
   name: string;
   retirementAge: number;
-  /** Pre-formatted on the server via `formatMoney` — never a raw bigint across the
-   * server/client boundary, this codebase's usual discipline. */
+  /** Pre-formatted on the server via `formatMoney` — pension plus this person's own
+   * regular_contribution rows, combined (Phase 4.4 and its follow-up). Never a raw
+   * bigint across the server/client boundary, this codebase's usual discipline. */
   annualContribution: string;
 }
 
@@ -43,6 +44,7 @@ export function ResultsBody({
   scenarioUpdatedAtIso,
   editHref,
   preRetirementContributions,
+  jointAnnualContribution,
 }: {
   scenarioId: number;
   targetSuccessRatePct: string;
@@ -56,6 +58,10 @@ export function ResultsBody({
   /** People still short of their own `retirementAge` — Phase 4.4. Empty when everyone
    * modelled has already reached theirs; the note doesn't render at all in that case. */
   preRetirementContributions: PreRetirementContribution[];
+  /** Pre-formatted, e.g. "£2,400/year" — total regular_contribution amount across
+   * every jointly-owned account, shown only when there's at least one still-working
+   * person (the same condition that keeps it actually landing in the simulation). */
+  jointAnnualContribution: string | null;
 }) {
   const [runId, setRunId] = useState<number | null>(initialRun?.id ?? null);
   const [starting, setStarting] = useState(false);
@@ -214,11 +220,11 @@ export function ResultsBody({
           <h2 className="font-serif text-lg text-content">Before retirement</h2>
           <p className="mt-1 text-sm text-content-muted">
             Until each person’s own retirement age above, this simulation assumes they
-            keep contributing and draws down nothing — see{' '}
+            keep contributing (pension via{' '}
             <Link href="/settings" className="underline underline-offset-2 hover:text-content">
               Settings
-            </Link>{' '}
-            to change what’s recorded.
+            </Link>
+            , everything else via each account’s own page) and draws down nothing.
           </p>
           <ul className="mt-3 space-y-1 text-sm text-content">
             {preRetirementContributions.map((p) => (
@@ -226,6 +232,7 @@ export function ResultsBody({
                 {p.name}: {p.annualContribution}/year until age {p.retirementAge}
               </li>
             ))}
+            {jointAnnualContribution ? <li>Joint accounts: {jointAnnualContribution}/year</li> : null}
           </ul>
         </div>
       ) : null}
