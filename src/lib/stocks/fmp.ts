@@ -55,6 +55,19 @@
  * *statements* 402 on the free tier; profile coverage is evidently broader than
  * statement coverage, consistent with the earlier per-ticker coverage investigation
  * (`docs/STATUS.md`'s "how do I know what tickers will work?" note).
+ *
+ * **`/stable/ratios`, `/stable/key-metrics`, `/stable/stock-peers` (Milestone 3's
+ * relative-valuation and quality/balance-sheet screens) — live verified 2026-08-03**:
+ * `ratios`/`key-metrics` take the identical `?symbol=&period=annual&limit=N` shape and
+ * response parsing as the statements (`fetchFmpStatement` reused directly); `peers`
+ * takes no `period`/`limit` (a flat list, not a time series) but shares the same
+ * array/empty-array/402/bad-key response shapes. Confirmed against `AAPL`, `MSFT`, and
+ * `COF`: **`ratios` and `key-metrics` 402 for COF exactly like its statements do**
+ * (same free-tier gating), but **`stock-peers` works for COF regardless** (7 peers
+ * returned) — peer discovery is independent of whether a ticker's own multiples are
+ * available on this plan. Most large-cap peers have working `ratios`/`key-metrics`
+ * (`BAC`, `MSFT`, `GOOGL`, `TSM` all confirmed); a real negative P/E was seen for
+ * `SONY` (negative trailing EPS) — a genuine result to display as-is, not filter out.
  */
 import { inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
@@ -78,6 +91,19 @@ export interface FmpStatements {
    * Cached rows written before this field existed simply lack the key; read as
    * `undefined` there, which callers treat the same as `null` (no suggestion). */
   beta: number | null;
+  /** Same optional-call posture as `beta`: `[]` when the ratios call failed, never
+   * failing the whole fetch. Feeds `relativeValuation.ts`'s quality-metrics and
+   * peer-comparison P/E, never the DCF calculation. */
+  ratios: FmpStatementPeriod[];
+  /** Same posture as `ratios` — feeds EV/EBITDA and ROE/ROIC in
+   * `relativeValuation.ts`. */
+  keyMetrics: FmpStatementPeriod[];
+  /** `[]` when the peers call failed or the provider has none for this ticker — same
+   * optional posture. FMP's own peer determination, not hand-picked; a peer here may
+   * itself have no usable `ratios`/`keyMetrics` (`relativeValuation.ts` shows it with a
+   * `null` multiple rather than omitting it, so the household can see which peers had
+   * no data). */
+  peers: Array<{ ticker: string; companyName: string }>;
 }
 
 export type FundamentalsFetchResult =
@@ -176,6 +202,21 @@ async function fetchFmpProfile(
   return fetchFmpArray(url, fetchImpl);
 }
 
+/** Peer tickers — no `period`/`limit` (a flat list, not a time series), otherwise the
+ * same shared response handling. See this file's own doc comment: live-verified
+ * 2026-08-03, works independently of whether the ticker's own `ratios`/`key-metrics`
+ * are available on this plan. */
+async function fetchFmpPeers(
+  ticker: string,
+  apiKey: string,
+  fetchImpl: typeof fetch,
+): Promise<StatementFetchResult> {
+  const url = new URL(`${FMP_BASE_URL}/stock-peers`);
+  url.searchParams.set('symbol', ticker);
+  url.searchParams.set('apikey', apiKey);
+  return fetchFmpArray(url, fetchImpl);
+}
+
 /**
  * Fetch all three statements plus the profile's `beta`, for one ticker. Sequential,
  * not parallel — matching `quotes.ts`'s own conservative choice for Alpha Vantage;
@@ -188,12 +229,15 @@ async function fetchFmpProfile(
  * same way, so there's nothing to gain from spending API calls to learn that once
  * would already tell you.
  *
- * The profile call is different: it's fetched *after* the three statements succeed,
- * but its own failure doesn't fail the whole result — `beta` only feeds an optional
- * discount-rate suggestion downstream (`dcf.ts`'s `suggestDiscountRatePct`), never the
- * DCF calculation itself, so a profile miss just means no suggestion, not "no
- * fundamentals for this ticker." This is a deliberate asymmetry from the
- * statement-to-statement behaviour above.
+ * The profile/ratios/key-metrics/peers calls are different: each is fetched *after*
+ * the three statements succeed, but none of their failures fail the whole result.
+ * `beta` only feeds an optional discount-rate suggestion (`dcf.ts`'s
+ * `suggestDiscountRatePct`); `ratios`/`keyMetrics`/`peers` only feed Milestone 3's
+ * optional relative-valuation and quality screens (`relativeValuation.ts`) — none of
+ * them touch the DCF calculation, so any one missing just means that one optional
+ * section has nothing to show, not "no fundamentals for this ticker." This is a
+ * deliberate asymmetry from the statement-to-statement behaviour above, and each of
+ * the four degrades independently of the other three.
  */
 export async function fetchFundamentals(
   ticker: string,
@@ -215,6 +259,20 @@ export async function fetchFundamentals(
       ? (profile.data[0].beta as number)
       : null;
 
+  const ratios = await fetchFmpStatement('ratios', ticker, apiKey, fetchImpl);
+  const keyMetrics = await fetchFmpStatement('key-metrics', ticker, apiKey, fetchImpl);
+
+  const peersResult = await fetchFmpPeers(ticker, apiKey, fetchImpl);
+  const peers =
+    peersResult.status === 'ok'
+      ? peersResult.data
+          .filter(
+            (p): p is FmpStatementPeriod & { symbol: string; companyName: string } =>
+              typeof p.symbol === 'string' && typeof p.companyName === 'string',
+          )
+          .map((p) => ({ ticker: p.symbol, companyName: p.companyName }))
+      : [];
+
   return {
     status: 'ok',
     ticker,
@@ -222,6 +280,9 @@ export async function fetchFundamentals(
     balanceSheets: balance.data,
     cashFlowStatements: cashFlow.data,
     beta,
+    ratios: ratios.status === 'ok' ? ratios.data : [],
+    keyMetrics: keyMetrics.status === 'ok' ? keyMetrics.data : [],
+    peers,
   };
 }
 
@@ -316,6 +377,9 @@ export async function ensureFreshFundamentals(
           balanceSheets: fetchResult.balanceSheets,
           cashFlowStatements: fetchResult.cashFlowStatements,
           beta: fetchResult.beta,
+          ratios: fetchResult.ratios,
+          keyMetrics: fetchResult.keyMetrics,
+          peers: fetchResult.peers,
         };
         await db
           .insert(fundamentalsCache)

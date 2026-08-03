@@ -6,11 +6,11 @@ validation" below for the closing Trinity study methodology and results. **Phase
 provider boundary, a watchlist) shipped, committed, pushed, and deployed to the live
 stack — `7bd4214`. **Milestone 2 (DCF calculator)** shipped and deployed — `333809d`
 (calculator), `a520a39` (a real Legacy-endpoint FMP bug, caught and fixed via live-key
-verification), `299dfa8` (a "how to read this" explainer). **Latest**: the DCF page now
-also suggests data-driven values for FCF growth rate (historical CAGR) and discount
-rate (CAPM, using a newly-fetched company beta) — see "DCF page: an explainer, and
-data-driven suggested inputs" below. 711 tests passing. **Not yet committed, pushed, or
-deployed.**)
+verification), `299dfa8` (a "how to read this" explainer), `be2ffef` (data-driven
+suggested inputs — FCF growth from historical CAGR, discount rate via CAPM using a
+newly-fetched company beta). **Milestone 3 (relative valuation + quality/balance-sheet
+health)** is implemented and tested — see "Phase 4, Milestone 3" below. 723 tests
+passing. **Not yet committed, pushed, or deployed.**)
 
 ## Done
 
@@ -1759,6 +1759,80 @@ ticker's form pre-fills to the exact suggested values with visible hints; after 
 custom value and reloading, the saved value persists but "Use" still resets it to the
 suggestion.
 
+## Phase 4, Milestone 3: relative valuation + quality/balance-sheet health
+
+Per `docs/PROPOSAL.md`'s stock analysis brief, triangulating four methods rather than
+trusting one number: DCF (M2), relative valuation (P/E, EV/EBITDA vs. peers), a
+quality/profitability screen (ROE, ROIC, margins), and balance-sheet health
+(debt/equity, FCF) — the last three are this milestone. (The fourth thing PROPOSAL.md
+names, a fundamentals checklist gating inputs before a model runs, is M4.) Unlike the
+DCF, none of this needs a household-entered assumption — every figure is a ratio FMP
+already computes — so there's no new form, no new `stock_analysis.inputs` sub-shape,
+and no schema/migration at all.
+
+**Three new FMP endpoints, live-verified against the real key (2026-08-03)**:
+`/stable/ratios` and `/stable/key-metrics` (identical `?symbol=&period=annual&limit=N`
+shape and response parsing as the statements — `priceToEarningsRatio`,
+`debtToEquityRatio`, `currentRatio`, margins; `evToEBITDA`, `returnOnEquity`,
+`returnOnInvestedCapital`, `freeCashFlowYield`) and `/stable/stock-peers` (a flat list,
+no period/limit — `{symbol, companyName, price, mktCap}`). Confirmed against AAPL,
+MSFT, and COF: **`ratios`/`key-metrics` 402 for COF exactly like its statements do**
+(same free-tier gating), but **`stock-peers` works for COF regardless** (7 real peers
+returned) — peer discovery and a ticker's own multiples are independently available on
+FMP's side. A real negative P/E was seen for SONY (negative trailing EPS) — displayed
+as-is, not filtered out, since it's a genuine result.
+
+**One real design consequence of that COF finding, worth being explicit about**:
+`fetchFundamentals` still short-circuits at the first failed *mandatory* statement
+(income/balance/cash-flow, unchanged from M1/M2) — so for a COF-like ticker, profile/
+ratios/key-metrics/peers are never even attempted, and both new sections show the same
+"no fundamentals available" message the DCF section already does. Peers being
+independently fetchable on FMP's side doesn't change this: the cache is still one
+all-or-nothing blob per ticker (`fundamentals_cache.statements: FmpStatements | null`),
+and reworking that into a partial-data shape was judged out of scope for what this
+milestone actually needed — every ticker with usable statements also has usable
+ratios/key-metrics/peers in every case checked so far.
+
+**Within a successful fetch, though, `beta`/`ratios`/`keyMetrics`/`peers` are each
+independently optional** (same precedent `beta` set for M2's suggestions): any one
+failing degrades to `null`/`[]` without affecting the others or failing the whole
+fetch. `FmpStatements` gets three new fields; `fundamentals_cache` needs no schema
+change, same backward-compatible JSONB-blob extension as `beta` was.
+
+**Peer fundamentals reuse `ensureFreshFundamentals`, not a new fetcher** — it was
+already built multi-ticker-capable in M1 even though no caller had ever passed more
+than one ticker. The ticker page calls it a second time over the primary ticker's
+peers (capped at 5, bounding worst-case API calls per fresh load), so a peer that's
+separately viewed as its own ticker page shares the same cache row.
+
+**New `src/lib/stocks/relativeValuation.ts`**: `deriveQualityMetrics` (each of 7 fields
+independently `null` on a missing/non-finite source figure, not the whole result) and
+`derivePeerComparison` (the primary's own P/E and EV/EBITDA, each peer's — including a
+`null`-multiple peer with no data, kept visible rather than dropped, so the household
+can see which peers had none — and a peer average computed only over peers with a
+value). A third disclosed, narrow exception to "money/rates never touch a float," same
+category as M2's suggestion functions: every value here is a display-only ratio,
+never money math.
+
+**Shipped**: two new sections on `/stocks/[ticker]`, same card + `<details open>`
+"how to read this" pattern as the DCF section — "Quality & balance-sheet health" (a
+metric grid: gross/net margin, ROE, ROIC, debt/equity, current ratio, FCF yield) and
+"Relative valuation" (a table: the ticker's own P/E/EV-EBITDA, each peer's, a peer
+average row), each explaining what its figures mean and how to read them without
+overselling precision — explicitly noting peers are FMP's own algorithmic
+determination, not hand-picked, and that a lower multiple isn't automatically "cheap."
+
+723 tests passing (up from 711: unit tests for both `relativeValuation.ts` functions,
+extended `fmp.test.ts`/`fmp.integration.test.ts` coverage for the three new endpoints
+and their independent-degrade behaviour). Typecheck, lint, and build all clean.
+`scripts/verify-fmp-provider.ts` extended to print quality metrics and peer lists, and
+now also checks COF (confirming the short-circuit-before-optional-calls behaviour
+above, live). Browser-verified in both light and dark mode via a throwaway Playwright
+spec (deleted after use): a ticker with full ratios/key-metrics/peers data renders
+both sections correctly, including the peer-average calculation and a peer with no
+data shown as em dashes rather than omitted; a statements-gated ticker shows the same
+"not available" message on both new sections as the DCF section already does.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -1773,9 +1847,10 @@ suggestion.
 10. ~~Get a real `FMP_API_KEY` and live-verify it~~ **Done, 2026-08-01** — see "FMP live verification" above. Caught and fixed a real bug (Legacy-endpoint URLs that would have failed forever), confirmed field names/array ordering/error shapes, added a permanent `scripts/verify-fmp-provider.ts`. 700 tests passing.
 11. ~~Commit, push, and deploy Milestone 2~~ **Done** — `333809d` (calculator), `a520a39` (the Legacy-endpoint fix), `299dfa8` (the "how to read this" explainer), all live on the real stack.
 12. ~~Add a "how to read this" explainer to the DCF page~~ **Done, `299dfa8`** — household-requested, see "DCF page: an explainer, and data-driven suggested inputs" above.
-13. ~~Add data-driven suggested inputs (FCF growth from history, discount rate via CAPM)~~ **Implemented and tested (711 tests)** — see "DCF page: an explainer, and data-driven suggested inputs" above. **Not yet committed, pushed, or deployed.**
-14. **Continue Phase 4**: Milestone 3 (relative valuation, quality/balance-sheet screens), Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
-15. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
+13. ~~Add data-driven suggested inputs (FCF growth from history, discount rate via CAPM)~~ **Done** — `be2ffef`, committed, pushed, and deployed to the live stack.
+14. ~~Milestone 3 (relative valuation, quality/balance-sheet screens)~~ Implemented and tested (723 tests) — see "Phase 4, Milestone 3" above. **Not yet committed, pushed, or deployed.**
+15. **Continue Phase 4**: Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
+16. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
 
 ## Notes for Phase 3
 

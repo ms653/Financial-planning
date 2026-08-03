@@ -191,6 +191,9 @@ describe('deriveDcfBaseInputs', () => {
       balanceSheets: [{ date: '2025-12-31', netDebt: 3_000_000 }],
       cashFlowStatements: [{ date: '2025-12-31', freeCashFlow: 1_234_567 }],
       beta: null,
+      ratios: [],
+      keyMetrics: [],
+      peers: [],
       ...overrides,
     };
   }

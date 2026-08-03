@@ -25,6 +25,9 @@ describe.skipIf(!connectionString)('ensureFreshFundamentals against real Postgre
     balanceSheets: [{ date: '2025-12-31', totalStockholdersEquity: 500 }],
     cashFlowStatements: [{ date: '2025-12-31', freeCashFlow: 200 }],
     beta: 1.1,
+    ratios: [{ date: '2025-12-31', priceToEarningsRatio: 20 }],
+    keyMetrics: [{ date: '2025-12-31', evToEBITDA: 15 }],
+    peers: [{ ticker: 'MSFT', companyName: 'Microsoft Corporation' }],
   };
 
   beforeAll(async () => {

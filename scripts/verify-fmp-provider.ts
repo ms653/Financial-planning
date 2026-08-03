@@ -8,7 +8,8 @@
  * tier and fail for any key issued after 31 Aug 2025 — fixed to use `/stable/...` with
  * `?symbol=` as a query param. See `src/lib/stocks/fmp.ts`'s own doc comment for the
  * full write-up of what else that pass confirmed (newest-first arrays, HTTP 402 for a
- * tier-restricted ticker, the `Error Message` JSON shape for a bad key).
+ * tier-restricted ticker, the `Error Message` JSON shape for a bad key, and Milestone
+ * 3's `ratios`/`key-metrics`/`stock-peers` findings).
  *
  *   FMP_API_KEY=your-key npm run stocks:verify-fmp
  *
@@ -19,13 +20,18 @@
  * sanity check that field names/shapes haven't silently drifted.
  */
 import { deriveDcfBaseInputs, suggestDiscountRatePct, suggestGrowthRatePct } from '../src/lib/stocks/dcf';
+import { deriveQualityMetrics } from '../src/lib/stocks/relativeValuation';
 import { fetchFundamentals } from '../src/lib/stocks/fmp';
 
-// AAPL/MSFT: real, large-cap tickers expected to work on the free tier. NOTATICKERXYZ:
-// deliberately fake, expected to come back not-found (HTTP 402 on FMP's current free
-// tier — see the module doc comment above) — confirms that failure mode still degrades
-// gracefully rather than silently breaking.
-const TICKERS_TO_CHECK = ['AAPL', 'MSFT', 'NOTATICKERXYZ'];
+// AAPL/MSFT: real, large-cap tickers expected to work on the free tier, including
+// ratios/key-metrics/peers. COF: the known coverage-boundary case — its
+// income-statement 402s on the free tier, so `fetchFundamentals` short-circuits
+// there (see that function's own doc comment) *before* ever attempting
+// profile/ratios/key-metrics/peers, even though those independently work for COF when
+// called directly (confirmed by hand, 2026-08-03) — this line exists to keep proving
+// the short-circuit itself still 402s cleanly, not to exercise the optional fields for
+// COF specifically. NOTATICKERXYZ: deliberately fake, expected not-found.
+const TICKERS_TO_CHECK = ['AAPL', 'MSFT', 'COF', 'NOTATICKERXYZ'];
 
 async function main(): Promise<void> {
   const apiKey = process.env.FMP_API_KEY;
@@ -58,6 +64,9 @@ async function main(): Promise<void> {
       balanceSheets: result.balanceSheets,
       cashFlowStatements: result.cashFlowStatements,
       beta: result.beta,
+      ratios: result.ratios,
+      keyMetrics: result.keyMetrics,
+      peers: result.peers,
     });
     if (baseInputs) {
       process.stdout.write(
@@ -73,6 +82,18 @@ async function main(): Promise<void> {
       `  beta: ${result.beta ?? '(none)'}, ` +
         `suggested growth rate: ${suggestGrowthRatePct(result.cashFlowStatements) ?? '(none)'}%, ` +
         `suggested discount rate: ${suggestDiscountRatePct(result.beta) ?? '(none)'}%\n`,
+    );
+
+    const quality = deriveQualityMetrics(result.ratios, result.keyMetrics);
+    process.stdout.write(
+      `  quality: grossMargin=${quality.grossMargin ?? '(none)'} netMargin=${quality.netMargin ?? '(none)'} ` +
+        `ROE=${quality.returnOnEquity ?? '(none)'} ROIC=${quality.returnOnInvestedCapital ?? '(none)'} ` +
+        `debtToEquity=${quality.debtToEquity ?? '(none)'} currentRatio=${quality.currentRatio ?? '(none)'} ` +
+        `fcfYield=${quality.freeCashFlowYield ?? '(none)'}\n`,
+    );
+
+    process.stdout.write(
+      `  peers (${result.peers.length}): ${result.peers.map((p) => p.ticker).join(', ') || '(none)'}\n`,
     );
   }
 }

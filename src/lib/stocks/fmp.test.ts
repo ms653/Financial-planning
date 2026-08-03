@@ -9,21 +9,23 @@ const INCOME = [{ date: '2025-12-31', revenue: 1000 }];
 const BALANCE = [{ date: '2025-12-31', totalStockholdersEquity: 500 }];
 const CASH_FLOW = [{ date: '2025-12-31', freeCashFlow: 200 }];
 const PROFILE = [{ symbol: 'AAPL', beta: 1.097 }];
+const RATIOS = [{ date: '2025-12-31', priceToEarningsRatio: 34.1 }];
+const KEY_METRICS = [{ date: '2025-12-31', evToEBITDA: 27.0 }];
+const PEERS = [{ symbol: 'MSFT', companyName: 'Microsoft Corporation' }];
 
-/** Matches the four calls a fully-successful `fetchFundamentals` makes: three
- * statements, then the profile. */
-function fourCallFetch(...responses: [unknown, unknown, unknown, unknown]) {
-  return vi
-    .fn()
-    .mockResolvedValueOnce(jsonResponse(responses[0]))
-    .mockResolvedValueOnce(jsonResponse(responses[1]))
-    .mockResolvedValueOnce(jsonResponse(responses[2]))
-    .mockResolvedValueOnce(jsonResponse(responses[3]));
+/** Matches the seven calls a fully-successful `fetchFundamentals` makes: three
+ * statements, then profile, ratios, key-metrics, peers — in that order. */
+function sevenCallFetch(...responses: [unknown, unknown, unknown, unknown, unknown, unknown, unknown]) {
+  const mock = vi.fn();
+  for (const response of responses) {
+    mock.mockResolvedValueOnce(jsonResponse(response));
+  }
+  return mock;
 }
 
 describe('fetchFundamentals', () => {
-  it('returns ok with all three statements and beta on a successful lookup', async () => {
-    const fetchImpl = fourCallFetch(INCOME, BALANCE, CASH_FLOW, PROFILE);
+  it('returns ok with all three statements, beta, ratios, key metrics, and peers on a successful lookup', async () => {
+    const fetchImpl = sevenCallFetch(INCOME, BALANCE, CASH_FLOW, PROFILE, RATIOS, KEY_METRICS, PEERS);
 
     const result = await fetchFundamentals('AAPL', 'key', fetchImpl);
 
@@ -34,30 +36,38 @@ describe('fetchFundamentals', () => {
       balanceSheets: BALANCE,
       cashFlowStatements: CASH_FLOW,
       beta: 1.097,
+      ratios: RATIOS,
+      keyMetrics: KEY_METRICS,
+      peers: [{ ticker: 'MSFT', companyName: 'Microsoft Corporation' }],
     });
   });
 
-  it('calls the four endpoints in order with period=annual, limit=5, and the api key', async () => {
-    const fetchImpl = fourCallFetch(INCOME, BALANCE, CASH_FLOW, PROFILE);
+  it('calls the seven endpoints in order with period=annual, limit=5, and the api key (except peers/profile)', async () => {
+    const fetchImpl = sevenCallFetch(INCOME, BALANCE, CASH_FLOW, PROFILE, RATIOS, KEY_METRICS, PEERS);
 
     await fetchFundamentals('AAPL', 'my-key', fetchImpl);
 
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
     const urls = fetchImpl.mock.calls.map((call) => new URL(call[0] as string));
     expect(urls[0]!.pathname).toBe('/stable/income-statement');
     expect(urls[1]!.pathname).toBe('/stable/balance-sheet-statement');
     expect(urls[2]!.pathname).toBe('/stable/cash-flow-statement');
     expect(urls[3]!.pathname).toBe('/stable/profile');
-    for (const url of [urls[0]!, urls[1]!, urls[2]!]) {
+    expect(urls[4]!.pathname).toBe('/stable/ratios');
+    expect(urls[5]!.pathname).toBe('/stable/key-metrics');
+    expect(urls[6]!.pathname).toBe('/stable/stock-peers');
+    for (const url of [urls[0]!, urls[1]!, urls[2]!, urls[4]!, urls[5]!]) {
       expect(url.searchParams.get('symbol')).toBe('AAPL');
       expect(url.searchParams.get('period')).toBe('annual');
       expect(url.searchParams.get('limit')).toBe('5');
       expect(url.searchParams.get('apikey')).toBe('my-key');
     }
-    // Profile has no period/limit — it's not a time-series statement.
-    expect(urls[3]!.searchParams.get('symbol')).toBe('AAPL');
-    expect(urls[3]!.searchParams.get('apikey')).toBe('my-key');
-    expect(urls[3]!.searchParams.get('period')).toBeNull();
+    // Profile and peers have no period/limit — neither is a time-series statement.
+    for (const url of [urls[3]!, urls[6]!]) {
+      expect(url.searchParams.get('symbol')).toBe('AAPL');
+      expect(url.searchParams.get('apikey')).toBe('my-key');
+      expect(url.searchParams.get('period')).toBeNull();
+    }
   });
 
   it('degrades to beta: null (not a failed fetch) when the profile call fails', async () => {
@@ -66,7 +76,8 @@ describe('fetchFundamentals', () => {
       .mockResolvedValueOnce(jsonResponse(INCOME))
       .mockResolvedValueOnce(jsonResponse(BALANCE))
       .mockResolvedValueOnce(jsonResponse(CASH_FLOW))
-      .mockResolvedValueOnce(jsonResponse({}, false, 503));
+      .mockResolvedValueOnce(jsonResponse({}, false, 503))
+      .mockResolvedValue(jsonResponse([]));
 
     const result = await fetchFundamentals('AAPL', 'key', fetchImpl);
 
@@ -77,13 +88,48 @@ describe('fetchFundamentals', () => {
       balanceSheets: BALANCE,
       cashFlowStatements: CASH_FLOW,
       beta: null,
+      ratios: [],
+      keyMetrics: [],
+      peers: [],
     });
   });
 
   it('degrades to beta: null when the profile has no numeric beta field', async () => {
-    const fetchImpl = fourCallFetch(INCOME, BALANCE, CASH_FLOW, [{ symbol: 'AAPL' }]);
+    const fetchImpl = sevenCallFetch(INCOME, BALANCE, CASH_FLOW, [{ symbol: 'AAPL' }], RATIOS, KEY_METRICS, PEERS);
     const result = await fetchFundamentals('AAPL', 'key', fetchImpl);
     expect(result).toMatchObject({ status: 'ok', beta: null });
+  });
+
+  it('degrades ratios/keyMetrics/peers to [] independently when each fails, without affecting the others', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(INCOME))
+      .mockResolvedValueOnce(jsonResponse(BALANCE))
+      .mockResolvedValueOnce(jsonResponse(CASH_FLOW))
+      .mockResolvedValueOnce(jsonResponse(PROFILE))
+      .mockResolvedValueOnce(jsonResponse({}, false, 503)) // ratios fails
+      .mockResolvedValueOnce(jsonResponse(KEY_METRICS)) // key-metrics still succeeds
+      .mockResolvedValueOnce(jsonResponse({ 'Error Message': 'nope' })); // peers fails differently
+
+    const result = await fetchFundamentals('AAPL', 'key', fetchImpl);
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      beta: 1.097,
+      ratios: [],
+      keyMetrics: KEY_METRICS,
+      peers: [],
+    });
+  });
+
+  it('filters out a peer entry missing symbol or companyName rather than including a malformed one', async () => {
+    const fetchImpl = sevenCallFetch(INCOME, BALANCE, CASH_FLOW, PROFILE, RATIOS, KEY_METRICS, [
+      { symbol: 'MSFT', companyName: 'Microsoft Corporation' },
+      { symbol: 'NOCOMPANYNAME' },
+      { companyName: 'No Symbol Inc' },
+    ]);
+    const result = await fetchFundamentals('AAPL', 'key', fetchImpl);
+    expect(result).toMatchObject({ peers: [{ ticker: 'MSFT', companyName: 'Microsoft Corporation' }] });
   });
 
   it('treats an empty array response as not-found (unknown ticker)', async () => {

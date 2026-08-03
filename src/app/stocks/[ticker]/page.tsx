@@ -13,7 +13,8 @@ import {
   suggestGrowthRatePct,
   type DcfInputsV1,
 } from '@/lib/stocks/dcf';
-import { createFmpFundamentalsSource, ensureFreshFundamentals } from '@/lib/stocks/fmp';
+import { createFmpFundamentalsSource, ensureFreshFundamentals, type FundamentalsView } from '@/lib/stocks/fmp';
+import { deriveQualityMetrics, derivePeerComparison } from '@/lib/stocks/relativeValuation';
 import { createAlphaVantageQuoteSource, ensureFreshQuotes } from '@/lib/portfolio/quotes';
 import { parseScaledDecimal, roundDiv, PRICE_SCALE } from '@/lib/portfolio/valuation';
 import { alphaVantageApiKey, fmpApiKey, fundamentalsStaleAfterHours, quoteStaleAfterHours } from '@/lib/env';
@@ -49,6 +50,20 @@ function priceStringToPence(price: string): bigint {
   const priceScaled = parseScaledDecimal(price, PRICE_SCALE);
   return roundDiv(priceScaled, 10n ** BigInt(PRICE_SCALE - 2));
 }
+
+/** Both formatters return an em dash for `null` rather than "0%"/"0.0x" — a missing
+ * figure and a genuine zero must never look the same. */
+function formatPercent(value: number | null): string {
+  return value === null ? '—' : `${(value * 100).toFixed(1)}%`;
+}
+function formatMultiple(value: number | null): string {
+  return value === null ? '—' : `${value.toFixed(1)}x`;
+}
+
+/** How many of a ticker's FMP-identified peers to show/fetch — bounds the worst-case
+ * API calls per fresh page load (each peer needs its own `ratios`/`key-metrics` fetch)
+ * to a fixed number regardless of how many peers FMP returns (seen up to 9 live). */
+const MAX_PEERS = 5;
 
 export default async function StockTickerPage({ params }: { params: { ticker: string } }) {
   const setup = await getSetupState();
@@ -131,6 +146,39 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
         ? `${deltaPct.toFixed(1)}% below intrinsic value`
         : `${Math.abs(deltaPct).toFixed(1)}% above intrinsic value`;
   }
+
+  // Milestone 3: quality/balance-sheet health (no peer data needed) and relative
+  // valuation (needs each peer's own ratios/key-metrics — a second
+  // `ensureFreshFundamentals` call, over the capped peer list; that function was
+  // already built multi-ticker-capable in Milestone 1 for exactly this kind of reuse).
+  const cappedPeers = fundamentalsView?.statements?.peers.slice(0, MAX_PEERS) ?? [];
+  const fmpKey = fmpApiKey();
+  const peerFundamentals: Map<string, FundamentalsView> =
+    fmpKey && cappedPeers.length > 0
+      ? await ensureFreshFundamentals(
+          cappedPeers.map((peer) => peer.ticker),
+          { source: createFmpFundamentalsSource(fmpKey), staleAfterHours: fundamentalsStaleAfterHours() },
+        )
+      : new Map();
+
+  const qualityMetrics = fundamentalsView?.statements
+    ? deriveQualityMetrics(fundamentalsView.statements.ratios, fundamentalsView.statements.keyMetrics)
+    : null;
+
+  const peerComparison = fundamentalsView?.statements
+    ? derivePeerComparison(
+        { ratios: fundamentalsView.statements.ratios, keyMetrics: fundamentalsView.statements.keyMetrics },
+        cappedPeers.map((peer) => {
+          const peerView = peerFundamentals.get(peer.ticker);
+          return {
+            ticker: peer.ticker,
+            companyName: peer.companyName,
+            ratios: peerView?.statements?.ratios ?? [],
+            keyMetrics: peerView?.statements?.keyMetrics ?? [],
+          };
+        }),
+      )
+    : null;
 
   return (
     <AppShell pathname="/stocks">
@@ -330,6 +378,189 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
             action={saveDcfInputs}
             suggestions={{ growthRatePct: suggestedGrowthRatePct, discountRatePct: suggestedDiscountRatePct }}
           />
+        </div>
+      </section>
+
+      <section className="mt-6 rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6">
+        <h2 className="font-serif text-lg text-content">Quality &amp; balance-sheet health</h2>
+        <p className="mt-0.5 text-xs text-content-faint">
+          How profitably {ticker} runs its business, and how much financial cushion it
+          has — independent of any price or valuation assumption.
+        </p>
+
+        <details className="mt-4 rounded-card border border-line bg-paper">
+          <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-content">
+            How to read this
+          </summary>
+          <div className="space-y-1.5 border-t border-line px-4 pb-4 pt-3 text-sm leading-relaxed text-content-muted">
+            <ul className="list-disc space-y-1.5 pl-4">
+              <li>
+                <strong className="font-medium text-content">Gross/net margin</strong> —
+                how much of every pound of revenue is left after costs. Higher is
+                generally better, but what “good” looks like varies a lot by industry —
+                only compare margins within the same kind of business.
+              </li>
+              <li>
+                <strong className="font-medium text-content">Return on equity (ROE) / return on invested capital (ROIC)</strong>{' '}
+                — how efficiently the company turns shareholders’ money (ROE) or all
+                its capital, including debt (ROIC), into profit. Consistently high
+                figures are a hallmark of a genuinely strong business, not just a
+                cheap one.
+              </li>
+              <li>
+                <strong className="font-medium text-content">Debt/equity</strong> — how
+                much the company relies on borrowing rather than shareholder capital.
+                Higher isn’t automatically bad (some industries run on more debt than
+                others), but it means more risk if earnings fall.
+              </li>
+              <li>
+                <strong className="font-medium text-content">Current ratio</strong> —
+                short-term assets divided by short-term liabilities; a rough gauge of
+                whether the company can cover its near-term bills. Below 1 isn’t
+                automatically alarming for a mature, cash-generative business, but
+                it’s worth noticing.
+              </li>
+              <li>
+                <strong className="font-medium text-content">Free cash flow yield</strong>{' '}
+                — free cash flow relative to the company’s market value; a higher
+                figure means more cash generated per pound of price paid.
+              </li>
+            </ul>
+          </div>
+        </details>
+
+        <div className="mt-5">
+          {!fmpApiKey() ? (
+            <p className="text-sm text-content-faint">
+              No FMP API key configured — fundamentals can’t be fetched yet.
+            </p>
+          ) : fundamentalsView?.statements == null ? (
+            <p className="text-sm text-content-faint">
+              No fundamentals available for {ticker} — see the DCF section above for why.
+            </p>
+          ) : (
+            qualityMetrics && (
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-4 sm:grid-cols-3">
+                <div>
+                  <dt className="text-xs uppercase tracking-wider text-content-faint">Gross margin</dt>
+                  <dd className="mt-0.5 tabular text-content">{formatPercent(qualityMetrics.grossMargin)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wider text-content-faint">Net margin</dt>
+                  <dd className="mt-0.5 tabular text-content">{formatPercent(qualityMetrics.netMargin)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wider text-content-faint">Return on equity</dt>
+                  <dd className="mt-0.5 tabular text-content">{formatPercent(qualityMetrics.returnOnEquity)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wider text-content-faint">Return on invested capital</dt>
+                  <dd className="mt-0.5 tabular text-content">
+                    {formatPercent(qualityMetrics.returnOnInvestedCapital)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wider text-content-faint">Debt/equity</dt>
+                  <dd className="mt-0.5 tabular text-content">{formatMultiple(qualityMetrics.debtToEquity)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wider text-content-faint">Current ratio</dt>
+                  <dd className="mt-0.5 tabular text-content">{formatMultiple(qualityMetrics.currentRatio)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wider text-content-faint">Free cash flow yield</dt>
+                  <dd className="mt-0.5 tabular text-content">
+                    {formatPercent(qualityMetrics.freeCashFlowYield)}
+                  </dd>
+                </div>
+              </dl>
+            )
+          )}
+        </div>
+      </section>
+
+      <section className="mt-6 rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6">
+        <h2 className="font-serif text-lg text-content">Relative valuation</h2>
+        <p className="mt-0.5 text-xs text-content-faint">
+          {ticker}’s own P/E and EV/EBITDA multiples, next to peers FMP identifies for
+          it.
+        </p>
+
+        <details className="mt-4 rounded-card border border-line bg-paper">
+          <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-content">
+            How to read this
+          </summary>
+          <div className="space-y-2 border-t border-line px-4 pb-4 pt-3 text-sm leading-relaxed text-content-muted">
+            <p>
+              <strong className="font-medium text-content">P/E (price/earnings)</strong>{' '}
+              and <strong className="font-medium text-content">EV/EBITDA</strong>{' '}
+              (enterprise value / earnings before interest, tax, depreciation and
+              amortisation) are two common shortcuts for “is this expensive relative to
+              its earnings?” — cheaper to compute than a DCF, but only meaningful next
+              to comparable companies, which is why they’re shown against peers rather
+              than alone.
+            </p>
+            <p>
+              The peers below are FMP’s own algorithmic determination, not hand-picked
+              — worth sanity-checking whether they’re genuinely comparable businesses
+              before trusting the comparison. A lower multiple than peers isn’t
+              automatically “cheap” — it can also mean the market expects slower
+              growth or sees more risk. Treat this as one input among several, not a
+              verdict.
+            </p>
+          </div>
+        </details>
+
+        <div className="mt-5">
+          {!fmpApiKey() ? (
+            <p className="text-sm text-content-faint">
+              No FMP API key configured — fundamentals can’t be fetched yet.
+            </p>
+          ) : fundamentalsView?.statements == null ? (
+            <p className="text-sm text-content-faint">
+              No fundamentals available for {ticker} — see the DCF section above for why.
+            </p>
+          ) : !peerComparison ||
+            (peerComparison.peers.length === 0 &&
+              peerComparison.primary.peRatio === null &&
+              peerComparison.primary.evToEbitda === null) ? (
+            <p className="text-sm text-content-faint">
+              No P/E, EV/EBITDA, or peer data available for {ticker}.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase tracking-wider text-content-faint">
+                    <th className="py-1.5 pr-4">Ticker</th>
+                    <th className="py-1.5 pr-4">P/E</th>
+                    <th className="py-1.5">EV/EBITDA</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-t border-line font-medium text-content">
+                    <td className="py-1.5 pr-4">{ticker} (this stock)</td>
+                    <td className="py-1.5 pr-4 tabular">{formatMultiple(peerComparison.primary.peRatio)}</td>
+                    <td className="py-1.5 tabular">{formatMultiple(peerComparison.primary.evToEbitda)}</td>
+                  </tr>
+                  {peerComparison.peers.map((peer) => (
+                    <tr key={peer.ticker} className="border-t border-line">
+                      <td className="py-1.5 pr-4 text-content-muted">
+                        {peer.ticker} — {peer.companyName}
+                      </td>
+                      <td className="py-1.5 pr-4 tabular">{formatMultiple(peer.peRatio)}</td>
+                      <td className="py-1.5 tabular">{formatMultiple(peer.evToEbitda)}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-t border-line font-medium text-content">
+                    <td className="py-1.5 pr-4">Peer average</td>
+                    <td className="py-1.5 pr-4 tabular">{formatMultiple(peerComparison.peerAveragePeRatio)}</td>
+                    <td className="py-1.5 tabular">{formatMultiple(peerComparison.peerAverageEvToEbitda)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </section>
     </AppShell>
