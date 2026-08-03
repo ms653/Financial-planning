@@ -20,7 +20,7 @@
  */
 
 import { parseScaledDecimal, roundDiv } from '@/lib/portfolio/valuation';
-import type { FmpStatements } from './fmp';
+import type { FmpStatementPeriod, FmpStatements } from './fmp';
 
 /** A fraction, not a percent: "8.5%" is represented as the fraction 0.085, scaled by
  * `10^RATE_SCALE`. Matches `retirement/engineTypes.ts`'s own `RATE_SCALE` value (six
@@ -267,4 +267,68 @@ export function deriveDcfBaseInputs(statements: FmpStatements): DcfBaseInputs | 
     netDebtPence: BigInt(Math.round(netDebt * 100)),
     dilutedShares: BigInt(Math.round(dilutedSharesRaw)),
   };
+}
+
+/**
+ * Data-driven suggestions for the two assumptions that are actually derivable —
+ * `growthRatePct` from the ticker's own FCF history, `discountRatePct` via CAPM
+ * from its beta. Terminal growth rate and projection years have no per-company
+ * suggestion (see `dcf.ts`'s module-level reasoning: terminal growth is a fixed
+ * market convention, projection years is a genuine preference), so there are no
+ * equivalent functions for those.
+ *
+ * **A second, lower-stakes disclosed exception to "money/rates never touch a
+ * float"** (the first is `deriveDcfBaseInputs`'s own, above): these two functions
+ * return a *suggested display value* the household can edit or ignore before it
+ * ever becomes a real `DcfInputsV1` field — never a value that flows through
+ * `computeDcf`'s own bigint math directly. Plain `Number` arithmetic is fine here.
+ */
+
+/** Fixed market-convention constants, not fetched — same "not company-specific"
+ * reasoning already applied to the terminal growth rate default elsewhere in this
+ * module. Worth reviewing periodically (both drift slowly over years), not on every
+ * request. */
+const RISK_FREE_RATE_PCT = 4.5; // approximates the 10yr US Treasury yield
+const EQUITY_RISK_PREMIUM_PCT = 5.5; // conventional long-run US equity risk premium
+
+/** Clamp a suggested percent to the same bounds `parseDcfInputs` itself enforces for
+ * the field it's suggesting a value for, and format to the same 3dp every percent
+ * string in this module uses. */
+function formatSuggestedPercent(value: number, bounds: { min: number; max: number }): string {
+  return Math.min(Math.max(value, bounds.min), bounds.max).toFixed(3);
+}
+
+/**
+ * CAPM: discount rate = risk-free rate + beta × equity risk premium. `null` for a
+ * missing, non-finite, or non-positive beta — a zero or negative beta is either
+ * data noise or too unusual a case (inverse-correlated to the market) to hand a
+ * household a confident suggestion for without more context than this workbench
+ * has.
+ */
+export function suggestDiscountRatePct(beta: number | null): string | null {
+  if (beta === null || !Number.isFinite(beta) || beta <= 0) return null;
+  return formatSuggestedPercent(RISK_FREE_RATE_PCT + beta * EQUITY_RISK_PREMIUM_PCT, { min: 0.001, max: 100 });
+}
+
+/**
+ * Historical FCF CAGR between the oldest and newest usable period among the (up to
+ * 5) cached annual cash flow statements — newest-first, matching `deriveDcfBaseInputs`'s
+ * own confirmed array-ordering assumption. `null` when fewer than two usable periods
+ * exist, or either endpoint's FCF is zero or negative: a CAGR computed from or to a
+ * non-positive base is undefined or misleading, not a number worth suggesting.
+ */
+export function suggestGrowthRatePct(cashFlowStatements: readonly FmpStatementPeriod[]): string | null {
+  const usable = cashFlowStatements.filter(
+    (period): period is FmpStatementPeriod & { freeCashFlow: number } =>
+      typeof period.freeCashFlow === 'number' && Number.isFinite(period.freeCashFlow),
+  );
+  if (usable.length < 2) return null;
+
+  const newestFcf = usable[0]!.freeCashFlow;
+  const oldestFcf = usable[usable.length - 1]!.freeCashFlow;
+  if (newestFcf <= 0 || oldestFcf <= 0) return null;
+
+  const years = usable.length - 1;
+  const cagr = Math.pow(newestFcf / oldestFcf, 1 / years) - 1;
+  return formatSuggestedPercent(cagr * 100, { min: -100, max: 100 });
 }

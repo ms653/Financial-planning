@@ -5,7 +5,14 @@ import { DcfForm } from '@/components/stocks/DcfForm';
 import { getSetupState } from '@/lib/household/queries';
 import { getStockAnalysis } from '@/lib/stocks/queries';
 import { saveDcfInputs } from '@/lib/stocks/actions';
-import { computeDcf, deriveDcfBaseInputs, parseDcfInputs, type DcfInputsV1 } from '@/lib/stocks/dcf';
+import {
+  computeDcf,
+  deriveDcfBaseInputs,
+  parseDcfInputs,
+  suggestDiscountRatePct,
+  suggestGrowthRatePct,
+  type DcfInputsV1,
+} from '@/lib/stocks/dcf';
 import { createFmpFundamentalsSource, ensureFreshFundamentals } from '@/lib/stocks/fmp';
 import { createAlphaVantageQuoteSource, ensureFreshQuotes } from '@/lib/portfolio/quotes';
 import { parseScaledDecimal, roundDiv, PRICE_SCALE } from '@/lib/portfolio/valuation';
@@ -74,6 +81,20 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
     getStockAnalysis(setup.householdId, ticker),
   ]);
 
+  // Data-driven suggestions for the two assumptions that are actually derivable from
+  // fetched fundamentals — see `dcf.ts`'s own doc comment on why terminal growth and
+  // projection years have no equivalent (one's a fixed convention, the other a
+  // genuine preference). `null` whenever the underlying data isn't computable/present
+  // (e.g. no FMP key, ticker not covered, too little FCF history, no beta) — always
+  // passed through to `DcfForm` regardless, `null` and all, so the form can render
+  // "no suggestion available" rather than nothing.
+  const suggestedGrowthRatePct = fundamentalsView?.statements
+    ? suggestGrowthRatePct(fundamentalsView.statements.cashFlowStatements)
+    : null;
+  const suggestedDiscountRatePct = fundamentalsView?.statements
+    ? suggestDiscountRatePct(fundamentalsView.statements.beta ?? null)
+    : null;
+
   let dcfInputs = DEFAULT_DCF_INPUTS;
   if (analysis) {
     try {
@@ -82,6 +103,16 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
       // A malformed or future-schema-version row shouldn't crash the page — fall back
       // to defaults, same posture as every other JSONB read in this codebase.
     }
+  } else {
+    // First visit for this ticker — nothing saved yet, so prefill with the
+    // data-driven suggestions where available rather than the generic hardcoded
+    // defaults. Once the household saves anything, their saved values always win;
+    // this only ever affects what an unvisited ticker's form starts out showing.
+    dcfInputs = {
+      ...DEFAULT_DCF_INPUTS,
+      growthRatePct: suggestedGrowthRatePct ?? DEFAULT_DCF_INPUTS.growthRatePct,
+      discountRatePct: suggestedDiscountRatePct ?? DEFAULT_DCF_INPUTS.discountRatePct,
+    };
   }
 
   const baseInputs = fundamentalsView?.statements ? deriveDcfBaseInputs(fundamentalsView.statements) : null;
@@ -147,7 +178,9 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
                   how fast you expect free cash flow (cash left over after running and
                   reinvesting in the business) to grow each year during the projection
                   period. Higher assumptions produce a higher estimated value, so it’s
-                  worth being conservative rather than optimistic.
+                  worth being conservative rather than optimistic. Pre-filled where
+                  possible from the company’s own historical FCF growth — treat it as
+                  a starting point to sanity-check, not a fact.
                 </li>
                 <li>
                   <strong className="font-medium text-content">Discount rate</strong> —
@@ -155,6 +188,9 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
                   called the “required rate of return”). A higher discount rate makes
                   future cash worth less today, which lowers the estimated value. Many
                   investors use somewhere around 8–12% for an established company.
+                  Pre-filled where possible using CAPM (a standard formula: the return
+                  on a safe investment, plus the company’s risk relative to the market
+                  as a whole) — again a starting point, not a fact.
                 </li>
                 <li>
                   <strong className="font-medium text-content">Terminal growth rate</strong>{' '}
@@ -288,7 +324,12 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
         </div>
 
         <div className="mt-6 border-t border-line pt-5">
-          <DcfForm ticker={ticker} initialInputs={dcfInputs} action={saveDcfInputs} />
+          <DcfForm
+            ticker={ticker}
+            initialInputs={dcfInputs}
+            action={saveDcfInputs}
+            suggestions={{ growthRatePct: suggestedGrowthRatePct, discountRatePct: suggestedDiscountRatePct }}
+          />
         </div>
       </section>
     </AppShell>

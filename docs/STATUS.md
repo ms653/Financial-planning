@@ -1,15 +1,16 @@
 # Project Status
 
-Last updated: 2026-08-01 (**Phase 3 is fully closed out** — see "Phase 3 reference-tool
+Last updated: 2026-08-03 (**Phase 3 is fully closed out** — see "Phase 3 reference-tool
 validation" below for the closing Trinity study methodology and results. **Phase 4
 (stock analysis workbench) is under way**: Milestone 1 (schema, the FMP fundamentals
 provider boundary, a watchlist) shipped, committed, pushed, and deployed to the live
-stack — `7bd4214`. **Milestone 2 (DCF calculator)** is implemented and tested (700
-tests) — see "Phase 4, Milestone 2" below. The household obtained a real `FMP_API_KEY`
-today and it immediately caught a real bug (M2's fundamentals fetches were silently
-calling FMP's retired "Legacy" endpoints and would have failed forever) — see "FMP live
-verification" below for the fix and everything else it confirmed. **Not yet committed,
-pushed, or deployed.**)
+stack — `7bd4214`. **Milestone 2 (DCF calculator)** shipped and deployed — `333809d`
+(calculator), `a520a39` (a real Legacy-endpoint FMP bug, caught and fixed via live-key
+verification), `299dfa8` (a "how to read this" explainer). **Latest**: the DCF page now
+also suggests data-driven values for FCF growth rate (historical CAGR) and discount
+rate (CAPM, using a newly-fetched company beta) — see "DCF page: an explainer, and
+data-driven suggested inputs" below. 711 tests passing. **Not yet committed, pushed, or
+deployed.**)
 
 ## Done
 
@@ -1696,7 +1697,67 @@ mirroring `verify-quote-provider.ts`'s role — run against the real key as part
 verification (`AAPL`/`MSFT` resolved correctly, the fake ticker came back `not-found`
 as expected). 700 tests passing (up from 698: a regression test for the HTTP 402
 handling, plus a net-cash-position case for the `netDebt` change). Typecheck, lint, and
-build all clean after the fix.
+build all clean after the fix. Committed and deployed as `a520a39`.
+
+### DCF page: an explainer, and data-driven suggested inputs (2026-08-01–03)
+
+Two follow-ups from actually using the shipped M2 page, both household-requested.
+
+**"How to read this" explainer** (`299dfa8`): the household could see a DCF result but
+didn't know what a DCF actually estimates, what the four assumptions do, or how to read
+the result — asked directly for guided/explanation content. Added a `<details open>`
+block (visible by default, collapsible) right under the page's intro: what a DCF
+estimates and why it's sensitive to assumptions, then plain-language bullets for each of
+the four assumptions and each of the four result elements. Also fixed the "no
+fundamentals" message to name the real, confirmed cause (FMP's free-tier fundamentals
+gating is undocumented and per-ticker — e.g. COF's profile works but its statements
+402) rather than a vague "maybe unsupported."
+
+**Data-driven suggested inputs**: the natural next question — "how do I know what to
+set these to?" — led to "can the app just suggest values?" Not all four assumptions are
+equally answerable from data (terminal growth is a fixed convention, not
+company-specific; projection years is a genuine preference), but two are:
+
+- **FCF growth rate** — a CAGR between the oldest and newest usable period among the
+  cached cash flow statements (up to 5 years). `null` (no suggestion shown) with fewer
+  than 2 usable periods, or a non-positive endpoint — a CAGR to/from zero or negative
+  FCF is undefined or misleading, not worth suggesting.
+- **Discount rate** — CAPM: a fixed risk-free rate (4.5%, approximating the 10yr US
+  Treasury) plus the company's beta × a fixed equity risk premium (5.5%, a conventional
+  long-run US estimate). Needed a new FMP dependency: **`/stable/profile`, fetched for
+  its `beta` field only** — live-verified against the real key first (same discipline
+  as the Legacy-endpoint catch above), confirming the same array/error/empty-array
+  shapes as the statement endpoints, so it reuses the existing response parser rather
+  than duplicating it. **Notably broader coverage than the statements**: profile
+  returned a real beta for `COF` (1.022) even though `COF`'s financial statements 402 on
+  the free tier — consistent with the earlier per-ticker coverage finding. The profile
+  call's own failure never fails the whole fundamentals fetch (`beta: null` degrades to
+  "no discount-rate suggestion," not "no fundamentals for this ticker").
+
+Both suggestions are a second, explicitly disclosed, lower-stakes exception to "rates
+never touch a float" (`dcf.ts`'s own doc comment) — a suggested display value the
+household can edit or ignore, never a value that flows through `computeDcf`'s bigint
+math directly.
+
+**Wired into the page**: on a ticker with no saved `stock_analysis` yet, the form
+pre-fills with the suggestions (falling back to the old hardcoded 8%/10% defaults
+wherever a suggestion isn't computable) instead of showing a generic default. Both
+suggestions are always passed to `DcfForm` regardless — even after the household saves
+custom values, a small "Suggested: X% (basis) · Use" hint stays under the growth-rate
+and discount-rate fields so the suggestion can be re-applied later, never silently
+overwriting a saved choice. The explainer's own assumption bullets now note which two
+fields are pre-filled from data and how.
+
+Verified live end-to-end: `scripts/verify-fmp-provider.ts` (extended to print beta and
+both suggestions) against the real key — `AAPL` (beta 1.097, suggested growth 1.528%,
+suggested discount 10.534%), `MSFT` (beta 1.13, suggested growth 0.698%, suggested
+discount 10.715%). 711 tests passing (up from 700: unit tests for both suggestion
+functions and the new `fetchFmpProfile` behaviour, including the "profile fails but
+statements succeed" degrade path). Typecheck, lint, and build all clean. Browser-verified
+in both light and dark mode via a throwaway Playwright spec (deleted after use): a fresh
+ticker's form pre-fills to the exact suggested values with visible hints; after saving a
+custom value and reloading, the saved value persists but "Use" still resets it to the
+suggestion.
 
 ## Next steps
 
@@ -1710,9 +1771,11 @@ build all clean after the fix.
 8. ~~Start Phase 4~~ **In progress.** Milestone 1 (schema, FMP provider boundary, watchlist) shipped — committed (`7bd4214`), pushed, and deployed to the live stack.
 9. ~~Milestone 2 (DCF calculator)~~ Implemented and tested — see "Phase 4, Milestone 2" above. **Not yet committed, pushed, or deployed.**
 10. ~~Get a real `FMP_API_KEY` and live-verify it~~ **Done, 2026-08-01** — see "FMP live verification" above. Caught and fixed a real bug (Legacy-endpoint URLs that would have failed forever), confirmed field names/array ordering/error shapes, added a permanent `scripts/verify-fmp-provider.ts`. 700 tests passing.
-11. **Commit, push, and deploy Milestone 2** (including the FMP fix — the version currently live from Milestone 1 has the endpoint bug, so this is the first genuinely-working fundamentals fetch on the real stack).
-12. **Continue Phase 4**: Milestone 3 (relative valuation, quality/balance-sheet screens), Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
-13. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
+11. ~~Commit, push, and deploy Milestone 2~~ **Done** — `333809d` (calculator), `a520a39` (the Legacy-endpoint fix), `299dfa8` (the "how to read this" explainer), all live on the real stack.
+12. ~~Add a "how to read this" explainer to the DCF page~~ **Done, `299dfa8`** — household-requested, see "DCF page: an explainer, and data-driven suggested inputs" above.
+13. ~~Add data-driven suggested inputs (FCF growth from history, discount rate via CAPM)~~ **Implemented and tested (711 tests)** — see "DCF page: an explainer, and data-driven suggested inputs" above. **Not yet committed, pushed, or deployed.**
+14. **Continue Phase 4**: Milestone 3 (relative valuation, quality/balance-sheet screens), Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
+15. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
 
 ## Notes for Phase 3
 

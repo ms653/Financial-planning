@@ -8,14 +8,22 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
 const INCOME = [{ date: '2025-12-31', revenue: 1000 }];
 const BALANCE = [{ date: '2025-12-31', totalStockholdersEquity: 500 }];
 const CASH_FLOW = [{ date: '2025-12-31', freeCashFlow: 200 }];
+const PROFILE = [{ symbol: 'AAPL', beta: 1.097 }];
+
+/** Matches the four calls a fully-successful `fetchFundamentals` makes: three
+ * statements, then the profile. */
+function fourCallFetch(...responses: [unknown, unknown, unknown, unknown]) {
+  return vi
+    .fn()
+    .mockResolvedValueOnce(jsonResponse(responses[0]))
+    .mockResolvedValueOnce(jsonResponse(responses[1]))
+    .mockResolvedValueOnce(jsonResponse(responses[2]))
+    .mockResolvedValueOnce(jsonResponse(responses[3]));
+}
 
 describe('fetchFundamentals', () => {
-  it('returns ok with all three statements on a successful lookup', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(INCOME))
-      .mockResolvedValueOnce(jsonResponse(BALANCE))
-      .mockResolvedValueOnce(jsonResponse(CASH_FLOW));
+  it('returns ok with all three statements and beta on a successful lookup', async () => {
+    const fetchImpl = fourCallFetch(INCOME, BALANCE, CASH_FLOW, PROFILE);
 
     const result = await fetchFundamentals('AAPL', 'key', fetchImpl);
 
@@ -25,29 +33,57 @@ describe('fetchFundamentals', () => {
       incomeStatements: INCOME,
       balanceSheets: BALANCE,
       cashFlowStatements: CASH_FLOW,
+      beta: 1.097,
     });
   });
 
-  it('calls the three endpoints in order with period=annual, limit=5, and the api key', async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(INCOME))
-      .mockResolvedValueOnce(jsonResponse(BALANCE))
-      .mockResolvedValueOnce(jsonResponse(CASH_FLOW));
+  it('calls the four endpoints in order with period=annual, limit=5, and the api key', async () => {
+    const fetchImpl = fourCallFetch(INCOME, BALANCE, CASH_FLOW, PROFILE);
 
     await fetchFundamentals('AAPL', 'my-key', fetchImpl);
 
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
     const urls = fetchImpl.mock.calls.map((call) => new URL(call[0] as string));
     expect(urls[0]!.pathname).toBe('/stable/income-statement');
     expect(urls[1]!.pathname).toBe('/stable/balance-sheet-statement');
     expect(urls[2]!.pathname).toBe('/stable/cash-flow-statement');
-    for (const url of urls) {
+    expect(urls[3]!.pathname).toBe('/stable/profile');
+    for (const url of [urls[0]!, urls[1]!, urls[2]!]) {
       expect(url.searchParams.get('symbol')).toBe('AAPL');
       expect(url.searchParams.get('period')).toBe('annual');
       expect(url.searchParams.get('limit')).toBe('5');
       expect(url.searchParams.get('apikey')).toBe('my-key');
     }
+    // Profile has no period/limit — it's not a time-series statement.
+    expect(urls[3]!.searchParams.get('symbol')).toBe('AAPL');
+    expect(urls[3]!.searchParams.get('apikey')).toBe('my-key');
+    expect(urls[3]!.searchParams.get('period')).toBeNull();
+  });
+
+  it('degrades to beta: null (not a failed fetch) when the profile call fails', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(INCOME))
+      .mockResolvedValueOnce(jsonResponse(BALANCE))
+      .mockResolvedValueOnce(jsonResponse(CASH_FLOW))
+      .mockResolvedValueOnce(jsonResponse({}, false, 503));
+
+    const result = await fetchFundamentals('AAPL', 'key', fetchImpl);
+
+    expect(result).toEqual({
+      status: 'ok',
+      ticker: 'AAPL',
+      incomeStatements: INCOME,
+      balanceSheets: BALANCE,
+      cashFlowStatements: CASH_FLOW,
+      beta: null,
+    });
+  });
+
+  it('degrades to beta: null when the profile has no numeric beta field', async () => {
+    const fetchImpl = fourCallFetch(INCOME, BALANCE, CASH_FLOW, [{ symbol: 'AAPL' }]);
+    const result = await fetchFundamentals('AAPL', 'key', fetchImpl);
+    expect(result).toMatchObject({ status: 'ok', beta: null });
   });
 
   it('treats an empty array response as not-found (unknown ticker)', async () => {

@@ -38,14 +38,41 @@ function toFormValues(inputs: DcfInputsV1): DcfFormValues {
  * directly — the same "one set of rules, not two" reasoning every other form in this
  * codebase already follows — rather than duplicating its checks.
  */
+/** A small "Suggested: X% (basis) · Use" hint, shown only when a suggestion actually
+ * exists — never implies a number was computed when it wasn't. `onUse` just fills the
+ * field; the household still has to hit "Save assumptions" for it to persist, same as
+ * typing the value themselves. */
+function SuggestionHint({ value, basis, onUse }: { value: string | null; basis: string; onUse: (value: string) => void }) {
+  if (value === null) return null;
+  return (
+    <p className="mt-1 text-xs text-content-faint">
+      Suggested: {value}% ({basis}){' '}
+      <button
+        type="button"
+        onClick={() => onUse(value)}
+        className="underline underline-offset-2 hover:text-content"
+      >
+        Use
+      </button>
+    </p>
+  );
+}
+
 export function DcfForm({
   ticker,
   initialInputs,
   action,
+  suggestions,
 }: {
   ticker: string;
   initialInputs: DcfInputsV1;
   action: (formData: FormData) => Promise<ActionResult>;
+  /** Data-driven suggestions for growth/discount rate, computed from the ticker's
+   * fetched fundamentals — see `dcf.ts`'s `suggestGrowthRatePct`/
+   * `suggestDiscountRatePct`. `null` per-field when no suggestion is computable.
+   * Absent entirely (not just `null`) renders no hints at all — used by nothing
+   * today, but keeps this component usable without fundamentals wired up. */
+  suggestions?: { growthRatePct: string | null; discountRatePct: string | null };
 }) {
   const [values, setValues] = useState<DcfFormValues>(() => toFormValues(initialInputs));
   const { state, pending, onSubmit } = useActionForm(action);
@@ -94,6 +121,11 @@ export function DcfForm({
             onChange={(event) => field('growthRatePct', event.target.value)}
             className={`mt-1.5 ${inputClass}`}
           />
+          <SuggestionHint
+            value={suggestions?.growthRatePct ?? null}
+            basis="5yr FCF history"
+            onUse={(value) => field('growthRatePct', value)}
+          />
         </div>
         <div>
           <label htmlFor="dcf-discount" className="block text-sm font-medium text-content">
@@ -106,6 +138,11 @@ export function DcfForm({
             value={values.discountRatePct}
             onChange={(event) => field('discountRatePct', event.target.value)}
             className={`mt-1.5 ${inputClass}`}
+          />
+          <SuggestionHint
+            value={suggestions?.discountRatePct ?? null}
+            basis="CAPM, using beta"
+            onUse={(value) => field('discountRatePct', value)}
           />
         </div>
         <div>

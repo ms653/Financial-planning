@@ -45,6 +45,16 @@
  * ticker out. LSE coverage, and whatever exchange-suffix convention FMP actually wants
  * for it (unconfirmed — may not even be `.LON`, unlike Alpha Vantage's documented
  * convention), is follow-up work for whenever a specific UK stock is actually analyzed.
+ *
+ * **`/stable/profile` (company profile, fetched for its `beta` field only) — live
+ * verified 2026-08-01**, same pass that added the DCF discount-rate suggestion
+ * feature: same array-of-objects / empty-array-for-unknown-ticker / bad-key
+ * `{"Error Message": ...}` shapes as the statement endpoints above, so it reuses
+ * `fetchFmpStatement`'s parsing rather than duplicating it. Confirmed non-null `beta`
+ * for AAPL (1.097), MSFT (1.13), and — notably — **COF** (1.022), whose financial
+ * *statements* 402 on the free tier; profile coverage is evidently broader than
+ * statement coverage, consistent with the earlier per-ticker coverage investigation
+ * (`docs/STATUS.md`'s "how do I know what tickers will work?" note).
  */
 import { inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
@@ -63,6 +73,11 @@ export interface FmpStatements {
   incomeStatements: FmpStatementPeriod[];
   balanceSheets: FmpStatementPeriod[];
   cashFlowStatements: FmpStatementPeriod[];
+  /** `null` when the profile call failed or had no usable beta — see
+   * `fetchFundamentals`'s own doc comment on why that doesn't fail the whole fetch.
+   * Cached rows written before this field existed simply lack the key; read as
+   * `undefined` there, which callers treat the same as `null` (no suggestion). */
+  beta: number | null;
 }
 
 export type FundamentalsFetchResult =
@@ -77,22 +92,12 @@ type StatementFetchResult =
   | { status: 'rate-limited' }
   | { status: 'network-error'; message: string };
 
-/** One of `income-statement` / `balance-sheet-statement` / `cash-flow-statement`. */
-async function fetchFmpStatement(
-  endpoint: string,
-  ticker: string,
-  apiKey: string,
-  fetchImpl: typeof fetch,
-): Promise<StatementFetchResult> {
-  // `/stable/...`, symbol as a query param — see this file's own doc comment for why,
-  // confirmed by a real failed call under the old `/api/v3/{endpoint}/{symbol}` shape
-  // before this was fixed.
-  const url = new URL(`${FMP_BASE_URL}/${endpoint}`);
-  url.searchParams.set('symbol', ticker);
-  url.searchParams.set('period', 'annual');
-  url.searchParams.set('limit', '5'); // FMP's free tier: up to 5 years of annual statements
-  url.searchParams.set('apikey', apiKey);
-
+/**
+ * Shared response handling for every `/stable/...` endpoint this module calls
+ * (statements and profile alike) — same 402/error-object/empty-array shapes across
+ * all of them, confirmed live for both categories (see this file's own doc comment).
+ */
+async function fetchFmpArray(url: URL, fetchImpl: typeof fetch): Promise<StatementFetchResult> {
   let response: Response;
   try {
     response = await fetchImpl(url.toString());
@@ -136,16 +141,59 @@ async function fetchFmpStatement(
   return { status: 'ok', data: body as FmpStatementPeriod[] };
 }
 
+/** One of `income-statement` / `balance-sheet-statement` / `cash-flow-statement`. */
+async function fetchFmpStatement(
+  endpoint: string,
+  ticker: string,
+  apiKey: string,
+  fetchImpl: typeof fetch,
+): Promise<StatementFetchResult> {
+  // `/stable/...`, symbol as a query param — see this file's own doc comment for why,
+  // confirmed by a real failed call under the old `/api/v3/{endpoint}/{symbol}` shape
+  // before this was fixed.
+  const url = new URL(`${FMP_BASE_URL}/${endpoint}`);
+  url.searchParams.set('symbol', ticker);
+  url.searchParams.set('period', 'annual');
+  url.searchParams.set('limit', '5'); // FMP's free tier: up to 5 years of annual statements
+  url.searchParams.set('apikey', apiKey);
+  return fetchFmpArray(url, fetchImpl);
+}
+
 /**
- * Fetch all three statements for one ticker. Sequential, not parallel — matching
- * `quotes.ts`'s own conservative choice for Alpha Vantage; FMP's exact per-minute
- * sub-limit (if any) isn't verified either, so there's no basis yet for being less
- * cautious here than the codebase already is for its other provider.
+ * Company profile — fetched for its `beta` field only (the CAPM-based discount-rate
+ * suggestion's input). See this file's own doc comment: live-verified 2026-08-01,
+ * same response shapes as the statement endpoints, and notably *broader* free-tier
+ * coverage (works for COF, whose statements don't).
+ */
+async function fetchFmpProfile(
+  ticker: string,
+  apiKey: string,
+  fetchImpl: typeof fetch,
+): Promise<StatementFetchResult> {
+  const url = new URL(`${FMP_BASE_URL}/profile`);
+  url.searchParams.set('symbol', ticker);
+  url.searchParams.set('apikey', apiKey);
+  return fetchFmpArray(url, fetchImpl);
+}
+
+/**
+ * Fetch all three statements plus the profile's `beta`, for one ticker. Sequential,
+ * not parallel — matching `quotes.ts`'s own conservative choice for Alpha Vantage;
+ * FMP's exact per-minute sub-limit (if any) isn't verified either, so there's no
+ * basis yet for being less cautious here than the codebase already is for its other
+ * provider.
  *
- * Stops at the first non-`ok` statement rather than fetching all three regardless —
+ * Stops at the first non-`ok` *statement* rather than fetching the rest regardless —
  * if the ticker doesn't exist, the balance sheet and cash flow calls would fail the
- * same way, so there's nothing to gain from spending three API calls to learn that
- * once would already tell you.
+ * same way, so there's nothing to gain from spending API calls to learn that once
+ * would already tell you.
+ *
+ * The profile call is different: it's fetched *after* the three statements succeed,
+ * but its own failure doesn't fail the whole result — `beta` only feeds an optional
+ * discount-rate suggestion downstream (`dcf.ts`'s `suggestDiscountRatePct`), never the
+ * DCF calculation itself, so a profile miss just means no suggestion, not "no
+ * fundamentals for this ticker." This is a deliberate asymmetry from the
+ * statement-to-statement behaviour above.
  */
 export async function fetchFundamentals(
   ticker: string,
@@ -161,12 +209,19 @@ export async function fetchFundamentals(
   const cashFlow = await fetchFmpStatement('cash-flow-statement', ticker, apiKey, fetchImpl);
   if (cashFlow.status !== 'ok') return cashFlow;
 
+  const profile = await fetchFmpProfile(ticker, apiKey, fetchImpl);
+  const beta =
+    profile.status === 'ok' && typeof profile.data[0]?.beta === 'number' && Number.isFinite(profile.data[0].beta)
+      ? (profile.data[0].beta as number)
+      : null;
+
   return {
     status: 'ok',
     ticker,
     incomeStatements: income.data,
     balanceSheets: balance.data,
     cashFlowStatements: cashFlow.data,
+    beta,
   };
 }
 
@@ -260,6 +315,7 @@ export async function ensureFreshFundamentals(
           incomeStatements: fetchResult.incomeStatements,
           balanceSheets: fetchResult.balanceSheets,
           cashFlowStatements: fetchResult.cashFlowStatements,
+          beta: fetchResult.beta,
         };
         await db
           .insert(fundamentalsCache)

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { computeDcf, deriveDcfBaseInputs, parseDcfInputs, DcfInputsParseError, type DcfInputsV1 } from './dcf';
-import type { FmpStatements } from './fmp';
+import {
+  computeDcf,
+  deriveDcfBaseInputs,
+  parseDcfInputs,
+  suggestDiscountRatePct,
+  suggestGrowthRatePct,
+  DcfInputsParseError,
+  type DcfInputsV1,
+} from './dcf';
+import type { FmpStatementPeriod, FmpStatements } from './fmp';
 
 describe('parseDcfInputs', () => {
   function validRaw(overrides: Partial<Record<string, unknown>> = {}) {
@@ -182,6 +190,7 @@ describe('deriveDcfBaseInputs', () => {
       incomeStatements: [{ date: '2025-12-31', weightedAverageShsOutDil: 1_000_000 }],
       balanceSheets: [{ date: '2025-12-31', netDebt: 3_000_000 }],
       cashFlowStatements: [{ date: '2025-12-31', freeCashFlow: 1_234_567 }],
+      beta: null,
       ...overrides,
     };
   }
@@ -223,5 +232,64 @@ describe('deriveDcfBaseInputs', () => {
         statements({ incomeStatements: [{ date: '2025-12-31', weightedAverageShsOutDil: -1 }] }),
       ),
     ).toBeNull();
+  });
+});
+
+describe('suggestDiscountRatePct', () => {
+  it('computes CAPM: risk-free rate + beta * equity risk premium, for a typical beta', () => {
+    // 4.5 + 1.1 * 5.5 = 10.55
+    expect(suggestDiscountRatePct(1.1)).toBe('10.550');
+  });
+
+  it('returns null for a null, zero, or negative beta', () => {
+    expect(suggestDiscountRatePct(null)).toBeNull();
+    expect(suggestDiscountRatePct(0)).toBeNull();
+    expect(suggestDiscountRatePct(-0.5)).toBeNull();
+  });
+
+  it('returns null for a non-finite beta', () => {
+    expect(suggestDiscountRatePct(NaN)).toBeNull();
+    expect(suggestDiscountRatePct(Infinity)).toBeNull();
+  });
+
+  it('clamps to parseDcfInputs\' own 100% upper bound for an extreme beta', () => {
+    expect(suggestDiscountRatePct(50)).toBe('100.000');
+  });
+});
+
+describe('suggestGrowthRatePct', () => {
+  function period(freeCashFlow: number | undefined, date = '2025-12-31'): FmpStatementPeriod {
+    return freeCashFlow === undefined ? { date } : { date, freeCashFlow };
+  }
+
+  it('computes a CAGR between the newest and oldest usable period (newest-first array)', () => {
+    // newest 1,331 -> oldest 1,000 over 3 years is exactly 10% CAGR.
+    const cashFlowStatements = [period(1331), period(1210), period(1100), period(1000)];
+    expect(suggestGrowthRatePct(cashFlowStatements)).toBe('10.000');
+  });
+
+  it('produces a negative rate for declining FCF', () => {
+    const cashFlowStatements = [period(800), period(1000)];
+    const result = suggestGrowthRatePct(cashFlowStatements);
+    expect(result).not.toBeNull();
+    expect(Number(result)).toBeLessThan(0);
+  });
+
+  it('returns null with fewer than two usable periods', () => {
+    expect(suggestGrowthRatePct([period(1000)])).toBeNull();
+    expect(suggestGrowthRatePct([])).toBeNull();
+  });
+
+  it('returns null when the newest or oldest usable FCF is zero or negative', () => {
+    expect(suggestGrowthRatePct([period(-100), period(1000)])).toBeNull();
+    expect(suggestGrowthRatePct([period(100), period(-1000)])).toBeNull();
+    expect(suggestGrowthRatePct([period(0), period(1000)])).toBeNull();
+  });
+
+  it('skips periods with a missing or non-numeric freeCashFlow rather than treating them as zero', () => {
+    const cashFlowStatements = [period(1100), period(undefined), period(1000)];
+    // Once the missing middle period is skipped, two usable periods remain
+    // (newest 1,100, oldest 1,000) — a clean 10% CAGR over the resulting 1 year gap.
+    expect(suggestGrowthRatePct(cashFlowStatements)).toBe('10.000');
   });
 });

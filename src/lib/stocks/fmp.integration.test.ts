@@ -24,6 +24,7 @@ describe.skipIf(!connectionString)('ensureFreshFundamentals against real Postgre
     incomeStatements: [{ date: '2025-12-31', revenue: 1000 }],
     balanceSheets: [{ date: '2025-12-31', totalStockholdersEquity: 500 }],
     cashFlowStatements: [{ date: '2025-12-31', freeCashFlow: 200 }],
+    beta: 1.1,
   };
 
   beforeAll(async () => {

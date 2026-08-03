@@ -18,7 +18,7 @@
  * again (as the Legacy-tier retirement already shows they will), or periodically as a
  * sanity check that field names/shapes haven't silently drifted.
  */
-import { deriveDcfBaseInputs } from '../src/lib/stocks/dcf';
+import { deriveDcfBaseInputs, suggestDiscountRatePct, suggestGrowthRatePct } from '../src/lib/stocks/dcf';
 import { fetchFundamentals } from '../src/lib/stocks/fmp';
 
 // AAPL/MSFT: real, large-cap tickers expected to work on the free tier. NOTATICKERXYZ:
@@ -57,6 +57,7 @@ async function main(): Promise<void> {
       incomeStatements: result.incomeStatements,
       balanceSheets: result.balanceSheets,
       cashFlowStatements: result.cashFlowStatements,
+      beta: result.beta,
     });
     if (baseInputs) {
       process.stdout.write(
@@ -67,6 +68,12 @@ async function main(): Promise<void> {
     } else {
       process.stdout.write('  deriveDcfBaseInputs returned null — a required field is missing\n');
     }
+
+    process.stdout.write(
+      `  beta: ${result.beta ?? '(none)'}, ` +
+        `suggested growth rate: ${suggestGrowthRatePct(result.cashFlowStatements) ?? '(none)'}%, ` +
+        `suggested discount rate: ${suggestDiscountRatePct(result.beta) ?? '(none)'}%\n`,
+    );
   }
 }
 
