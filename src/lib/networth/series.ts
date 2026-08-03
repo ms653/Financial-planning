@@ -226,7 +226,7 @@ export interface PixelCoordinate {
  * component alongside separately-formatted display text. */
 export function pointPixelCoordinates(
   points: readonly SeriesPoint[],
-  options: { width: number; height: number; padding?: number },
+  options: { width: number; height: number; padding?: number; minBaseline?: number },
 ): PixelCoordinate[] {
   if (points.length === 0) return [];
   return computeCoordinates(points, options);
@@ -251,14 +251,23 @@ export function pointPixelCoordinates(
  * same fix — the anchor point only tells the honest story if its x position reflects
  * how much real time separates it from what follows. A flat series or single-date
  * series has no range/span to scale against — centred rather than divided by zero.
+ *
+ * `minBaseline`, when given, is folded into the range the y-axis scales against
+ * (`Math.min(minBaseline, ...values)`) rather than always using the series' own
+ * lowest value. Without it, a debt account's chart scales its bottom edge to
+ * whatever the smallest *recorded* balance happens to be — which reads as "nearly
+ * paid off" even when a substantial amount is still owed, since the chart has no way
+ * to show how far that figure still is from genuinely zero. The account-detail page
+ * passes `0` for a debt account's outstanding-amount series for exactly this reason;
+ * every other caller leaves it unset and keeps today's auto-scaled behaviour.
  */
 function computeCoordinates(
   points: readonly SeriesPoint[],
-  options: { width: number; height: number; padding?: number },
+  options: { width: number; height: number; padding?: number; minBaseline?: number },
 ): PixelCoordinate[] {
-  const { width, height, padding = 4 } = options;
+  const { width, height, padding = 4, minBaseline } = options;
   const values = points.map((point) => Number(point.pence));
-  const min = Math.min(...values);
+  const min = minBaseline === undefined ? Math.min(...values) : Math.min(minBaseline, ...values);
   const max = Math.max(...values);
   const span = max - min || 1;
   const usableHeight = height - padding * 2;
@@ -287,7 +296,7 @@ function dateToMs(date: string): number {
  * with `seriesToSegments` below. */
 export function seriesToPath(
   points: readonly SeriesPoint[],
-  options: { width: number; height: number; padding?: number },
+  options: { width: number; height: number; padding?: number; minBaseline?: number },
 ): { line: string; area: string } | null {
   if (points.length === 0) return null;
 
@@ -338,7 +347,7 @@ export interface PathSegment {
  */
 export function seriesToSegments(
   points: readonly SeriesPoint[],
-  options: { width: number; height: number; padding?: number },
+  options: { width: number; height: number; padding?: number; minBaseline?: number },
 ): PathSegment[] {
   if (points.length < 2) return [];
 

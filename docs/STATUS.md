@@ -10,9 +10,12 @@ verification), `299dfa8` (a "how to read this" explainer), `be2ffef` (data-drive
 suggested inputs — FCF growth from historical CAGR, discount rate via CAPM using a
 newly-fetched company beta), `619129e` (Milestone 3 — relative valuation +
 quality/balance-sheet health). **Also just shipped, outside Phase 4**: net worth chart
-stale-gap segments + hover tooltip, plus a real debt-chart sign-flip bug fix, both
-household-reported — see "Net worth chart: stale-gap segments + hover tooltip" below.
-728 tests passing. **Not yet committed, pushed, or deployed.**)
+stale-gap segments + hover tooltip, a real debt-chart sign-flip bug fix, a zero-pinned
+debt-chart baseline, and the same hover tooltip reused on per-account charts — all
+household-reported — see "Net worth chart: stale-gap segments + hover tooltip" and its
+follow-up below. `docs/PROPOSAL.md` also gained an explicit Phase 4.4 (retirement
+accumulation phase), household-raised. 730 tests passing. **Not yet committed, pushed,
+or deployed.**)
 
 ## Done
 
@@ -605,8 +608,11 @@ regression test proving both `debt` and `property` are now rejected.
   both places rather than left only in a code comment a future session might not read.
   `deterministicCore.test.ts` has a regression-lock test proving `retirementAge`
   currently has zero effect — a scope-lock, explicitly not a substitute for the real
-  edge case. **Whoever next builds an accumulation phase (or Phase 4.5's
-  contribution-aware planning) owns this.**
+  edge case. **Now explicitly scheduled as its own phase, not just a footnote**: see
+  `docs/PROPOSAL.md`'s Phased Delivery table, Phase 4.4 (added 2026-08-03, household-
+  raised) — sequenced before 4.5's Cash Allocation Advisor specifically because that
+  feature needs to reason about *changing* contributions between now and retirement,
+  which requires an accumulation phase to exist first.
 
 ### Deliberately not built (and why)
 
@@ -1883,6 +1889,59 @@ long quiet stretch, then a recent cluster) and confirmed three dashed segments p
 solid one render correctly, the hover tooltip shows the right date and figure, and the
 debt chart now falls (£225,000 → £78,000) rather than rises.
 
+### Follow-up, same conversation: zero-pinned debt baseline + reused tooltip on account charts
+
+Two more household-reported issues on the same charts, fixed together since they touch
+the same files.
+
+**The fixed mortgage chart still looked wrong**: after the sign-flip fix above, the
+line fell correctly, but its lowest point (£78,000, the smallest recorded outstanding
+figure) sat right at the chart's bottom edge — reading as "nearly paid off" when
+£78,000 is still owed. The chart's y-axis was scaling against the *series' own*
+min/max, not against zero. **Fixed**: `computeCoordinates` (`series.ts`) gained an
+optional `minBaseline`, folded into the scaling range (`Math.min(minBaseline,
+...values)`) rather than clamping — a debt account's chart now passes `minBaseline: 0`,
+so the bottom of the chart is genuinely "paid off," and the smallest-recorded figure
+sits visibly above it. Threaded through `seriesToPath`/`seriesToSegments`/
+`pointPixelCoordinates` (all share the one `computeCoordinates` helper); every other
+caller leaves it unset and keeps today's auto-scaled behaviour, so net worth is
+unaffected.
+
+**The hover tooltip, reused on the per-account chart**: asked directly — "is it
+possible to add the same mouseover tooltip... in the account graphs, or does that
+complicate things too much?" Not much, since the tooltip was already built as a small,
+generic client component. Generalised `NetWorthTrendChart.tsx` → `src/components/ui/
+InteractiveTrendChart.tsx` (moved out of the net-worth-specific folder since it's now
+shared): added a `color` prop (brass for a normal account, sage for a debt, matching
+`accounts/[id]/page.tsx`'s own existing convention) and a `useId()`-based gradient id
+(a hardcoded one would silently collide if two of these ever rendered on one page).
+Also fixed a latent bug while generalising: the SVG's height was a hardcoded Tailwind
+class (`h-[132px]`), ignoring whatever `height` prop a second caller might pass — now
+an inline style driven by the real prop. `formatDateLabel` (the tooltip's "26 Jul
+2026" formatter) moved to `src/lib/ui/formatDateLabel.ts`, shared instead of
+duplicated. The account-detail page now computes segments/hover points exactly like
+`NetWorthHero.tsx` does and renders the same component — a debt account gets both the
+new zero baseline and the stale-gap dashing (the mortgage's own 2020→2022→2026 gaps,
+all genuinely long) for free from the same underlying logic.
+
+730 tests passing (up from 728: two new `minBaseline` cases — scales against it, and a
+real value below it still wins over the baseline). Typecheck, lint, and build all
+clean. Browser-verified in both light and dark mode via a throwaway Playwright spec
+(deleted after use): the mortgage chart's £78,000 point now sits well above the
+bottom edge, and hovering it shows the same tooltip pattern as the net worth chart.
+
+### Also, same conversation: added Phase 4.4 to the roadmap (retirement accumulation phase)
+
+Household question: "how can we have retirement planning without knowing what we're
+working with?" — pointing at a real, previously-flagged-but-unscheduled gap: the
+Phase 3 engine only models decumulation (every simulated path starts already retired;
+`retirementAge` is carried but never read — see Phase 3 Milestone 3's own "Genuine,
+plan-contradicting scope narrowing" note above). **`docs/PROPOSAL.md`'s Phased
+Delivery table now has an explicit Phase 4.4** for this, sequenced *before* 4.5's Cash
+Allocation Advisor specifically because that feature needs to reason about changing
+contributions between now and retirement, which requires an accumulation phase to
+exist first. Not implemented yet — a roadmap addition, not a code change.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -1899,9 +1958,11 @@ debt chart now falls (£225,000 → £78,000) rather than rises.
 12. ~~Add a "how to read this" explainer to the DCF page~~ **Done, `299dfa8`** — household-requested, see "DCF page: an explainer, and data-driven suggested inputs" above.
 13. ~~Add data-driven suggested inputs (FCF growth from history, discount rate via CAPM)~~ **Done** — `be2ffef`, committed, pushed, and deployed to the live stack.
 14. ~~Milestone 3 (relative valuation, quality/balance-sheet screens)~~ **Done** — `619129e`, committed, pushed, and deployed to the live stack.
-15. ~~Net worth chart: stale-gap segments, hover tooltip, debt-chart sign-flip fix~~ Implemented and tested (728 tests) — see "Net worth chart: stale-gap segments + hover tooltip" above. **Not yet committed, pushed, or deployed.**
-16. **Continue Phase 4**: Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
-17. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
+15. ~~Net worth chart: stale-gap segments, hover tooltip, debt-chart sign-flip fix, zero-pinned debt baseline, tooltip reused on account charts~~ Implemented and tested (730 tests) — see "Net worth chart: stale-gap segments + hover tooltip" and its follow-up above. **Not yet committed, pushed, or deployed.**
+16. ~~Add retirement accumulation phase to the roadmap~~ **Done** — `docs/PROPOSAL.md`'s Phased Delivery table, Phase 4.4. Not yet implemented — this is a roadmap addition, still queued work.
+17. **Continue Phase 4**: Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
+18. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
+19. **New, this conversation**: Phase 4.4 (retirement accumulation phase, see item 16) is now scheduled but not built — a real, substantial piece of engine work (contribution modeling, glide-path to retirement) queued ahead of Phase 4.5.
 
 ## Notes for Phase 3
 

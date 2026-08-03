@@ -375,6 +375,47 @@ describe('seriesToPath', () => {
     )!;
     expect(path.line).not.toContain('NaN');
   });
+
+  it('scales against minBaseline rather than the series own minimum, when given', () => {
+    // Without a baseline, 7800n (the smaller of the two) would sit at the very
+    // bottom (y = 96, per the 4px default padding) — exactly the "looks nearly paid
+    // off" problem `minBaseline` exists to fix for a debt account's outstanding
+    // amount, which should still read as "some way above zero," not "at zero."
+    const withoutBaseline = seriesToPath(
+      [
+        { date: '2026-01-01', pence: 22500n },
+        { date: '2026-07-01', pence: 7800n },
+      ],
+      { width: 100, height: 100 },
+    )!;
+    const withBaseline = seriesToPath(
+      [
+        { date: '2026-01-01', pence: 22500n },
+        { date: '2026-07-01', pence: 7800n },
+      ],
+      { width: 100, height: 100, minBaseline: 0 },
+    )!;
+
+    const yOf = (path: string) => Number(path.match(/,(\d+\.\d+)$/)![1]);
+    expect(yOf(withoutBaseline.line)).toBeCloseTo(96, 1); // at the very bottom
+    expect(yOf(withBaseline.line)).toBeLessThan(96); // some way above it, with 0 below
+  });
+
+  it("doesn't let minBaseline override an actual value below it", () => {
+    // A minBaseline is a floor, not a clamp — if the real data already goes below
+    // it (shouldn't happen for a debt's outstanding amount, but the function
+    // shouldn't silently misrender if it ever did), the true minimum still wins.
+    const path = seriesToPath(
+      [
+        { date: '2026-01-01', pence: -500n },
+        { date: '2026-07-01', pence: 1000n },
+      ],
+      { width: 100, height: 100, minBaseline: 0 },
+    )!;
+    expect(path.line).not.toContain('NaN');
+    const ys = [...path.line.matchAll(/,(\d+\.\d+)/g)].map((match) => Number(match[1]));
+    expect(Math.max(...ys)).toBeCloseTo(96, 1); // -500 (below the baseline) is still the true bottom
+  });
 });
 
 describe('seriesToSegments', () => {

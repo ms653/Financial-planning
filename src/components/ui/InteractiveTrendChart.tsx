@@ -1,17 +1,19 @@
 'use client';
 
-import { useRef, useState, type PointerEvent } from 'react';
+import { useId, useRef, useState, type PointerEvent } from 'react';
 
 /**
- * The interactive part of the net worth trend chart — split out from
- * `NetWorthHero.tsx` (a Server Component) purely because hover state needs a client
- * component. Receives only plain, pre-formatted, already-serializable data (numbers
- * and strings) — never a `bigint` `pence` value — computed server-side from
- * `series.ts`'s pixel-coordinate and formatting helpers, so money never has to cross
- * the server/client boundary in its raw form.
+ * The interactive part of a money trend chart — hover for the date/figure at a point,
+ * a dashed/faded stroke for a long stale gap. Split out as a client component purely
+ * because hover state needs one; the surrounding page (a Server Component in both of
+ * today's callers, `NetWorthHero.tsx` and the account-detail page) computes all the
+ * geometry and formatting and hands this component only plain, pre-formatted,
+ * already-serializable data (numbers and strings) — never a `bigint` `pence` value —
+ * so money never has to cross the server/client boundary in its raw form.
  *
- * Segment styling (solid vs. dashed/faded for a long, stale gap) is pre-computed
- * server-side too (`seriesToSegments`) — this component only renders what it's given.
+ * Shared between the net worth chart and the per-account balance chart — `color` is
+ * the one thing that varies between callers (brass for a normal account, sage for a
+ * debt, per `accounts/[id]/page.tsx`'s own existing convention).
  */
 
 export interface TrendHoverPoint {
@@ -26,13 +28,14 @@ export interface TrendSegment {
   stale: boolean;
 }
 
-export function NetWorthTrendChart({
+export function InteractiveTrendChart({
   width,
   height,
   areaPath,
   segments,
   hoverPoints,
   ariaLabel,
+  color = 'var(--brass)',
 }: {
   width: number;
   height: number;
@@ -40,16 +43,21 @@ export function NetWorthTrendChart({
   segments: TrendSegment[];
   hoverPoints: TrendHoverPoint[];
   ariaLabel: string;
+  color?: string;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  // Unique per instance — two of these charts could in principle render on the same
+  // page, and a shared hardcoded gradient id would make the second silently reuse (or
+  // corrupt) the first's fill.
+  const gradientId = useId();
 
   function handlePointerMove(event: PointerEvent<SVGSVGElement>) {
     const svg = svgRef.current;
     if (!svg || hoverPoints.length === 0) return;
     const rect = svg.getBoundingClientRect();
-    // The viewBox is a fixed 760×132 regardless of the SVG's actual rendered width
-    // (`preserveAspectRatio="none"` stretches it) — convert the pointer's screen
+    // The viewBox is a fixed width×height regardless of the SVG's actual rendered
+    // size (`preserveAspectRatio="none"` stretches it) — convert the pointer's screen
     // position back into viewBox units before comparing against `hoverPoints`, which
     // are themselves in viewBox units.
     const viewBoxX = ((event.clientX - rect.left) / rect.width) * width;
@@ -85,28 +93,29 @@ export function NetWorthTrendChart({
         preserveAspectRatio="none"
         role="img"
         aria-label={ariaLabel}
-        className="h-[132px] w-full cursor-crosshair"
+        style={{ height: `${height}px` }}
+        className="w-full cursor-crosshair"
         onPointerMove={handlePointerMove}
         onPointerLeave={() => setHoverIndex(null)}
       >
         <defs>
-          <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--brass)" stopOpacity="0.28" />
-            <stop offset="100%" stopColor="var(--brass)" stopOpacity="0" />
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.28" />
+            <stop offset="100%" stopColor={color} stopOpacity="0" />
           </linearGradient>
         </defs>
         <g stroke="var(--line)" strokeWidth="1">
-          <line x1="0" y1="22" x2={width} y2="22" />
-          <line x1="0" y1="66" x2={width} y2="66" />
-          <line x1="0" y1="110" x2={width} y2="110" />
+          <line x1="0" y1={height * 0.167} x2={width} y2={height * 0.167} />
+          <line x1="0" y1={height * 0.5} x2={width} y2={height * 0.5} />
+          <line x1="0" y1={height * 0.833} x2={width} y2={height * 0.833} />
         </g>
-        <path d={areaPath} fill="url(#trendFill)" />
+        <path d={areaPath} fill={`url(#${gradientId})`} />
         {segments.map((segment, index) => (
           <path
             key={index}
             d={segment.path}
             fill="none"
-            stroke="var(--brass)"
+            stroke={color}
             strokeWidth="2.25"
             strokeLinejoin="round"
             strokeLinecap="round"
@@ -125,7 +134,7 @@ export function NetWorthTrendChart({
               strokeWidth="1"
               strokeDasharray="3 3"
             />
-            <circle cx={hovered.x} cy={hovered.y} r="4" fill="var(--brass)" stroke="var(--paper)" strokeWidth="1.5" />
+            <circle cx={hovered.x} cy={hovered.y} r="4" fill={color} stroke="var(--paper)" strokeWidth="1.5" />
           </>
         ) : null}
       </svg>

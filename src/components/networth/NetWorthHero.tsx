@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { formatMoney, formatMoneyParts } from '@/lib/money';
 import { FreshnessLine } from '@/components/ui/States';
-import { NetWorthTrendChart } from '@/components/networth/NetWorthTrendChart';
+import { InteractiveTrendChart } from '@/components/ui/InteractiveTrendChart';
+import { formatDateLabel } from '@/lib/ui/formatDateLabel';
 import {
   RANGE_DESCRIPTIONS,
   TREND_RANGES,
@@ -12,19 +13,6 @@ import {
   type TrendDelta,
   type TrendRange,
 } from '@/lib/networth/series';
-
-/** "26 Jul 2026" — used only for the hover tooltip's date label; every other date in
- * this codebase is displayed as a plain ISO string (see the various `aria-label`s
- * below), so this is deliberately local rather than a shared formatter nothing else
- * needs yet. */
-function formatDateLabel(date: string): string {
-  return new Date(`${date}T00:00:00Z`).toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-}
 
 /**
  * The dashboard hero: total net worth, the change across the window, a range selector, and
@@ -99,7 +87,7 @@ function TrendChart({ series, range }: { series: NetWorthSeries; range: TrendRan
 
   // Every value here is a plain number or a pre-formatted string — never the raw
   // `bigint` `pence` — so this is safe to hand across the server/client boundary to
-  // `NetWorthTrendChart` (see that component's own doc comment).
+  // `InteractiveTrendChart` (see that component's own doc comment).
   const coordinates = pointPixelCoordinates(series.points, dimensions);
   const hoverPoints = series.points.map((point, index) => ({
     x: coordinates[index]!.x,
@@ -110,7 +98,7 @@ function TrendChart({ series, range }: { series: NetWorthSeries; range: TrendRan
 
   return (
     <div className="mt-6">
-      <NetWorthTrendChart
+      <InteractiveTrendChart
         width={dimensions.width}
         height={dimensions.height}
         areaPath={path.area}

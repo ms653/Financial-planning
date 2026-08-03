@@ -19,7 +19,9 @@ import {
   updateHolding,
 } from '@/lib/household/actions';
 import { getAccountDetail, getSetupState } from '@/lib/household/queries';
-import { seriesToPath } from '@/lib/networth/series';
+import { pointPixelCoordinates, seriesToPath, seriesToSegments } from '@/lib/networth/series';
+import { InteractiveTrendChart } from '@/components/ui/InteractiveTrendChart';
+import { formatDateLabel } from '@/lib/ui/formatDateLabel';
 import { alphaVantageApiKey, quoteStaleAfterHours } from '@/lib/env';
 import { createAlphaVantageQuoteSource, valueHoldings } from '@/lib/portfolio/quotes';
 import { gainLoss } from '@/lib/portfolio/valuation';
@@ -96,7 +98,22 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
     date: entry.snapshotDate,
     pence: isDebt ? -numericToPence(entry.amount) : numericToPence(entry.amount),
   }));
-  const path = points.length >= 2 ? seriesToPath(points, { width: 760, height: 120, padding: 6 }) : null;
+  // A debt account's y-axis floor is pinned at 0 (genuinely paid off), not the
+  // series' own smallest recorded balance — otherwise the chart's bottom edge reads
+  // as "nearly paid off" even when a substantial amount is still owed, since the
+  // chart has no way to show how far the smallest-so-far figure still is from zero.
+  const chartDimensions = { width: 760, height: 120, padding: 6, minBaseline: isDebt ? 0 : undefined };
+  const path = points.length >= 2 ? seriesToPath(points, chartDimensions) : null;
+  const segments = points.length >= 2 ? seriesToSegments(points, chartDimensions) : [];
+  // Same posture as `NetWorthHero.tsx`: only plain numbers and pre-formatted strings
+  // cross to `InteractiveTrendChart`, never the raw `bigint` pence.
+  const coordinates = points.length >= 2 ? pointPixelCoordinates(points, chartDimensions) : [];
+  const hoverPoints = points.map((point, index) => ({
+    x: coordinates[index]?.x ?? 0,
+    y: coordinates[index]?.y ?? 0,
+    dateLabel: formatDateLabel(point.date),
+    amountLabel: formatMoney(point.pence, { showPence: true }),
+  }));
 
   // Live pricing is genuinely optional (docs/PROPOSAL.md's Open Banking posture, applied
   // here to market data too): with no key configured, holdings just render without a
@@ -206,36 +223,17 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
         <div className="mt-6">
           {path ? (
             <>
-              <svg
-                viewBox="0 0 760 120"
-                preserveAspectRatio="none"
-                role="img"
-                aria-label={`Balance history for ${account.name}, from ${formatMoney(
+              <InteractiveTrendChart
+                width={chartDimensions.width}
+                height={chartDimensions.height}
+                areaPath={path.area}
+                segments={segments}
+                hoverPoints={hoverPoints}
+                color={strokeColour}
+                ariaLabel={`Balance history for ${account.name}, from ${formatMoney(
                   points[0]!.pence,
                 )} on ${points[0]!.date} to ${formatMoney(points.at(-1)!.pence)} on ${points.at(-1)!.date}.`}
-                className="h-[120px] w-full"
-              >
-                <defs>
-                  <linearGradient id="detailFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={strokeColour} stopOpacity="0.24" />
-                    <stop offset="100%" stopColor={strokeColour} stopOpacity="0" />
-                  </linearGradient>
-                </defs>
-                <g stroke="var(--line)" strokeWidth="1">
-                  <line x1="0" y1="30" x2="760" y2="30" />
-                  <line x1="0" y1="60" x2="760" y2="60" />
-                  <line x1="0" y1="90" x2="760" y2="90" />
-                </g>
-                <path d={path.area} fill="url(#detailFill)" />
-                <path
-                  d={path.line}
-                  fill="none"
-                  stroke={strokeColour}
-                  strokeWidth="2.25"
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                />
-              </svg>
+              />
               {isDebt ? (
                 <p className="mt-1.5 text-[11px] text-sage">
                   A falling line here is progress — it means the balance is coming down.
