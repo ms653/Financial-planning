@@ -15,6 +15,7 @@ import {
 } from '@/lib/stocks/dcf';
 import { createFmpFundamentalsSource, ensureFreshFundamentals, type FundamentalsView } from '@/lib/stocks/fmp';
 import { deriveQualityMetrics, derivePeerComparison } from '@/lib/stocks/relativeValuation';
+import { buildFundamentalsChecklist, type ChecklistItem } from '@/lib/stocks/checklist';
 import { createAlphaVantageQuoteSource, ensureFreshQuotes } from '@/lib/portfolio/quotes';
 import { parseScaledDecimal, roundDiv, PRICE_SCALE } from '@/lib/portfolio/valuation';
 import { alphaVantageApiKey, fmpApiKey, fundamentalsStaleAfterHours, quoteStaleAfterHours } from '@/lib/env';
@@ -64,6 +65,16 @@ function formatMultiple(value: number | null): string {
  * API calls per fresh page load (each peer needs its own `ratios`/`key-metrics` fetch)
  * to a fixed number regardless of how many peers FMP returns (seen up to 9 live). */
 const MAX_PEERS = 5;
+
+/** Glyph + colour per checklist status — reuses the tri-tone vocabulary already used
+ * elsewhere on this page (sage/brass/clay), not a new palette. Glyph is `aria-hidden`;
+ * the status word itself carries the meaning for anyone who can't see colour. */
+const CHECKLIST_STATUS_STYLE: Record<ChecklistItem['status'], { glyph: string; tone: string; word: string }> = {
+  pass: { glyph: '✓', tone: 'text-sage', word: 'Pass' },
+  warn: { glyph: '!', tone: 'text-brass-strong dark:text-brass', word: 'Warning' },
+  fail: { glyph: '✕', tone: 'text-clay', word: 'Fail' },
+  unknown: { glyph: '–', tone: 'text-content-faint', word: 'Unknown' },
+};
 
 export default async function StockTickerPage({ params }: { params: { ticker: string } }) {
   const setup = await getSetupState();
@@ -179,6 +190,12 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
         }),
       )
     : null;
+
+  const checklist = fundamentalsView?.statements ? buildFundamentalsChecklist(fundamentalsView.statements) : null;
+  const checklistCounts = checklist?.reduce(
+    (counts, item) => ({ ...counts, [item.status]: counts[item.status] + 1 }),
+    { pass: 0, warn: 0, fail: 0, unknown: 0 },
+  );
 
   return (
     <AppShell pathname="/stocks">
@@ -561,6 +578,73 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
               </table>
             </div>
           )}
+        </div>
+      </section>
+
+      <section className="mt-6 rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6">
+        <h2 className="font-serif text-lg text-content">Fundamentals checklist</h2>
+        <p className="mt-0.5 text-xs text-content-faint">
+          A pre-flight check on the raw numbers behind the sections above, before you
+          trust them.
+        </p>
+
+        <details className="mt-4 rounded-card border border-line bg-paper">
+          <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-content">
+            How to read this
+          </summary>
+          <div className="space-y-2 border-t border-line px-4 pb-4 pt-3 text-sm leading-relaxed text-content-muted">
+            <p>
+              A failed or warning check isn’t “don’t buy this stock” — it’s “here’s a
+              reason to look closer before trusting the DCF or valuation numbers
+              above.” The thresholds (e.g. debt/equity under 2x) are conventional
+              rules of thumb, not tailored to this specific company or its industry —
+              treat them as a starting point for questions, not a verdict.
+            </p>
+            <p>
+              <strong className="font-medium text-content">Unknown</strong> means the
+              underlying figure wasn’t available for this ticker, not that it failed —
+              the same free-tier gating already noted elsewhere on this page.
+            </p>
+          </div>
+        </details>
+
+        <div className="mt-5">
+          {!fmpApiKey() ? (
+            <p className="text-sm text-content-faint">
+              No FMP API key configured — fundamentals can’t be fetched yet.
+            </p>
+          ) : fundamentalsView?.statements == null ? (
+            <p className="text-sm text-content-faint">
+              No fundamentals available for {ticker} — see the DCF section above for why.
+            </p>
+          ) : checklist && checklistCounts ? (
+            <div className="space-y-3">
+              <p className="text-sm text-content-muted">
+                {checklistCounts.pass} of {checklist.length} checks pass
+                {checklistCounts.warn > 0 ? `, ${checklistCounts.warn} warning${checklistCounts.warn === 1 ? '' : 's'}` : ''}
+                {checklistCounts.fail > 0 ? `, ${checklistCounts.fail} failed` : ''}
+                {checklistCounts.unknown > 0 ? `, ${checklistCounts.unknown} unknown` : ''}.
+              </p>
+              <ul className="space-y-2">
+                {checklist.map((item) => {
+                  const style = CHECKLIST_STATUS_STYLE[item.status];
+                  return (
+                    <li key={item.id} className="flex items-start gap-3 rounded-card border border-line bg-paper p-3">
+                      <span aria-hidden="true" className={`mt-0.5 font-medium ${style.tone}`}>
+                        {style.glyph}
+                      </span>
+                      <div>
+                        <p className="text-sm font-medium text-content">
+                          {item.label} <span className={`text-xs font-normal ${style.tone}`}>({style.word})</span>
+                        </p>
+                        <p className="mt-0.5 text-xs text-content-muted">{item.detail}</p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </section>
     </AppShell>

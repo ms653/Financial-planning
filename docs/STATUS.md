@@ -9,16 +9,18 @@ stack — `7bd4214`. **Milestone 2 (DCF calculator)** shipped and deployed — `
 verification), `299dfa8` (a "how to read this" explainer), `be2ffef` (data-driven
 suggested inputs — FCF growth from historical CAGR, discount rate via CAPM using a
 newly-fetched company beta), `619129e` (Milestone 3 — relative valuation +
-quality/balance-sheet health). **Also just shipped, outside Phase 4**: net worth chart
-stale-gap segments + hover tooltip, a real debt-chart sign-flip bug fix, a zero-pinned
-debt-chart baseline, the same hover tooltip reused on per-account charts, an explicit
-Phase 4.4 (retirement accumulation phase, household-raised), and a new in-app Roadmap
-tab with drag-and-drop reprioritization — see "Net worth chart: stale-gap segments +
-hover tooltip," its follow-up, and "In-app Roadmap tab" below. `src/lib/roadmap/
-data.ts` is now the single source of truth for phase status/scope/dependencies;
-`docs/PROPOSAL.md`'s Phased Delivery table is generated from it and CI-enforced to
-stay that way. A new `CLAUDE.md` records the "check the roadmap before planning"
-instruction. 742 tests passing. **Not yet committed, pushed, or deployed.**)
+quality/balance-sheet health). **Milestone 4 (fundamentals checklist)** is implemented
+and tested — see "Phase 4, Milestone 4" below. Only Milestone 5 (watchlist UI polish +
+combined workbench screen) remains for Phase 4. **Also shipped, outside Phase 4**: net
+worth chart stale-gap segments + hover tooltip, a real debt-chart sign-flip bug fix, a
+zero-pinned debt-chart baseline, the same hover tooltip reused on per-account charts,
+an explicit Phase 4.4 (retirement accumulation phase, household-raised), and a new
+in-app Roadmap tab with drag-and-drop reprioritization — see "Net worth chart:
+stale-gap segments + hover tooltip," its follow-up, and "In-app Roadmap tab" below.
+`src/lib/roadmap/data.ts` is now the single source of truth for phase status/scope/
+dependencies; `docs/PROPOSAL.md`'s Phased Delivery table is generated from it and
+CI-enforced to stay that way. A new `CLAUDE.md` records the "check the roadmap before
+planning" instruction. 756 tests passing. **Not yet committed, pushed, or deployed.**)
 
 ## Done
 
@@ -2011,6 +2013,52 @@ dnd-kit's timing — a real pointer-drag sequence was used instead for the autom
 check; manual keyboard-accessibility verification in a real browser is still
 worthwhile before calling this fully done).
 
+## Phase 4, Milestone 4: fundamentals checklist
+
+Checked the roadmap before starting, per the process just built: `/roadmap` had
+nothing reordered yet, so "Up next" was in default order — Phase 4 (in progress) at
+the top, its own `detail` naming Milestone 4 (fundamentals checklist) as the next
+piece of remaining scope. No dependency conflict.
+
+Per `docs/PROPOSAL.md`: "gates raw numbers before they're allowed into a valuation
+model, catching bad inputs early (the 'pre-flight checklist' pattern professional
+analysts use)." Unlike M3, **no new FMP endpoint or provider call** — every check
+reads fields already fetched for the DCF and relative-valuation sections
+(`FmpStatements`: statements, `ratios`, `keyMetrics`). The smallest of the four
+sections so far, purely derivation + display.
+
+**Six checks** (`src/lib/stocks/checklist.ts`, `buildFundamentalsChecklist`), each
+independently `pass`/`warn`/`fail`/`unknown` — `unknown`, not `fail`, whenever the
+underlying figure isn't available (same posture `deriveQualityMetrics` already
+established): data recency (≤18 months pass, 18–30 warn, older fail), free cash flow
+positive, profitable (net margin > 0), debt manageable (debt/equity < 2 pass, 2–4
+warn, > 4 fail), adequate short-term liquidity (current ratio ≥ 1.5 pass, 1–1.5 warn,
+< 1 fail), and positive shareholder equity (a distress signal surfaced on its own, not
+folded into the debt/equity ratio — which is itself distorted once equity goes
+negative). Thresholds are documented, conventional rules of thumb, not derived from
+anything ticker-specific — the page's own explainer says so plainly, same "starting
+point for questions, not a verdict" framing as every other section.
+
+**Shipped**: a fourth section on `/stocks/[ticker]`, same card + `<details open>`
+"how to read this" pattern as the other three. A summary line ("N of 6 checks pass, X
+warning(s), Y failed, Z unknown"), then each check as a row with a status glyph
+(✓ sage / ! brass / ✕ clay / – faint — the app's existing tri-tone vocabulary, no new
+colour language) and a one-line detail. Degrades the same way as the other three
+sections: no FMP key / no statements → existing message; statements present but
+`ratios`/`keyMetrics` missing (the COF case) → the checks needing them show
+`unknown`, not hidden.
+
+756 tests passing (up from 742: 14 new `checklist.test.ts` cases covering every
+check's pass/warn/fail/unknown boundary). Typecheck, lint, and build all clean.
+Browser-verified in both light and dark mode via a throwaway Playwright spec (deleted
+after use): an all-healthy ticker showing 6/6 pass, a deliberately unhealthy one
+showing all six correctly failing (stale data, negative FCF, negative margin, 6x
+debt/equity, sub-1 current ratio, negative equity), and a statements-gated ticker
+showing the same "no fundamentals available" message as the other sections.
+
+`ROADMAP_ITEMS`' Phase 4 entry updated (Milestones 1–4 done, only M5 left) and
+`docs/PROPOSAL.md`'s generated table re-synced (`npm run roadmap:sync`) to match.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -2029,10 +2077,11 @@ worthwhile before calling this fully done).
 14. ~~Milestone 3 (relative valuation, quality/balance-sheet screens)~~ **Done** — `619129e`, committed, pushed, and deployed to the live stack.
 15. ~~Net worth chart: stale-gap segments, hover tooltip, debt-chart sign-flip fix, zero-pinned debt baseline, tooltip reused on account charts~~ **Done** — `3e980f5`, committed, pushed, and deployed to the live stack.
 16. ~~Add retirement accumulation phase to the roadmap~~ **Done** — `docs/PROPOSAL.md`'s Phased Delivery table (generated), Phase 4.4. Not yet implemented — this is a roadmap addition, still queued work.
-17. ~~In-app Roadmap tab, single-sourced from `src/lib/roadmap/data.ts`~~ Implemented and tested (742 tests) — see "In-app Roadmap tab" above. **Not yet committed, pushed, or deployed.** Needs a migration (`roadmap_order`) on deploy.
-18. **Continue Phase 4**: Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
-19. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
-20. **New, this conversation**: Phase 4.4 (retirement accumulation phase, see item 16) is now scheduled but not built — a real, substantial piece of engine work (contribution modeling, glide-path to retirement) queued ahead of Phase 4.5.
+17. ~~In-app Roadmap tab, single-sourced from `src/lib/roadmap/data.ts`~~ **Done** — `1b0292a`, committed, pushed, and deployed to the live stack (with the `roadmap_order` migration).
+18. ~~Milestone 4 (fundamentals checklist)~~ Implemented and tested (756 tests) — see "Phase 4, Milestone 4" above. **Not yet committed, pushed, or deployed.**
+19. **Continue Phase 4**: Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired) — the last piece of Phase 4.
+20. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
+21. Phase 4.4 (retirement accumulation phase) is scheduled (Roadmap, Phase 4.4) but not built — a real, substantial piece of engine work (contribution modeling, glide-path to retirement) queued ahead of Phase 4.5.
 
 ## Notes for Phase 3
 
