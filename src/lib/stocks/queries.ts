@@ -3,7 +3,7 @@
  * functions scoped by an already-resolved `householdId`, never throwing for a
  * not-found/empty case.
  */
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
 import { stockAnalyses, watchlistItems } from '@/lib/db/schema';
 
@@ -41,4 +41,23 @@ export async function getStockAnalysis(householdId: number, ticker: string): Pro
     .from(stockAnalyses)
     .where(and(eq(stockAnalyses.householdId, householdId), eq(stockAnalyses.ticker, ticker)));
   return row ?? null;
+}
+
+/** Batch form of `getStockAnalysis`, for a page (the watchlist, Milestone 5) that
+ * needs saved DCF assumptions for many tickers at once rather than issuing one query
+ * per row. A ticker with no saved row simply has no entry in the returned map — the
+ * caller falls back to defaults per ticker, same as `getStockAnalysis`'s own `null`. */
+export async function getStockAnalysesForTickers(
+  householdId: number,
+  tickers: string[],
+): Promise<Map<string, StockAnalysisView>> {
+  if (tickers.length === 0) return new Map();
+
+  const db = getDb();
+  const rows = await db
+    .select({ ticker: stockAnalyses.ticker, inputs: stockAnalyses.inputs })
+    .from(stockAnalyses)
+    .where(and(eq(stockAnalyses.householdId, householdId), inArray(stockAnalyses.ticker, tickers)));
+
+  return new Map(rows.map((row) => [row.ticker, { inputs: row.inputs }]));
 }

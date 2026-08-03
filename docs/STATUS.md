@@ -2,25 +2,28 @@
 
 Last updated: 2026-08-03 (**Phase 3 is fully closed out** — see "Phase 3 reference-tool
 validation" below for the closing Trinity study methodology and results. **Phase 4
-(stock analysis workbench) is under way**: Milestone 1 (schema, the FMP fundamentals
+(stock analysis workbench) is now fully complete**: Milestone 1 (schema, the FMP fundamentals
 provider boundary, a watchlist) shipped, committed, pushed, and deployed to the live
 stack — `7bd4214`. **Milestone 2 (DCF calculator)** shipped and deployed — `333809d`
 (calculator), `a520a39` (a real Legacy-endpoint FMP bug, caught and fixed via live-key
 verification), `299dfa8` (a "how to read this" explainer), `be2ffef` (data-driven
 suggested inputs — FCF growth from historical CAGR, discount rate via CAPM using a
 newly-fetched company beta), `619129e` (Milestone 3 — relative valuation +
-quality/balance-sheet health). **Milestone 4 (fundamentals checklist)** is implemented
-and tested — see "Phase 4, Milestone 4" below. Only Milestone 5 (watchlist UI polish +
-combined workbench screen) remains for Phase 4. **Also shipped, outside Phase 4**: net
-worth chart stale-gap segments + hover tooltip, a real debt-chart sign-flip bug fix, a
-zero-pinned debt-chart baseline, the same hover tooltip reused on per-account charts,
-an explicit Phase 4.4 (retirement accumulation phase, household-raised), and a new
-in-app Roadmap tab with drag-and-drop reprioritization — see "Net worth chart:
-stale-gap segments + hover tooltip," its follow-up, and "In-app Roadmap tab" below.
-`src/lib/roadmap/data.ts` is now the single source of truth for phase status/scope/
-dependencies; `docs/PROPOSAL.md`'s Phased Delivery table is generated from it and
-CI-enforced to stay that way. A new `CLAUDE.md` records the "check the roadmap before
-planning" instruction. 756 tests passing. **Not yet committed, pushed, or deployed.**)
+quality/balance-sheet health). **Phase 4 is now fully complete**: Milestone 4
+(fundamentals checklist) and Milestone 5 (watchlist UI polish — a shared
+`buildWorkbenchSummary`, extracted from `/stocks/[ticker]`, now drives per-row price/
+DCF-signal/checklist badges on the watchlist list page too) are both implemented and
+tested — see "Phase 4, Milestone 4" and "Phase 4, Milestone 5" below. **Also shipped,
+outside Phase 4**: net worth chart stale-gap segments + hover tooltip, a real
+debt-chart sign-flip bug fix, a zero-pinned debt-chart baseline, the same hover
+tooltip reused on per-account charts, an explicit Phase 4.4 (retirement accumulation
+phase, household-raised), and a new in-app Roadmap tab with drag-and-drop
+reprioritization — see "Net worth chart: stale-gap segments + hover tooltip," its
+follow-up, and "In-app Roadmap tab" below. `src/lib/roadmap/data.ts` is now the single
+source of truth for phase status/scope/dependencies; `docs/PROPOSAL.md`'s Phased
+Delivery table is generated from it and CI-enforced to stay that way. A new
+`CLAUDE.md` records the "check the roadmap before planning" instruction. 762 tests
+passing. **Committed, pushed, and deployed to the live stack.**)
 
 ## Done
 
@@ -2059,6 +2062,60 @@ showing the same "no fundamentals available" message as the other sections.
 `ROADMAP_ITEMS`' Phase 4 entry updated (Milestones 1–4 done, only M5 left) and
 `docs/PROPOSAL.md`'s generated table re-synced (`npm run roadmap:sync`) to match.
 
+## Phase 4, Milestone 5: watchlist UI polish (Phase 4 complete)
+
+Checked the roadmap first: Phase 4's own `detail` named "Milestone 5 (watchlist UI
+polish + a combined workbench screen)" as the only remaining scope. Reviewing what
+M2–M4 actually built: `/stocks/[ticker]` already **is** the combined workbench screen
+(DCF + quality/health + relative valuation + a fundamentals checklist, all on one
+page) — so the real remaining work was the other half. `/stocks` (the watchlist list
+page) showed nothing but a bare ticker name and a Remove link; a household member had
+to click into every ticker one at a time to see anything.
+
+**Extracted, not duplicated**: `src/lib/stocks/workbenchSummary.ts` (new) —
+`buildWorkbenchSummary(statements, quotePrice, dcfInputs)`, pulled out of
+`[ticker]/page.tsx`'s own inline DCF-result/checklist computation (Milestones 2 and 4)
+so both pages compute the DCF-vs-market delta line and the checklist pass/warn/fail
+counts from one place. `[ticker]/page.tsx` itself changed behaviourally not at all —
+this was a pure extraction, confirmed by a before/after manual check. `DEFAULT_DCF_INPUTS`
+also moved out of the page and into `dcf.ts` as a shared export, for the same
+one-constant-not-two-copies reason.
+
+**Watchlist page rebuilt** (`src/app/stocks/page.tsx`): restructured to the
+`Suspense`-wrapped async-body pattern `src/app/portfolio/page.tsx` already
+established (appropriate here for the same reason — the page now does external FMP/
+Alpha Vantage fetches that shouldn't block the shell). One batched
+`ensureFreshFundamentals` call and one batched `ensureFreshQuotes` call cover the
+whole watchlist (capped at a new `MAX_WATCHLIST_SUMMARIES = 30`, mirroring
+`[ticker]/page.tsx`'s own `MAX_PEERS` — rows past the cap still list with a Remove
+button, just without a price/signal, the same degrade-per-cell posture as a missing
+API key elsewhere on this page). A new `getStockAnalysesForTickers` batch query
+(`src/lib/stocks/queries.ts`, one `inArray` query) replaces what would otherwise be N
+separate `getStockAnalysis` calls. Each row now shows: price, a DCF-vs-market signal
+(coloured sage/clay by direction), and a checklist pass count (toned by worst status
+present) — using the household's saved DCF assumptions where they've set any, or the
+house defaults otherwise (deliberately not the data-driven per-ticker suggestions
+`[ticker]/page.tsx` prefills a first visit with, which would mean an extra FCF-history/
+beta computation per watchlist row just for a badge).
+
+762 tests passing (up from 756: 4 new `workbenchSummary.test.ts` cases — full DCF
+result + all-pass checklist for healthy fundamentals, all-null with no statements,
+price-independent fields still computing with no quote, `unknown` checklist items
+surfacing rather than crashing for a COF-style ticker with no ratios; plus 2 new
+`getStockAnalysesForTickers` integration cases in `dcfCrud.integration.test.ts` —
+many-tickers-one-query keyed correctly with a missing ticker simply absent, and an
+empty ticker list short-circuiting to an empty map). Typecheck, lint, and build all
+clean. Browser-verified in both light and dark mode via a throwaway dev server against
+a scratch Postgres (not the real docker-compose stack) seeded with three tickers —
+AAPL and MSFT fully covered (price, DCF signal, "5/6 pass" checklist, correctly toned
+clay for "above intrinsic value" and brass for one failing check) and COF showing
+em-dashes across every data column rather than crashing, the same graceful-degrade
+behaviour the ticker page's own sections already have. Confirmed `/stocks/[ticker]`
+itself renders identically to before the extraction.
+
+`ROADMAP_ITEMS`' Phase 4 entry updated to `status: 'done'` (all five milestones
+complete) and `docs/PROPOSAL.md`'s generated table re-synced.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -2078,10 +2135,10 @@ showing the same "no fundamentals available" message as the other sections.
 15. ~~Net worth chart: stale-gap segments, hover tooltip, debt-chart sign-flip fix, zero-pinned debt baseline, tooltip reused on account charts~~ **Done** — `3e980f5`, committed, pushed, and deployed to the live stack.
 16. ~~Add retirement accumulation phase to the roadmap~~ **Done** — `docs/PROPOSAL.md`'s Phased Delivery table (generated), Phase 4.4. Not yet implemented — this is a roadmap addition, still queued work.
 17. ~~In-app Roadmap tab, single-sourced from `src/lib/roadmap/data.ts`~~ **Done** — `1b0292a`, committed, pushed, and deployed to the live stack (with the `roadmap_order` migration).
-18. ~~Milestone 4 (fundamentals checklist)~~ Implemented and tested (756 tests) — see "Phase 4, Milestone 4" above. **Not yet committed, pushed, or deployed.**
-19. **Continue Phase 4**: Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired) — the last piece of Phase 4.
+18. ~~Milestone 4 (fundamentals checklist)~~ Implemented and tested — see "Phase 4, Milestone 4" above.
+19. ~~Milestone 5 (watchlist UI polish + the full workbench screen)~~ **Done — Phase 4 is fully complete.** See "Phase 4, Milestone 5" above. 762 tests passing. **Not yet committed, pushed, or deployed.**
 20. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
-21. Phase 4.4 (retirement accumulation phase) is scheduled (Roadmap, Phase 4.4) but not built — a real, substantial piece of engine work (contribution modeling, glide-path to retirement) queued ahead of Phase 4.5.
+21. **Next phase**: Phase 4.4 (retirement accumulation phase) is scheduled (Roadmap, Phase 4.4) but not built — a real, substantial piece of engine work (contribution modeling, glide-path to retirement) queued ahead of Phase 4.5, and now the next phase-level item on the roadmap with Phase 4 closed out.
 
 ## Notes for Phase 3
 

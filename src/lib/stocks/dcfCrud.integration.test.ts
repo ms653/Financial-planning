@@ -11,6 +11,7 @@ import { eq } from 'drizzle-orm';
 import * as schema from '@/lib/db/schema';
 import { households, stockAnalyses } from '@/lib/db/schema';
 import { saveDcfInputs } from '@/lib/stocks/actions';
+import { getStockAnalysesForTickers } from '@/lib/stocks/queries';
 
 /**
  * Exercises the real exported `saveDcfInputs` Server Action directly against a real
@@ -22,6 +23,7 @@ const connectionString = process.env.TEST_DATABASE_URL;
 describe.skipIf(!connectionString)('saveDcfInputs against a real Postgres', () => {
   let pool: Pool;
   let db: NodePgDatabase<typeof schema>;
+  let householdId: number;
 
   beforeAll(async () => {
     pool = new Pool({ connectionString, max: 4 });
@@ -38,7 +40,8 @@ describe.skipIf(!connectionString)('saveDcfInputs against a real Postgres', () =
 
   beforeEach(async () => {
     await pool.query('TRUNCATE TABLE stock_analysis, household RESTART IDENTITY CASCADE;');
-    await db.insert(households).values({ name: 'Test household' });
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    householdId = household!.id;
   });
 
   function validInputsJson(overrides: Partial<Record<string, unknown>> = {}): string {
@@ -123,5 +126,27 @@ describe.skipIf(!connectionString)('saveDcfInputs against a real Postgres', () =
     const [after] = await db.select().from(stockAnalyses).where(eq(stockAnalyses.ticker, 'AAPL'));
 
     expect(after!.createdAt).toEqual(before!.createdAt);
+  });
+
+  describe('getStockAnalysesForTickers', () => {
+    it('returns one query for many tickers, keyed by ticker, omitting tickers with no saved row', async () => {
+      await saveDcfInputs(formData({ ticker: 'AAPL', inputs: validInputsJson() }));
+      await saveDcfInputs(formData({ ticker: 'MSFT', inputs: validInputsJson({ growthRatePct: '3.000' }) }));
+
+      const result = await getStockAnalysesForTickers(householdId, ['AAPL', 'MSFT', 'GOOG']);
+
+      expect(result.size).toBe(2);
+      expect((result.get('AAPL')!.inputs as { growthRatePct: string }).growthRatePct).toBe('8.000');
+      expect((result.get('MSFT')!.inputs as { growthRatePct: string }).growthRatePct).toBe('3.000');
+      expect(result.has('GOOG')).toBe(false);
+    });
+
+    it('returns an empty map for an empty ticker list, without querying', async () => {
+      await saveDcfInputs(formData({ ticker: 'AAPL', inputs: validInputsJson() }));
+
+      const result = await getStockAnalysesForTickers(householdId, []);
+
+      expect(result.size).toBe(0);
+    });
   });
 });

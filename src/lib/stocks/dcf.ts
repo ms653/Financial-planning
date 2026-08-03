@@ -30,6 +30,20 @@ const RATE_SCALE_DIVISOR = 10n ** BigInt(RATE_SCALE);
 
 export class DcfInputsParseError extends Error {}
 
+/** The generic house defaults for a ticker with no saved assumptions and no
+ * data-driven suggestion available (see `suggestGrowthRatePct`/`suggestDiscountRatePct`
+ * below). Shared by `/stocks/[ticker]` (which prefers a suggestion over this where one
+ * exists) and the watchlist list page (Milestone 5, which shows saved-or-default
+ * assumptions without computing per-ticker suggestions for every row) — one constant,
+ * not two copies that could drift. */
+export const DEFAULT_DCF_INPUTS: DcfInputsV1 = {
+  schemaVersion: 1,
+  growthRatePct: '8.000',
+  discountRatePct: '10.000',
+  terminalGrowthRatePct: '2.500',
+  projectionYears: 5,
+};
+
 export interface DcfInputsV1 {
   schemaVersion: 1;
   /** Annual growth rate applied to free cash flow during the projection horizon. */

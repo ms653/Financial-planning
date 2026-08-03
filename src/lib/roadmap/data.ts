@@ -80,10 +80,10 @@ export const ROADMAP_ITEMS: readonly RoadmapItem[] = [
     phaseLabel: '4',
     title: 'Stock analysis workbench',
     summary:
-      'A workbench for researching an individual stock pick: a DCF calculator, valuation vs. peers, quality/balance-sheet health, a pre-flight fundamentals checklist, and (still to come) a combined view.',
+      'A workbench for researching an individual stock pick: a DCF calculator, valuation vs. peers, quality/balance-sheet health, a pre-flight fundamentals checklist, and a watchlist that surfaces all of it at a glance.',
     detail:
-      'Stock analysis workbench (DCF / relative valuation / checklist). Milestones 1–4 (schema + FMP provider boundary + watchlist; DCF calculator; relative valuation + quality/balance-sheet health; fundamentals checklist) are complete — see `docs/STATUS.md`. Milestone 5 (watchlist UI polish + a combined workbench screen) remains.',
-    status: 'in-progress',
+      'Stock analysis workbench (DCF / relative valuation / checklist), complete — see `docs/STATUS.md`. All five milestones shipped: schema + FMP provider boundary + watchlist; DCF calculator; relative valuation + quality/balance-sheet health; fundamentals checklist; watchlist UI polish (a shared `buildWorkbenchSummary` — DCF-vs-market signal plus checklist pass count — extracted from `/stocks/[ticker]` so the watchlist list page shows the same signals per row instead of a bare ticker name).',
+    status: 'done',
   },
   {
     id: 'phase-4-4-accumulation',

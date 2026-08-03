@@ -5,19 +5,12 @@ import { DcfForm } from '@/components/stocks/DcfForm';
 import { getSetupState } from '@/lib/household/queries';
 import { getStockAnalysis } from '@/lib/stocks/queries';
 import { saveDcfInputs } from '@/lib/stocks/actions';
-import {
-  computeDcf,
-  deriveDcfBaseInputs,
-  parseDcfInputs,
-  suggestDiscountRatePct,
-  suggestGrowthRatePct,
-  type DcfInputsV1,
-} from '@/lib/stocks/dcf';
+import { DEFAULT_DCF_INPUTS, parseDcfInputs, suggestDiscountRatePct, suggestGrowthRatePct } from '@/lib/stocks/dcf';
 import { createFmpFundamentalsSource, ensureFreshFundamentals, type FundamentalsView } from '@/lib/stocks/fmp';
 import { deriveQualityMetrics, derivePeerComparison } from '@/lib/stocks/relativeValuation';
-import { buildFundamentalsChecklist, type ChecklistItem } from '@/lib/stocks/checklist';
+import type { ChecklistItem } from '@/lib/stocks/checklist';
+import { buildWorkbenchSummary } from '@/lib/stocks/workbenchSummary';
 import { createAlphaVantageQuoteSource, ensureFreshQuotes } from '@/lib/portfolio/quotes';
-import { parseScaledDecimal, roundDiv, PRICE_SCALE } from '@/lib/portfolio/valuation';
 import { alphaVantageApiKey, fmpApiKey, fundamentalsStaleAfterHours, quoteStaleAfterHours } from '@/lib/env';
 import { formatMoney } from '@/lib/money';
 
@@ -33,24 +26,6 @@ import { formatMoney } from '@/lib/money';
 export const dynamic = 'force-dynamic';
 
 const TICKER_PATTERN = /^[A-Z0-9.\-:]{1,20}$/;
-
-const DEFAULT_DCF_INPUTS: DcfInputsV1 = {
-  schemaVersion: 1,
-  growthRatePct: '8.000',
-  discountRatePct: '10.000',
-  terminalGrowthRatePct: '2.500',
-  projectionYears: 5,
-};
-
-/** A quote's price string is `NUMERIC(14,4)` (pounds/dollars, `PRICE_SCALE`) — a
- * different scale from `formatMoney`'s pence convention. Converts without ever
- * touching a float, reusing `valuation.ts`'s existing fixed-point primitives (the same
- * `roundDiv`/`parseScaledDecimal` pair `dcf.ts`'s own math is built from) rather than
- * inventing a third way to do this one conversion. */
-function priceStringToPence(price: string): bigint {
-  const priceScaled = parseScaledDecimal(price, PRICE_SCALE);
-  return roundDiv(priceScaled, 10n ** BigInt(PRICE_SCALE - 2));
-}
 
 /** Both formatters return an em dash for `null` rather than "0%"/"0.0x" — a missing
  * figure and a genuine zero must never look the same. */
@@ -141,22 +116,8 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
     };
   }
 
-  const baseInputs = fundamentalsView?.statements ? deriveDcfBaseInputs(fundamentalsView.statements) : null;
-  const dcfResult = baseInputs
-    ? computeDcf(dcfInputs, baseInputs.baseFcfPence, baseInputs.netDebtPence, baseInputs.dilutedShares)
-    : null;
-
-  const marketPricePence = quoteView?.price ? priceStringToPence(quoteView.price) : null;
-
-  let deltaLine: string | null = null;
-  if (dcfResult?.intrinsicValuePerSharePence != null && marketPricePence !== null && marketPricePence > 0n) {
-    const deltaPct =
-      (Number(dcfResult.intrinsicValuePerSharePence - marketPricePence) / Number(marketPricePence)) * 100;
-    deltaLine =
-      deltaPct >= 0
-        ? `${deltaPct.toFixed(1)}% below intrinsic value`
-        : `${Math.abs(deltaPct).toFixed(1)}% above intrinsic value`;
-  }
+  const workbenchSummary = buildWorkbenchSummary(fundamentalsView?.statements ?? null, quoteView?.price ?? null, dcfInputs);
+  const { marketPricePence, dcfResult, deltaLine, checklist, checklistCounts } = workbenchSummary;
 
   // Milestone 3: quality/balance-sheet health (no peer data needed) and relative
   // valuation (needs each peer's own ratios/key-metrics — a second
@@ -190,12 +151,6 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
         }),
       )
     : null;
-
-  const checklist = fundamentalsView?.statements ? buildFundamentalsChecklist(fundamentalsView.statements) : null;
-  const checklistCounts = checklist?.reduce(
-    (counts, item) => ({ ...counts, [item.status]: counts[item.status] + 1 }),
-    { pass: 0, warn: 0, fail: 0, unknown: 0 },
-  );
 
   return (
     <AppShell pathname="/stocks">
@@ -320,7 +275,7 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
               tickers for financial statements specifically, and which ones isn’t
               published anywhere to check in advance.
             </p>
-          ) : !baseInputs ? (
+          ) : !dcfResult ? (
             <p className="text-sm text-content-faint">
               {ticker}’s fundamentals are missing a figure this calculation needs (free
               cash flow, debt, cash, or shares outstanding) — can’t compute a DCF yet.
