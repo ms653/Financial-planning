@@ -3,7 +3,7 @@ import { Pool } from 'pg';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import * as schema from '@/lib/db/schema';
-import { accounts, balanceSnapshots, households, people, retirementScenarios } from '@/lib/db/schema';
+import { accounts, balanceSnapshots, households, people, pensionContributions, retirementScenarios } from '@/lib/db/schema';
 import { taxWrapperForType } from '@/lib/accounts/types';
 import { todayIso } from '@/lib/accounts/validation';
 import { penceToNumeric } from '@/lib/money';
@@ -177,6 +177,54 @@ describe.skipIf(!connectionString)('resolveScenario against a real Postgres', ()
     expect(resolved!.startingBalancesPence.gia).toBe(5_000_000n);
     expect(resolved!.startingBalancesPence.sipp_pension).toBeUndefined();
     expect(Object.keys(resolved!.startingBalancesPence).sort()).toEqual(['cash_isa', 'gia']);
+  });
+
+  it('sums pension_contribution rows (amount + employerAmount) per person into annualContributionPence, defaulting to 0 with none', async () => {
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    const householdId = household!.id;
+
+    const [alex] = await db
+      .insert(people)
+      .values({ householdId, name: 'Alex', dateOfBirth: dobYearsAgo(40) })
+      .returning();
+    const [jordan] = await db
+      .insert(people)
+      .values({ householdId, name: 'Jordan', dateOfBirth: dobYearsAgo(38) })
+      .returning();
+
+    // Alex has two recorded pensions (e.g. a workplace scheme plus an old one) — both
+    // should be summed, not just the most recent.
+    await db.insert(pensionContributions).values([
+      { personId: alex!.id, amount: '5000.00', employerAmount: '2000.00', method: 'relief_at_source' },
+      { personId: alex!.id, amount: '1000.00', employerAmount: '0.00', method: 'net_pay' },
+    ]);
+    // Jordan has none recorded at all.
+
+    const assumptions = {
+      schemaVersion: 1,
+      annualSpending: '30000.00',
+      survivorAnnualSpending: '20000.00',
+      inflationPct: '2.500',
+      equityAllocationPct: '60.000',
+      targetSuccessRatePct: '90.000',
+      flatEffectiveTaxRatePct: '20.000',
+      wrapperWithdrawalOrder: ['gia'],
+      people: [
+        { personId: alex!.id, retirementAge: 65, planEndAge: 95 },
+        { personId: jordan!.id, retirementAge: 65, planEndAge: 95 },
+      ],
+    };
+    const [scenario] = await db
+      .insert(retirementScenarios)
+      .values({ householdId, name: 'Baseline', assumptions })
+      .returning();
+
+    const resolved = await resolveScenario(scenario!.id, householdId);
+
+    const alexResolved = resolved!.people.find((p) => p.personId === alex!.id)!;
+    const jordanResolved = resolved!.people.find((p) => p.personId === jordan!.id)!;
+    expect(alexResolved.annualContributionPence).toBe(800_000n); // (5000+2000+1000+0) * 100
+    expect(jordanResolved.annualContributionPence).toBe(0n);
   });
 
   it('returns null for a scenario that does not exist', async () => {

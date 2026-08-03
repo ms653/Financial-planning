@@ -18,7 +18,7 @@
 
 import { and, eq, inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
-import { people, retirementScenarios } from '@/lib/db/schema';
+import { people, pensionContributions, retirementScenarios } from '@/lib/db/schema';
 import { getAccountsWithBalances } from '@/lib/household/queries';
 import { numericToPence } from '@/lib/money';
 import { todayIso } from '@/lib/accounts/validation';
@@ -70,6 +70,27 @@ export async function resolveScenario(
     .where(and(eq(people.householdId, householdId), inArray(people.id, personIds)));
   const dobById = new Map(personRows.map((row) => [row.id, row.dateOfBirth]));
 
+  // Phase 4.4: every pension_contribution row for a referenced person, summed
+  // (amount + employerAmount) into pence — a person can have more than one recorded
+  // pension, and both the member's own and their employer's contribution land in the
+  // same sipp_pension wrapper during accumulation (deterministicCore.ts).
+  const contributionRows = await db
+    .select({
+      personId: pensionContributions.personId,
+      amount: pensionContributions.amount,
+      employerAmount: pensionContributions.employerAmount,
+    })
+    .from(pensionContributions)
+    .where(inArray(pensionContributions.personId, personIds));
+  const annualContributionPenceByPersonId = new Map<number, bigint>();
+  for (const row of contributionRows) {
+    const rowTotalPence = numericToPence(row.amount) + numericToPence(row.employerAmount);
+    annualContributionPenceByPersonId.set(
+      row.personId,
+      (annualContributionPenceByPersonId.get(row.personId) ?? 0n) + rowTotalPence,
+    );
+  }
+
   const today = todayIso();
 
   const resolvedPeople: ResolvedPerson[] = assumptions.people.map((person) => {
@@ -90,6 +111,7 @@ export async function resolveScenario(
         : statePensionAnnualPence(),
       pclsAge: person.pclsAge ?? null,
       planEndAge: person.planEndAge,
+      annualContributionPence: annualContributionPenceByPersonId.get(person.personId) ?? 0n,
     };
   });
 

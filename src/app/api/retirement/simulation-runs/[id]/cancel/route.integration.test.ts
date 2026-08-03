@@ -41,6 +41,7 @@ function fixtureScenario(scenarioId: number): ResolvedScenario {
         statePensionAnnualPence: statePensionAnnualPence(),
         pclsAge: null,
         planEndAge: 90,
+        annualContributionPence: 0n,
       },
     ],
     startingBalancesPence: { gia: 50_000_000n },

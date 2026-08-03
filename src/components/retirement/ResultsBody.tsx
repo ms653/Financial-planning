@@ -23,6 +23,15 @@ import { AssumptionsSummary } from './AssumptionsSummary';
  * for the initial data fetch and the redirect/notFound guards.
  */
 
+export interface PreRetirementContribution {
+  personId: number;
+  name: string;
+  retirementAge: number;
+  /** Pre-formatted on the server via `formatMoney` — never a raw bigint across the
+   * server/client boundary, this codebase's usual discipline. */
+  annualContribution: string;
+}
+
 export function ResultsBody({
   scenarioId,
   targetSuccessRatePct,
@@ -33,6 +42,7 @@ export function ResultsBody({
   referencePersonName,
   scenarioUpdatedAtIso,
   editHref,
+  preRetirementContributions,
 }: {
   scenarioId: number;
   targetSuccessRatePct: string;
@@ -43,6 +53,9 @@ export function ResultsBody({
   referencePersonName: string;
   scenarioUpdatedAtIso: string;
   editHref: string;
+  /** People still short of their own `retirementAge` — Phase 4.4. Empty when everyone
+   * modelled has already reached theirs; the note doesn't render at all in that case. */
+  preRetirementContributions: PreRetirementContribution[];
 }) {
   const [runId, setRunId] = useState<number | null>(initialRun?.id ?? null);
   const [starting, setStarting] = useState(false);
@@ -195,6 +208,27 @@ export function ResultsBody({
       </div>
 
       <AssumptionsSummary assumptions={assumptions} personNames={personNamesMap} />
+
+      {preRetirementContributions.length > 0 ? (
+        <div className="rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6">
+          <h2 className="font-serif text-lg text-content">Before retirement</h2>
+          <p className="mt-1 text-sm text-content-muted">
+            Until each person’s own retirement age above, this simulation assumes they
+            keep contributing and draws down nothing — see{' '}
+            <Link href="/settings" className="underline underline-offset-2 hover:text-content">
+              Settings
+            </Link>{' '}
+            to change what’s recorded.
+          </p>
+          <ul className="mt-3 space-y-1 text-sm text-content">
+            {preRetirementContributions.map((p) => (
+              <li key={p.personId}>
+                {p.name}: {p.annualContribution}/year until age {p.retirementAge}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-3">
         <Link

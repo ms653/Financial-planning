@@ -23,6 +23,7 @@ function person(overrides: Partial<ResolvedPerson> & { personId: number }): Reso
     statePensionAnnualPence: 0n,
     pclsAge: null,
     planEndAge: 95,
+    annualContributionPence: 0n,
     ...overrides,
   };
 }

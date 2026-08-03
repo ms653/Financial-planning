@@ -343,7 +343,7 @@ export function ScenarioEditorForm({
                 <Field
                   label={`${person.name}'s retirement age`}
                   htmlFor={`retirementAge-${index}`}
-                  hint={`Currently ${person.currentAge} — for reference only, doesn't yet affect the simulation`}
+                  hint={`Currently ${person.currentAge} — contributions (see Settings) stop and drawdown can start from this age`}
                   error={errorFor(`people.${index}.retirementAge`)}
                 >
                   <input

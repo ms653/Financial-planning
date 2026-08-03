@@ -13,17 +13,20 @@ quality/balance-sheet health). **Phase 4 is now fully complete**: Milestone 4
 (fundamentals checklist) and Milestone 5 (watchlist UI polish — a shared
 `buildWorkbenchSummary`, extracted from `/stocks/[ticker]`, now drives per-row price/
 DCF-signal/checklist badges on the watchlist list page too) are both implemented and
-tested — see "Phase 4, Milestone 4" and "Phase 4, Milestone 5" below. **Also shipped,
-outside Phase 4**: net worth chart stale-gap segments + hover tooltip, a real
-debt-chart sign-flip bug fix, a zero-pinned debt-chart baseline, the same hover
-tooltip reused on per-account charts, an explicit Phase 4.4 (retirement accumulation
-phase, household-raised), and a new in-app Roadmap tab with drag-and-drop
-reprioritization — see "Net worth chart: stale-gap segments + hover tooltip," its
-follow-up, and "In-app Roadmap tab" below. `src/lib/roadmap/data.ts` is now the single
-source of truth for phase status/scope/dependencies; `docs/PROPOSAL.md`'s Phased
-Delivery table is generated from it and CI-enforced to stay that way. A new
-`CLAUDE.md` records the "check the roadmap before planning" instruction. 762 tests
-passing. **Committed, pushed, and deployed to the live stack.**)
+tested — see "Phase 4, Milestone 4" and "Phase 4, Milestone 5" below. **Phase 4.4
+(retirement accumulation phase) is also now complete** — the engine models
+saving/contributing between now and retirement instead of starting every path already
+retired, resolving the deferral Phase 3 Milestone 3 flagged; see "Phase 4.4: retirement
+accumulation phase" below. **Also shipped, outside Phase 4**: net worth chart
+stale-gap segments + hover tooltip, a real debt-chart sign-flip bug fix, a zero-pinned
+debt-chart baseline, the same hover tooltip reused on per-account charts, and a new
+in-app Roadmap tab with drag-and-drop reprioritization — see "Net worth chart:
+stale-gap segments + hover tooltip," its follow-up, and "In-app Roadmap tab" below.
+`src/lib/roadmap/data.ts` is now the single source of truth for phase status/scope/
+dependencies; `docs/PROPOSAL.md`'s Phased Delivery table is generated from it and
+CI-enforced to stay that way. A new `CLAUDE.md` records the "check the roadmap before
+planning" instruction. 765 tests passing. **Committed, pushed, and deployed to the
+live stack.**)
 
 ## Done
 
@@ -621,6 +624,10 @@ regression test proving both `debt` and `property` are now rejected.
   raised) — sequenced before 4.5's Cash Allocation Advisor specifically because that
   feature needs to reason about *changing* contributions between now and retirement,
   which requires an accumulation phase to exist first.
+  **Resolved, 2026-08-03 — see "Phase 4.4: retirement accumulation phase" below.** The
+  deferral named above is built: `retirementAge` is read, `pension_contribution` is
+  wired in, and the old regression-lock test is replaced with real coverage of the
+  actual mechanic it used to just guard against.
 
 ### Deliberately not built (and why)
 
@@ -2116,6 +2123,67 @@ itself renders identically to before the extraction.
 `ROADMAP_ITEMS`' Phase 4 entry updated to `status: 'done'` (all five milestones
 complete) and `docs/PROPOSAL.md`'s generated table re-synced.
 
+## Phase 4.4: retirement accumulation phase
+
+Checked the roadmap first: with Phase 4 closed out, Phase 4.4 was next, its only
+dependency (Phase 3) done, no conflict. This is the deferral Phase 3 Milestone 3
+flagged and Phase 4.4 was created to resolve (see that section, above) — the
+household raised it directly ("how can we have retirement planning without knowing
+what we're working with?"), and it's sequenced before 4.5 because the Cash Allocation
+Advisor needs an accumulation phase to reason about *changing* contributions.
+
+**Mechanics** (`deterministicCore.ts`'s `simulatePath`): a new per-year step adds each
+still-working person's (`age < retirementAge`) `annualContributionPence` to
+`sipp_pension`, inserted after growth and before PCLS. Household spending/withdrawal
+is gated on a new `householdFullyRetired` check — false whenever any *alive* person
+hasn't reached their own `retirementAge` — so growth and contributions still apply
+every year, only drawdown is held back. **Two disclosed simplifications**, the same
+"say so, don't guess" posture every other simplification in this engine gets: (1) no
+partial-household drawdown — a household with one person still working and one
+already retired draws down nothing until both have retired, not the working person's
+income specifically offsetting the other's spending; (2) no relief-at-source
+grossing-up — `pension_contribution.amount` lands exactly as entered regardless of
+`method`; PROPOSAL.md names method-aware tax treatment as Phase 4.5's job specifically.
+
+**Resolution** (`resolveScenario.ts`): a new query sums every `pension_contribution`
+row's `amount + employerAmount` per referenced person (a household can record more
+than one pension) into the new `ResolvedPerson.annualContributionPence`, resolved live
+the same way `startingBalancesPence` already is — never stored in the scenario's own
+JSONB.
+
+**UI**: the scenario editor's retirement-age field hint used to read "for reference
+only, doesn't yet affect the simulation" — now false, so it's rewritten to say what
+retirement age actually does. The results page gained a "Before retirement" note
+(`ResultsBody.tsx`, a new `preRetirementContributions` prop computed server-side in
+`/retirement/[scenarioId]/page.tsx` via `getPeopleWithPensions`) naming each
+not-yet-retired person's assumed annual contribution and the age it stops, with a link
+to Settings — nothing renders once everyone modelled has already retired.
+
+**Existing-test fallout**: both engine test files' `person()` fixtures default to
+`currentAge: 65, retirementAge: 65` (already retired from year 0), so this change left
+every existing test's expected output alone except one — a pre-existing "retirement
+age before State Pension age" test that used `currentAge: 60` with the *default*
+`retirementAge: 65`, genuinely relying on the old inertness; fixed by pinning
+`retirementAge: 60` so it isolates the State Pension gap it's actually testing. The old
+"retirementAge has zero effect" regression-lock test (a scope-lock, not real coverage,
+per its own doc comment) is replaced with three real tests: contributions landing and
+compounding in `sipp_pension` while working, contributions stopping and withdrawal
+starting exactly at `age === retirementAge` (not a year early or late), and the
+two-person "no partial-household drawdown" gate.
+
+765 tests passing (up from 762 — deterministic-core coverage net +1 after removing the
+old regression lock and adding three replacements, plus 1 new `resolveScenario`
+integration case for `annualContributionPence` summing across multiple pension rows
+and defaulting to 0). Typecheck, lint, and build all clean. Browser-verified against a
+throwaway dev server and scratch Postgres (not the household's real stack): a
+two-person household (one mid-career with a £6,000 + £3,000 employer pension
+contribution, one already retired) showed a correctly-summed "£9,000/year until age
+65" note, a smoothly growing (not flat-then-cliff) fan chart, and the retirement-age
+field's corrected hint text, in both light and dark.
+
+`ROADMAP_ITEMS`' Phase 4.4 entry updated to `status: 'done'` and `docs/PROPOSAL.md`'s
+generated table re-synced.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -2136,9 +2204,10 @@ complete) and `docs/PROPOSAL.md`'s generated table re-synced.
 16. ~~Add retirement accumulation phase to the roadmap~~ **Done** — `docs/PROPOSAL.md`'s Phased Delivery table (generated), Phase 4.4. Not yet implemented — this is a roadmap addition, still queued work.
 17. ~~In-app Roadmap tab, single-sourced from `src/lib/roadmap/data.ts`~~ **Done** — `1b0292a`, committed, pushed, and deployed to the live stack (with the `roadmap_order` migration).
 18. ~~Milestone 4 (fundamentals checklist)~~ Implemented and tested — see "Phase 4, Milestone 4" above.
-19. ~~Milestone 5 (watchlist UI polish + the full workbench screen)~~ **Done — Phase 4 is fully complete.** See "Phase 4, Milestone 5" above. 762 tests passing. **Not yet committed, pushed, or deployed.**
+19. ~~Milestone 5 (watchlist UI polish + the full workbench screen)~~ **Done — Phase 4 is fully complete.** See "Phase 4, Milestone 5" above.
 20. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
-21. **Next phase**: Phase 4.4 (retirement accumulation phase) is scheduled (Roadmap, Phase 4.4) but not built — a real, substantial piece of engine work (contribution modeling, glide-path to retirement) queued ahead of Phase 4.5, and now the next phase-level item on the roadmap with Phase 4 closed out.
+21. ~~Phase 4.4 (retirement accumulation phase)~~ **Done** — see "Phase 4.4: retirement accumulation phase" above. 765 tests passing. **Committed, pushed, and deployed to the live stack.**
+22. **Next phase**: Phase 4.5 (Cash Allocation Advisor) is next on the roadmap — its `dependsOn` (Phase 1, Phase 3, Phase 4.4) are all now done.
 
 ## Notes for Phase 3
 

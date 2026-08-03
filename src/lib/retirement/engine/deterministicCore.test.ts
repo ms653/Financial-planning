@@ -16,6 +16,7 @@ function person(overrides: Partial<ResolvedPerson> & { personId: number }): Reso
     statePensionAnnualPence: 0n,
     pclsAge: null,
     planEndAge: 95,
+    annualContributionPence: 0n,
     ...overrides,
   };
 }
@@ -114,6 +115,7 @@ describe('runDeterministicPath — named edge cases from PROPOSAL.md Testing str
         person({
           personId: 1,
           currentAge: 60,
+          retirementAge: 60, // already retired — isolates the State Pension gap being tested
           planEndAge: 70,
           statePensionClaimAge: 67,
           statePensionAnnualPence: 1_000_000n,
@@ -188,30 +190,83 @@ describe('runDeterministicPath — named edge cases from PROPOSAL.md Testing str
     }
   });
 
-  it(
-    'scope-decision regression lock: retirementAge has zero effect on the simulated path ' +
-      "(NOT a substitute for PROPOSAL.md's 'contributions continuing past assumed " +
-      "retirement' edge case — see deterministicCore.ts's doc comment: M3 deliberately " +
-      'defers accumulation-phase modelling rather than building it, and this test only ' +
-      "guards against that deferral being silently half-undone, e.g. someone wiring " +
-      'retirementAge into a future change without also building real contribution flows)',
-    () => {
-      const base = scenario({
-        annualSpendingPence: 1_000_000n,
-        startingBalancesPence: { gia: 30_000_000n },
+  describe('Phase 4.4 — accumulation phase', () => {
+    it('a still-working person’s annual contribution lands in sipp_pension, growing the balance while retired people would be drawing down', () => {
+      const s = scenario({
+        annualSpendingPence: 0n,
+        people: [
+          person({
+            personId: 1,
+            currentAge: 60,
+            retirementAge: 63,
+            planEndAge: 65,
+            annualContributionPence: 100_000n, // £1,000/yr
+          }),
+        ],
       });
-      const retiresEarly = {
-        ...base,
-        people: [person({ personId: 1, currentAge: 65, planEndAge: 85, retirementAge: 60 })],
-      };
-      const retiresLate = {
-        ...base,
-        people: [person({ personId: 1, currentAge: 65, planEndAge: 85, retirementAge: 90 })],
-      };
 
-      expect(runDeterministicPath(retiresEarly, pct(3))).toEqual(runDeterministicPath(retiresLate, pct(3)));
-    },
-  );
+      const outcome = runDeterministicPath(s, pct(0));
+
+      // Ages 60, 61, 62: still working (age < 63) — contribution lands each year.
+      expect(outcome.path[0]!.totalBalancePence).toBe(100_000n);
+      expect(outcome.path[1]!.totalBalancePence).toBe(200_000n);
+      expect(outcome.path[2]!.totalBalancePence).toBe(300_000n);
+      // Ages 63, 64: retired — no further contribution, and no spending to draw down
+      // (annualSpendingPence: 0n isolates the contribution mechanic from withdrawal).
+      expect(outcome.path[3]!.totalBalancePence).toBe(300_000n);
+      expect(outcome.path[4]!.totalBalancePence).toBe(300_000n);
+    });
+
+    it('contributions stop and withdrawal starts exactly at age === retirementAge, not the year before or after', () => {
+      const s = scenario({
+        annualSpendingPence: 500_000n, // £5,000/yr
+        wrapperWithdrawalOrder: ['gia'],
+        startingBalancesPence: { gia: 1_000_000n }, // £10,000
+        people: [
+          person({
+            personId: 1,
+            currentAge: 63,
+            retirementAge: 64,
+            planEndAge: 66, // planEndAge - currentAge = 3 simulated years (ages 63, 64, 65)
+            annualContributionPence: 200_000n, // £2,000/yr
+          }),
+        ],
+      });
+
+      const outcome = runDeterministicPath(s, pct(0));
+
+      // Age 63 (< retirementAge): contribution lands, no withdrawal despite non-zero
+      // annualSpendingPence — the gate, not just "no spending configured".
+      expect(outcome.path[0]!.totalBalancePence).toBe(1_200_000n); // £10,000 gia + £2,000 sipp
+      // Age 64 (=== retirementAge): retired from this year — no contribution, and
+      // withdrawal starts the same year, not a year late.
+      expect(outcome.path[1]!.totalBalancePence).toBe(700_000n); // £5,000 gia + £2,000 sipp
+      // Age 65: withdrawal continues, contributions stay stopped.
+      expect(outcome.path[2]!.totalBalancePence).toBe(200_000n); // £0 gia + £2,000 sipp
+    });
+
+    it('no partial-household drawdown: a two-person household draws down nothing until every alive person has retired', () => {
+      const s = scenario({
+        annualSpendingPence: 500_000n, // £5,000/yr
+        wrapperWithdrawalOrder: ['gia'],
+        startingBalancesPence: { gia: 2_000_000n }, // £20,000
+        people: [
+          person({ personId: 1, currentAge: 65, retirementAge: 65, planEndAge: 68 }), // already retired
+          person({ personId: 2, currentAge: 63, retirementAge: 65, planEndAge: 68 }), // retires in 2 years
+        ],
+      });
+
+      const outcome = runDeterministicPath(s, pct(0));
+
+      // Years 0–1: person 2 (age 63, 64) hasn't reached retirementAge 65 yet — no
+      // withdrawal at all, even though person 1 has long since retired.
+      expect(outcome.path[0]!.totalBalancePence).toBe(2_000_000n);
+      expect(outcome.path[1]!.totalBalancePence).toBe(2_000_000n);
+      // Year 2: person 2 turns 65 — both now retired, withdrawal starts.
+      expect(outcome.path[2]!.totalBalancePence).toBe(1_500_000n);
+      expect(outcome.path[3]!.totalBalancePence).toBe(1_000_000n);
+    });
+  });
 
   it('withdrawal order exhausting one wrapper entirely moves on to the next within the same year', () => {
     const s = scenario({

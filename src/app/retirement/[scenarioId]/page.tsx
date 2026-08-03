@@ -1,10 +1,13 @@
 import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { AppShell } from '@/components/AppShell';
-import { ResultsBody } from '@/components/retirement/ResultsBody';
-import { getPeople, getSetupState } from '@/lib/household/queries';
+import { ResultsBody, type PreRetirementContribution } from '@/components/retirement/ResultsBody';
+import { getPeopleWithPensions, getSetupState } from '@/lib/household/queries';
 import { getScenarios, getScenarioWithLatestRun } from '@/lib/retirement/queries';
 import { parseScenarioAssumptions } from '@/lib/retirement/scenarioAssumptions';
+import { ageAsOf } from '@/lib/retirement/personAge';
+import { todayIso } from '@/lib/accounts/validation';
+import { formatMoney, numericToPence } from '@/lib/money';
 import type { SimulationRunView } from '@/lib/retirement/simulationRunClient';
 
 /**
@@ -27,13 +30,36 @@ export default async function ScenarioResultsPage({ params }: { params: { scenar
   if (!scenario) notFound();
 
   const assumptions = parseScenarioAssumptions(scenario.assumptions);
-  const people = await getPeople(setup.householdId);
+  const people = await getPeopleWithPensions(setup.householdId);
   const personNames = people.map((p) => ({ id: p.id, name: p.name }));
 
   const referencePersonId = assumptions.people[0]!.personId;
   const referencePerson = people.find((p) => p.id === referencePersonId);
   const referencePersonName = referencePerson?.name ?? 'This person';
   const referencePersonDob = referencePerson?.dateOfBirth ?? '2000-01-01';
+
+  // Phase 4.4: who's still short of their own retirementAge, and what they're assumed
+  // to be contributing until then — surfaced here (not just silently baked into the
+  // simulation) so the household can see and correct it via Settings if it's stale.
+  const today = todayIso();
+  const preRetirementContributions: PreRetirementContribution[] = assumptions.people.flatMap((assumptionPerson) => {
+    const person = people.find((p) => p.id === assumptionPerson.personId);
+    if (!person) return [];
+    const currentAge = ageAsOf(person.dateOfBirth, today);
+    if (currentAge >= assumptionPerson.retirementAge) return [];
+    const annualContributionPence = person.pensionContributions.reduce(
+      (sum, c) => sum + numericToPence(c.amount) + numericToPence(c.employerAmount),
+      0n,
+    );
+    return [
+      {
+        personId: person.id,
+        name: person.name,
+        retirementAge: assumptionPerson.retirementAge,
+        annualContribution: formatMoney(annualContributionPence),
+      },
+    ];
+  });
 
   const otherScenarios = (await getScenarios(setup.householdId)).filter((s) => s.id !== scenarioId);
 
@@ -121,6 +147,7 @@ export default async function ScenarioResultsPage({ params }: { params: { scenar
         referencePersonName={referencePersonName}
         scenarioUpdatedAtIso={scenario.updatedAt.toISOString()}
         editHref={`/retirement/${scenarioId}/edit`}
+        preRetirementContributions={preRetirementContributions}
       />
     </AppShell>
   );

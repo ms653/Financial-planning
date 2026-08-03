@@ -11,31 +11,29 @@
  * mechanics; `runDeterministicPath` is the thin M3-specific wrapper that repeats one
  * fixed rate.
  *
- * **Explicit scope decision — no accumulation/contribution phase, and this narrows one
- * of M3's own named tests, not just a general one.** A simulated path always begins
- * already retired: `ResolvedPerson.currentAge` is this person's age at year 0 of *this*
- * path, not necessarily today's real age, and a "retire at 60 vs. 65" comparison
- * (Milestone 9) is built by resolving two separate `ResolvedScenario`s that each start at
- * a different `currentAge`, not by simulating one continuous timeline through a working
- * phase into decumulation. `retirementAge` itself is therefore never read below — see its
- * doc comment in `engineTypes.ts`. `ScenarioAssumptionsV1` (the JSONB scenario blob) has
- * no contribution-amount field — but that alone understates the real gap, caught by an
- * independent Fable review of this milestone: Phase 1 *does* already carry live
- * contribution data (`person.annual_gross_income`, the `pension_contribution` table,
- * `src/lib/db/schema.ts`) that a resolution layer could have surfaced into
- * `ResolvedPerson`; this session chose not to build that wiring. The Phase 3 milestone
- * plan itself (not just PROPOSAL.md's general Testing strategy) names "contributions past
- * assumed retirement" as one of **M3's own required tests** — so this is a real,
- * plan-contradicting scope narrowing made unilaterally in-code, not a case of the data
- * simply not existing anywhere. It is judged a defensible engineering call (a full
- * accumulation-phase model is substantial separate scope, and PROPOSAL §5's own "P1 ships
- * a pre-tax/pre-wrapper Monte Carlo" framing supports pure decumulation for Phase 3), and
- * is recorded here and in the plan file rather than silently dropped or left for a future
- * session to rediscover — but it is a deferral, not a resolution: whichever milestone
- * next touches accumulation (or Phase 4.5's contribution-aware planning) has to actually
- * build this, and the stand-in regression test in `deterministicCore.test.ts` (asserting
- * `retirementAge` has zero effect) only locks in that this deferral hasn't silently been
- * half-undone — it does not exercise the real edge case the plan named.
+ * **Accumulation phase — Phase 4.4.** Milestone 3 originally scoped this engine to pure
+ * decumulation, with `retirementAge` carried but never read (the historical decision is
+ * preserved in `docs/STATUS.md`'s Phase 3 Milestone 3 section — "Genuine,
+ * plan-contradicting scope narrowing" — since it was a real, deliberate deferral, not a
+ * case of the data not existing). Phase 4.4 builds the deferred wiring: a person is
+ * "still working" for any simulated year where `age < retirementAge`, during which their
+ * `annualContributionPence` (resolved from Phase 1's `pension_contribution` table,
+ * `resolveScenario.ts`) lands in `sipp_pension` instead of that year's spending being
+ * drawn from wrapper balances. From `age === retirementAge` onward they're "retired".
+ *
+ * **Two disclosed simplifications**, not oversights:
+ * 1. **No partial-household drawdown.** Household spending/withdrawal (steps 3–4 below)
+ *    only happen once *every alive* person has reached their own `retirementAge` — a
+ *    two-person household with one still working and one already past their
+ *    `retirementAge` draws down nothing until both have retired, on the assumption the
+ *    working person's income covers costs in the meantime. A real household might want
+ *    the retired person's share drawn down while the other still works; that's a genuine
+ *    refinement this milestone doesn't attempt, not a bug.
+ * 2. **No relief-at-source grossing-up.** `pension_contribution.amount` lands in
+ *    `sipp_pension` exactly as entered, regardless of `method` — a `relief_at_source`
+ *    contribution's real-world basic-rate top-up isn't modelled. PROPOSAL.md names
+ *    method-aware tax treatment (ANI/threshold income) as Phase 4.5's job specifically;
+ *    Phase 4.4 only needs contributions to exist and compound, not to be tax-exact yet.
  *
  * **Tax treatment** — `flatEffectiveTaxRate` applies only to `gia` and the non-PCLS
  * portion of `sipp_pension`. `cash`/`cash_isa`/`ss_isa`/`lisa` withdrawals are net of tax
@@ -46,14 +44,17 @@
  * ("ISA/PCLS excluded") not naming it explicitly.
  *
  * **Year-step ordering** — for each simulated year: (1) investment growth applied to
- * every wrapper's start-of-year balance; (2) any PCLS event(s) due this year move 25% of
- * the (post-growth) `sipp_pension` balance into `cash`, tax-free — a one-off transfer
- * between wrappers, not a direct offset against spending, so unspent PCLS proceeds
- * correctly remain on the balance sheet (as cash) rather than silently vanishing from
- * `totalBalancePence`; (3) State Pension income for anyone who has reached their claim
- * age directly offsets the year's spending need; (4) the remaining shortfall is drawn
- * from wrappers in `wrapperWithdrawalOrder`, literally, stopping once met. All amounts
- * are bigint pence throughout; rates are `RATE_SCALE`-scaled fractions
+ * every wrapper's start-of-year balance; (2) each still-working person's
+ * `annualContributionPence` lands in `sipp_pension` (Phase 4.4); (3) any PCLS event(s)
+ * due this year move 25% of the (post-growth, post-contribution) `sipp_pension` balance
+ * into `cash`, tax-free — a one-off transfer between wrappers, not a direct offset
+ * against spending, so unspent PCLS proceeds correctly remain on the balance sheet (as
+ * cash) rather than silently vanishing from `totalBalancePence`; (4) State Pension
+ * income for anyone who has reached their claim age directly offsets the year's spending
+ * need, itself zero unless every alive person has reached their `retirementAge` (Phase
+ * 4.4's "no partial-household drawdown" simplification, above); (5) the remaining
+ * shortfall is drawn from wrappers in `wrapperWithdrawalOrder`, literally, stopping once
+ * met. All amounts are bigint pence throughout; rates are `RATE_SCALE`-scaled fractions
  * (`percentStringToScaledFraction`).
  */
 
@@ -140,9 +141,22 @@ export function simulatePath(
       balances.set(type, applyAnnualReturn(balances.get(type) ?? 0n, rateScaled));
     }
 
-    // 2. PCLS events due this year: 25% of the (post-growth) pension balance moves to
-    // cash, tax-free. Not validated against the £268,275 Lump Sum Allowance — an
-    // explicit Milestone 3 simplification, not an oversight (see the plan's own note).
+    // 2. Accumulation (Phase 4.4): each still-working, alive person's annual pension
+    // contribution lands in sipp_pension. "Still working" = age < retirementAge; the
+    // year age === retirementAge, they're retired, not contributing (a clean boundary,
+    // matching the >= convention `statePensionClaimAge` below already uses for "started").
+    for (const person of scenario.people) {
+      const age = person.currentAge + yearIndex;
+      const alive = age <= person.planEndAge;
+      if (alive && age < person.retirementAge && person.annualContributionPence > 0n) {
+        balances.set('sipp_pension', (balances.get('sipp_pension') ?? 0n) + person.annualContributionPence);
+      }
+    }
+
+    // 3. PCLS events due this year: 25% of the (post-growth, post-contribution) pension
+    // balance moves to cash, tax-free. Not validated against the £268,275 Lump Sum
+    // Allowance — an explicit Milestone 3 simplification, not an oversight (see the
+    // plan's own note).
     for (const person of scenario.people) {
       const age = person.currentAge + yearIndex;
       if (person.pclsAge !== null && age === person.pclsAge && !pclsTaken.has(person.personId)) {
@@ -154,17 +168,21 @@ export function simulatePath(
       }
     }
 
-    // 3. Who's alive this year, household spending, and guaranteed income (State
+    // 4. Who's alive this year, household spending, and guaranteed income (State
     // Pension) for whoever's claimed. A person is "alive" through the year their age
-    // equals `planEndAge`, gone the year after.
+    // equals `planEndAge`, gone the year after. `householdFullyRetired` is Phase 4.4's
+    // "no partial-household drawdown" gate (module doc comment, above): false whenever
+    // any alive person hasn't yet reached their own `retirementAge`.
     let anyoneAlive = false;
     let allOriginalPeopleAlive = true;
+    let householdFullyRetired = true;
     let statePensionIncomePence = 0n;
     for (const person of scenario.people) {
       const age = person.currentAge + yearIndex;
       const alive = age <= person.planEndAge;
       if (alive) {
         anyoneAlive = true;
+        if (age < person.retirementAge) householdFullyRetired = false;
         if (age >= person.statePensionClaimAge) {
           statePensionIncomePence += person.statePensionAnnualPence;
         }
@@ -173,7 +191,7 @@ export function simulatePath(
       }
     }
 
-    const spendingPence = !anyoneAlive
+    const spendingPence = !anyoneAlive || !householdFullyRetired
       ? 0n
       : allOriginalPeopleAlive || scenario.people.length === 1
         ? scenario.annualSpendingPence
@@ -185,7 +203,7 @@ export function simulatePath(
     let shortfallPence = spendingPence - statePensionIncomePence;
     if (shortfallPence < 0n) shortfallPence = 0n; // surplus guaranteed income isn't invested in M3.
 
-    // 4. Draw the remaining shortfall from wrappers in the scenario's literal order.
+    // 5. Draw the remaining shortfall from wrappers in the scenario's literal order.
     // Money in a wrapper the order omits is simply never touched — the documented
     // "applied literally, no optimisation" simplification, not a bug.
     for (const type of scenario.wrapperWithdrawalOrder) {

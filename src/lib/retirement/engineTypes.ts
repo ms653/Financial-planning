@@ -66,15 +66,15 @@ export interface ResolvedPerson {
    */
   currentAge: number;
   /**
-   * The age this person intends to stop earned income and start drawing down (per
-   * `ScenarioAssumptionsPersonV1`'s own doc comment) — carried through for whichever
-   * resolution/UI logic needs it (deciding `currentAge` for a given comparison run,
-   * displaying it back to the household) but **deliberately not consumed by
-   * `deterministicCore.ts`'s year-by-year mechanics**. Milestone 3 scopes Phase 3 to a
-   * pure decumulation model with no accumulation/contribution phase — `ScenarioAssumptionsV1`
-   * has no contribution-amount field to model one from, matching PROPOSAL.md §5's "P1
-   * ships a pre-tax/pre-wrapper Monte Carlo" framing. A simulated path always begins
-   * already retired; `currentAge` is what actually anchors the year-by-year clock.
+   * The age this person stops contributing and starts drawing down (per
+   * `ScenarioAssumptionsPersonV1`'s own doc comment). **Phase 4.4**: consumed by
+   * `deterministicCore.ts`'s year-by-year mechanics — a person is "still working"
+   * while `age < retirementAge` (contributions land, no drawdown), "retired" from
+   * `age === retirementAge` onward. Before Phase 4.4, this field was carried but
+   * never read (a documented, later-reversed scope narrowing — see
+   * `docs/STATUS.md`'s Phase 3 Milestone 3 section for the original decision and
+   * `deterministicCore.ts`'s module doc comment for how it's now used, including the
+   * two disclosed simplifications that come with it).
    */
   retirementAge: number;
   statePensionClaimAge: number;
@@ -84,6 +84,15 @@ export interface ResolvedPerson {
    * this isn't validated against the £268,275 Lump Sum Allowance yet. */
   pclsAge: number | null;
   planEndAge: number;
+  /**
+   * This person's own annual pension contribution while still working — the sum of
+   * every `pension_contribution` row's `amount` + `employerAmount` (Phase 1's schema;
+   * `src/lib/db/schema.ts`), resolved live the same way `startingBalancesPence` is,
+   * never stored in the scenario's own JSONB. `0n` when the person has no recorded
+   * contributions. **Disclosed simplification**: applied to `sipp_pension` exactly as
+   * entered, with no relief-at-source grossing-up — see `deterministicCore.ts`.
+   */
+  annualContributionPence: bigint;
 }
 
 /**
