@@ -18,9 +18,13 @@
     "passphrase:hash": "tsx scripts/hash-passphrase.ts",
     "portfolio:verify-quotes": "tsx scripts/verify-quote-provider.ts",
     "stocks:verify-fmp": "tsx scripts/verify-fmp-provider.ts",
+    "roadmap:sync": "tsx scripts/sync-roadmap-table.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "@node-rs/argon2": "^2.0.2",
     "drizzle-orm": "^0.36.4",
     "next": "14.2.35",

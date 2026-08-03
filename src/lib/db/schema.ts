@@ -853,3 +853,37 @@ export type StockAnalysis = typeof stockAnalyses.$inferSelect;
 export type NewStockAnalysis = typeof stockAnalyses.$inferInsert;
 export type FundamentalsCache = typeof fundamentalsCache.$inferSelect;
 export type NewFundamentalsCache = typeof fundamentalsCache.$inferInsert;
+
+/**
+ * The household's custom priority order for `src/lib/roadmap/data.ts`'s
+ * `ROADMAP_ITEMS` — a single row (`USING btree ((true))`, the same singleton
+ * convention `household_singleton` established), holding an ordered array of item
+ * ids rather than one row per item with its own `sort_order`: a drag-and-drop reorder
+ * is naturally "here's the whole new order," not a series of per-row position edits.
+ *
+ * Not household-scoped (like `fundamentals_cache`) — this is a fact about the app's
+ * own development priorities, not per-household data, even though today there is only
+ * ever one household to have an opinion about it.
+ */
+export const roadmapOrder = pgTable(
+  'roadmap_order',
+  {
+    id: serial('id').primaryKey(),
+
+    /** Ordered array of `RoadmapItem.id` strings. An id from `ROADMAP_ITEMS` that's
+     * missing here (added since the household last reordered) is appended at the end,
+     * in `ROADMAP_ITEMS`'s own default order — see `resolveRoadmapOrder`
+     * (`src/lib/roadmap/queries.ts`). Never contains a `done` item's id —
+     * `saveRoadmapOrder` rejects those, since reordering something already shipped
+     * doesn't mean anything. */
+    itemIds: jsonb('item_ids').notNull(),
+
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(sql`now()`),
+  },
+  () => ({
+    singleton: uniqueIndex('roadmap_order_singleton').on(sql`(true)`),
+  }),
+);
+
+export type RoadmapOrder = typeof roadmapOrder.$inferSelect;
+export type NewRoadmapOrder = typeof roadmapOrder.$inferInsert;

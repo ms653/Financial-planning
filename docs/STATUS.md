@@ -11,11 +11,14 @@ suggested inputs — FCF growth from historical CAGR, discount rate via CAPM usi
 newly-fetched company beta), `619129e` (Milestone 3 — relative valuation +
 quality/balance-sheet health). **Also just shipped, outside Phase 4**: net worth chart
 stale-gap segments + hover tooltip, a real debt-chart sign-flip bug fix, a zero-pinned
-debt-chart baseline, and the same hover tooltip reused on per-account charts — all
-household-reported — see "Net worth chart: stale-gap segments + hover tooltip" and its
-follow-up below. `docs/PROPOSAL.md` also gained an explicit Phase 4.4 (retirement
-accumulation phase), household-raised. 730 tests passing. **Not yet committed, pushed,
-or deployed.**)
+debt-chart baseline, the same hover tooltip reused on per-account charts, an explicit
+Phase 4.4 (retirement accumulation phase, household-raised), and a new in-app Roadmap
+tab with drag-and-drop reprioritization — see "Net worth chart: stale-gap segments +
+hover tooltip," its follow-up, and "In-app Roadmap tab" below. `src/lib/roadmap/
+data.ts` is now the single source of truth for phase status/scope/dependencies;
+`docs/PROPOSAL.md`'s Phased Delivery table is generated from it and CI-enforced to
+stay that way. A new `CLAUDE.md` records the "check the roadmap before planning"
+instruction. 742 tests passing. **Not yet committed, pushed, or deployed.**)
 
 ## Done
 
@@ -1942,6 +1945,72 @@ Allocation Advisor specifically because that feature needs to reason about chang
 contributions between now and retirement, which requires an accumulation phase to
 exist first. Not implemented yet — a roadmap addition, not a code change.
 
+## In-app Roadmap tab (2026-08-03)
+
+Household ask: review the roadmap inside the app itself, drag items to reprioritize,
+and have future sessions check a reorder against each item's own dependencies before
+building something out of order. Raised immediately after: **"make sure there is one
+source of truth... we should be working from the same document for both"** — a real
+concern, addressed directly rather than shipping two independently-maintained
+descriptions of the same phases.
+
+**`src/lib/roadmap/data.ts` (`ROADMAP_ITEMS`) is now the single source of truth** for
+phase status, scope, and dependencies — not `docs/PROPOSAL.md`'s Phased Delivery
+table, which is **generated** from it (`scripts/sync-roadmap-table.ts`, `npm run
+roadmap:sync`, replacing the region between `<!-- ROADMAP_TABLE_START/END -->`
+markers). Each `RoadmapItem` carries both a plain-language `summary` (the in-app
+card's own copy) and the fuller technical `detail` (becomes the doc's table cell,
+verbatim) from one authored place, so the two views can't silently drift apart. **CI
+now enforces this mechanically**, mirroring the existing "Drizzle migration is
+up-to-date" drift guard: a new `ci.yml` step runs `roadmap:sync` and fails the build if
+`docs/PROPOSAL.md` doesn't already match — the exact class of guarantee "one document"
+implies, not just a convention to remember.
+
+**Schema**: `roadmap_order` (`drizzle/0008_careful_obadiah_stane.sql`) — a singleton
+row (`USING btree ((true))`, same convention as `household_singleton`) holding an
+ordered JSONB array of item ids, rather than one row per item with its own
+`sort_order`: a drag-and-drop reorder is naturally "here's the whole new order," not a
+series of per-row position edits. Not household-scoped (like `fundamentals_cache`) —
+a fact about the app's own priorities, not per-household data.
+
+**`resolveRoadmapOrder`** (`src/lib/roadmap/queries.ts`, unit-tested) merges a stored
+order with the current `ROADMAP_ITEMS`: an id missing from the stored order (a new
+phase added since the household last reordered) is appended at the end, in
+`ROADMAP_ITEMS`'s own default order; a stored id no longer present is silently
+dropped. **`saveRoadmapOrder`** (`src/lib/roadmap/actions.ts`, integration-tested)
+rejects a payload containing a `done` item's id, an unrecognised id, or a duplicate
+standing in for a missing one — a `done` item can't be dragged in the real UI, so any
+of these could only reach the action via a modified client.
+
+**Drag-and-drop via `@dnd-kit/core` + `@dnd-kit/sortable`** (new dependency, ~15kb) —
+the one place in this session's chart-and-roadmap work where a library beat hand-
+rolling: accessible drag reordering (keyboard operation, screen-reader announcements)
+is a genuinely different, harder problem than the net worth chart's hover tooltip
+(two SVG paths and a pointer listener). `src/components/roadmap/RoadmapBoard.tsx` (a
+small client component — hover state and now drag state are the only two places
+this codebase needs one) calls `saveRoadmapOrder` directly inside `useTransition`
+rather than through `useActionForm`, mirroring `PassphraseForm.tsx`'s own precedent for
+a Server Action with no form fields to serialize. Reverts to the last *successfully
+saved* order on failure, not the page's stale initial props. `RoadmapCard.tsx` is a
+shared, server-safe presentational component between the draggable "Up next" list and
+the static "Done" list (done items are never draggable — reordering something already
+shipped means nothing).
+
+**`CLAUDE.md`** (new, repo root): the durable "check the roadmap before planning"
+instruction the household asked for, plus the roadmap-table generation obligation —
+in the one place a future session reads first, not buried in a code comment.
+
+742 tests passing (up from 730: `resolveRoadmapOrder` unit tests, `saveRoadmapOrder`
+integration tests against a real Postgres, plus the schema integration test's table
+count/truncate-list updated for the new table — same pattern as every previous new
+table this phase). Typecheck, lint, and build all clean. Browser-verified in both
+light and dark mode via a throwaway Playwright spec (deleted after use): the page
+renders "Up next"/"Done" correctly; a real mouse-simulated drag reorders, saves, and
+survives a reload (keyboard-simulated dragging in Playwright proved unreliable for
+dnd-kit's timing — a real pointer-drag sequence was used instead for the automated
+check; manual keyboard-accessibility verification in a real browser is still
+worthwhile before calling this fully done).
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -1958,11 +2027,12 @@ exist first. Not implemented yet — a roadmap addition, not a code change.
 12. ~~Add a "how to read this" explainer to the DCF page~~ **Done, `299dfa8`** — household-requested, see "DCF page: an explainer, and data-driven suggested inputs" above.
 13. ~~Add data-driven suggested inputs (FCF growth from history, discount rate via CAPM)~~ **Done** — `be2ffef`, committed, pushed, and deployed to the live stack.
 14. ~~Milestone 3 (relative valuation, quality/balance-sheet screens)~~ **Done** — `619129e`, committed, pushed, and deployed to the live stack.
-15. ~~Net worth chart: stale-gap segments, hover tooltip, debt-chart sign-flip fix, zero-pinned debt baseline, tooltip reused on account charts~~ Implemented and tested (730 tests) — see "Net worth chart: stale-gap segments + hover tooltip" and its follow-up above. **Not yet committed, pushed, or deployed.**
-16. ~~Add retirement accumulation phase to the roadmap~~ **Done** — `docs/PROPOSAL.md`'s Phased Delivery table, Phase 4.4. Not yet implemented — this is a roadmap addition, still queued work.
-17. **Continue Phase 4**: Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
-18. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
-19. **New, this conversation**: Phase 4.4 (retirement accumulation phase, see item 16) is now scheduled but not built — a real, substantial piece of engine work (contribution modeling, glide-path to retirement) queued ahead of Phase 4.5.
+15. ~~Net worth chart: stale-gap segments, hover tooltip, debt-chart sign-flip fix, zero-pinned debt baseline, tooltip reused on account charts~~ **Done** — `3e980f5`, committed, pushed, and deployed to the live stack.
+16. ~~Add retirement accumulation phase to the roadmap~~ **Done** — `docs/PROPOSAL.md`'s Phased Delivery table (generated), Phase 4.4. Not yet implemented — this is a roadmap addition, still queued work.
+17. ~~In-app Roadmap tab, single-sourced from `src/lib/roadmap/data.ts`~~ Implemented and tested (742 tests) — see "In-app Roadmap tab" above. **Not yet committed, pushed, or deployed.** Needs a migration (`roadmap_order`) on deploy.
+18. **Continue Phase 4**: Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
+19. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
+20. **New, this conversation**: Phase 4.4 (retirement accumulation phase, see item 16) is now scheduled but not built — a real, substantial piece of engine work (contribution modeling, glide-path to retirement) queued ahead of Phase 4.5.
 
 ## Notes for Phase 3
 

@@ -57,6 +57,13 @@
       "when": 1785529873142,
       "tag": "0007_tearful_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785774933025,
+      "tag": "0008_careful_obadiah_stane",
+      "breakpoints": true
     }
   ]
 }

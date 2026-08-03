@@ -85,3 +85,17 @@ jobs:
           # drizzle-kit reads this for `generate`, but generation is offline — it never
           # connects. A syntactically valid placeholder keeps the config happy.
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/placeholder
+
+      # Same drift-guard shape as the migration check above, for a different single
+      # source of truth: docs/PROPOSAL.md's Phased Delivery table is generated from
+      # src/lib/roadmap/data.ts (npm run roadmap:sync), specifically so it and the
+      # in-app /roadmap page can never silently disagree about phase status/scope/
+      # dependencies. A hand-edit to the generated table, or a data.ts change without
+      # re-running the sync script, fails here.
+      - name: Check docs/PROPOSAL.md's roadmap table matches src/lib/roadmap/data.ts
+        run: |
+          npm run roadmap:sync
+          if ! git diff --exit-code -- docs/PROPOSAL.md; then
+            echo "::error::docs/PROPOSAL.md's Phased Delivery table doesn't match src/lib/roadmap/data.ts. Run 'npm run roadmap:sync' and commit the result."
+            exit 1
+          fi
