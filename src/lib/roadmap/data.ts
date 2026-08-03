@@ -103,8 +103,8 @@ export const ROADMAP_ITEMS: readonly RoadmapItem[] = [
     summary:
       "Where should extra money go each month — ISA, pension, or paying down debt? Needs the saving-up phase (4.4) built first, so it can reason about changing what you're contributing.",
     detail:
-      "Cash Allocation Advisor (contribution waterfall + debt-vs-save comparator + avalanche/snowball debt ordering) — depends on Phase 1 debt/allowance fields, Phase 3's UK-calibrated return assumptions, and Phase 4.4's accumulation-phase engine.",
-    status: 'queued',
+      'Cash Allocation Advisor (contribution waterfall + debt-vs-save comparator + avalanche/snowball debt ordering) — depends on Phase 1 debt/allowance fields, Phase 3\'s UK-calibrated return assumptions, and Phase 4.4\'s accumulation-phase engine. Milestone 1 (tax-status core) done: `src/lib/advisor/taxStatus.ts` computes adjusted net income and the personal-allowance taper (£100,000–£125,140) from `people.annualGrossIncome` and `pension_contribution`\'s method/employer fields, plus the £60,000 pension annual allowance restricted to the £10,000 MPAA — built and tested in isolation, no schema/UI changes yet, the same sequencing Phase 3\'s deterministic core used. Three milestones remain: the contribution waterfall itself (surfaces two real schema gaps — no employer-match-policy field, no flexibly-accessed-pension flag — plus ISA/LISA allowance-remaining tracking, which doesn\'t exist anywhere yet), the debt-vs-save comparator with avalanche/snowball ordering (arithmetic over `debt_terms`, which Phase 1 already shipped unused for exactly this), and the Advisor page/UI.',
+    status: 'in-progress',
     dependsOn: ['phase-1-accounts-net-worth', 'phase-3-retirement-engine', 'phase-4-4-accumulation'],
   },
   {

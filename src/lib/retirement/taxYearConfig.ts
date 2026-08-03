@@ -30,6 +30,46 @@ export function statePensionAnnualPence(): bigint {
 }
 
 /**
+ * Personal allowance taper (Phase 4.5's Cash Allocation Advisor). Adjusted net income
+ * (ANI) above `PERSONAL_ALLOWANCE_TAPER_START_PENCE_2026_27` withdraws the standard
+ * personal allowance at £1 per £2, until it reaches zero at
+ * `personalAllowanceTaperCeilingPence()` — derived from the two constants below rather
+ * than stored as a third independent figure, so it can't silently disagree with them
+ * (the same reasoning `statePensionAnnualPence` above already applies to its own
+ * weekly→annual derivation). £12,570 has been frozen since 2021/22; Autumn Budget 2025
+ * extended that freeze to April 2031, so it holds for 2026/27 unchanged
+ * (`docs/PROPOSAL.md` §2).
+ */
+export const PERSONAL_ALLOWANCE_PENCE_2026_27 = 12_570_00n;
+export const PERSONAL_ALLOWANCE_TAPER_START_PENCE_2026_27 = 100_000_00n;
+
+export function personalAllowanceTaperCeilingPence(): bigint {
+  return PERSONAL_ALLOWANCE_TAPER_START_PENCE_2026_27 + 2n * PERSONAL_ALLOWANCE_PENCE_2026_27;
+}
+
+/**
+ * Pension annual allowance (Phase 4.5). £60,000/year standard allowance, restricted to
+ * £10,000/year (the Money Purchase Annual Allowance, MPAA) for anyone who has already
+ * flexibly accessed a pension — `docs/PROPOSAL.md` §4's waterfall step 7 caps further
+ * pension contributions at whichever of these applies, before carry-forward.
+ *
+ * The taper that further restricts this allowance for high earners (threshold income
+ * over £200,000 AND adjusted income over £260,000, tapering £1 per £2 of adjusted
+ * income above £260,000 down to the same £10,000 floor) is deliberately **not**
+ * encoded here yet — confirmed against gov.uk's own "Tapered Annual Allowance"
+ * guidance (gov.uk/guidance/pension-schemes-work-out-your-tapered-annual-allowance,
+ * fetched 2026-08-03) but `docs/PROPOSAL.md` explicitly defers the exact
+ * threshold-income/adjusted-income *worksheet mechanics* (how salary sacrifice is
+ * added back, etc.) to Phase 4.5 implementation, and that worksheet is what actually
+ * consumes these two constants — landing them without the worksheet that uses them
+ * would be a half-finished feature. They belong with the threshold/adjusted-income
+ * calculation itself, in `src/lib/advisor/taxStatus.ts`, once that's built (Milestone
+ * 2, not this one).
+ */
+export const PENSION_ANNUAL_ALLOWANCE_PENCE_2026_27 = 60_000_00n;
+export const MPAA_PENCE_2026_27 = 10_000_00n;
+
+/**
  * A UK State Pension age band, as gov.uk's own "State Pension age timetable" states it
  * (published under the Pensions Act 2007 and Pensions Act 2014). Fetched and
  * transcribed 2026-07-27 from

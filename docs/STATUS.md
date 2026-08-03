@@ -2248,6 +2248,71 @@ outcome than Phase 4.4 alone produced for the same household). Light and dark.
 `ROADMAP_ITEMS`' Phase 4.4 entry (`detail`) updated to describe the extended scope;
 `docs/PROPOSAL.md`'s generated table re-synced. No status change — already `done`.
 
+## Phase 4.5, Milestone 1: tax-status core
+
+Phase 4.4 and its follow-up closed out all of Phase 4.5's `dependsOn`, so this is the
+next item on the roadmap. `docs/PROPOSAL.md` §4 specifies the Cash Allocation Advisor
+as two parts — a contribution waterfall and a debt-vs-save comparator — sitting on top
+of UK tax logic the proposal itself calls "arguably higher-risk than the Monte Carlo
+engine... hard right answers and no reference-calculator excuse." Too large for one
+pass (comparable in scope to all of Phase 3), so it's split into milestones the same
+way; this one builds the riskiest, most easily unit-testable piece first and in
+isolation — no schema changes, no UI, no DB wiring yet — mirroring how Phase 3's
+Milestone 3 built the deterministic engine core before `resolveScenario.ts` or any
+route/UI touched it.
+
+**What shipped**: `src/lib/retirement/taxYearConfig.ts` gained
+`PERSONAL_ALLOWANCE_PENCE_2026_27` (£12,570, frozen through April 2031 per Autumn
+Budget 2025), `PERSONAL_ALLOWANCE_TAPER_START_PENCE_2026_27` (£100,000),
+`personalAllowanceTaperCeilingPence()` (derived as start + 2×allowance = £125,140,
+rather than a third independent constant that could disagree with the other two),
+`PENSION_ANNUAL_ALLOWANCE_PENCE_2026_27` (£60,000) and `MPAA_PENCE_2026_27`
+(£10,000) — its own doc comment already earmarked this file for exactly these
+constants. New module `src/lib/advisor/taxStatus.ts`: pure functions, no DB/fetch
+access, same posture as `deterministicCore.ts`/`dcf.ts`. `computeAdjustedNetIncomePence`
+implements the ANI worksheet (relief-at-source contributions deducted grossed-up
+÷0.8; salary-sacrifice/net-pay deducted at face value; employer contributions never
+subtracted), `computePersonalAllowanceTaperStatus` derives the £100k–£125,140
+withdrawal from it, and `computeAnnualAllowanceStatus` applies the £10,000 MPAA
+restriction to the £60,000 standard allowance.
+
+**Two real schema gaps surfaced by this research, deliberately not fixed here** since
+neither is consumed until Milestone 2: (a) there is no "employer pension match policy"
+field anywhere — only `employerAmount`, the amount currently being received, not the
+match *schedule* the waterfall's "raise contributions to capture the full employer
+match" step needs; (b) there is no "has this person already flexibly accessed a
+pension" flag, which the MPAA restriction depends on —
+`computeAnnualAllowanceStatus` takes it as an explicit parameter for exactly this
+reason. Both need a small migration when Milestone 2 wires real household data in.
+
+**Deliberately deferred, not implemented**: the pension annual allowance's own
+income-based taper (threshold income over £200,000 AND adjusted income over £260,000,
+tapering £1 per £2 of adjusted income above £260,000 down to the same £10,000 floor as
+MPAA) — confirmed against gov.uk's own guidance
+(gov.uk/guidance/pension-schemes-work-out-your-tapered-annual-allowance, fetched
+2026-08-03) but `docs/PROPOSAL.md` §2 explicitly defers the exact worksheet mechanics
+(salary sacrificed under arrangements set up on or after 9 July 2015 is added back for
+threshold income but not for ANI — "a single shared formula gets this backwards for
+exactly the high earners this feature targets") to Phase 4.5 implementation, and that
+worksheet is what would actually consume the two threshold constants. Landing the
+constants without the worksheet that uses them would be a half-finished feature, so
+both wait for the milestone that builds it. Also salary-only for ANI (real ANI
+includes dividends/savings/rental/benefits-in-kind) — the same disclosed P1 limitation
+`docs/PROPOSAL.md` §2 already names.
+
+**Tests**: 14 new table-driven vectors in `taxStatus.test.ts` (ANI under each
+contribution method, employer contributions never affecting ANI, taper-zone
+boundaries at exactly £100,000/£125,140 and just either side of them, a contribution
+that pulls ANI back out of the taper zone, MPAA restricting/not restricting the
+effective allowance). 616 tests passing. Typecheck and lint clean. No migration, so no
+manual browser check needed — nothing user-facing changes yet, same verification scope
+as Phase 3's own Milestone 3.
+
+`ROADMAP_ITEMS`' Phase 4.5 entry: `status` → `in-progress`, `detail` updated to name
+this milestone as shipped and the three remaining ones (contribution waterfall + the
+two schema-gap fixes; debt-vs-save comparator + avalanche/snowball; the Advisor page
+itself). `docs/PROPOSAL.md`'s generated table re-synced.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -2272,7 +2337,7 @@ outcome than Phase 4.4 alone produced for the same household). Light and dark.
 20. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
 21. ~~Phase 4.4 (retirement accumulation phase)~~ **Done** — see "Phase 4.4: retirement accumulation phase" above.
 22. ~~Phase 4.4 follow-up: regular contributions to non-pension accounts (GIA/ISA/LISA/cash, personal and joint)~~ **Done, household-requested** — see "Phase 4.4 follow-up" above. 782 tests passing. **Committed, pushed, and deployed to the live stack.**
-23. **Next phase**: Phase 4.5 (Cash Allocation Advisor) is next on the roadmap — its `dependsOn` (Phase 1, Phase 3, Phase 4.4) are all now done.
+23. ~~Next phase: Phase 4.5 (Cash Allocation Advisor)~~ **Started.** Milestone 1 (tax-status core — see "Phase 4.5, Milestone 1" above) shipped. Three milestones remain: the contribution waterfall itself (plus two small schema gaps it surfaces — an employer-match-policy field and a flexibly-accessed-pension flag), the debt-vs-save comparator with avalanche/snowball ordering, and the Advisor page/UI.
 
 ## Notes for Phase 3
 
