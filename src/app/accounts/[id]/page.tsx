@@ -79,16 +79,24 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
   const balance = account.latestAmount === null ? null : numericToPence(account.latestAmount);
   const { main, fraction } = balance === null ? { main: '—', fraction: '' } : formatMoneyParts(balance);
 
-  const points = account.history.map((entry) => ({
-    date: entry.snapshotDate,
-    pence: numericToPence(entry.amount),
-  }));
-  const path = points.length >= 2 ? seriesToPath(points, { width: 760, height: 120, padding: 6 }) : null;
-
   // For a debt, the line falls as the household pays down — which is progress. It's drawn in
   // the sage (positive) tone rather than clay so it doesn't read as decline, per the spec.
   const isDebt = meta.isLiability;
   const strokeColour = isDebt ? 'var(--sage)' : 'var(--brass)';
+
+  // A debt's own `amount` is stored negative (Phase 1's convention — see schema.ts),
+  // moving *up* towards zero as it's paid down. Plotted as-is, `seriesToPath`'s
+  // largest-value-at-top scaling would draw that as a *rising* line — the opposite of
+  // the "falling line is progress" caption above and of the "Outstanding" figure this
+  // same page shows everywhere else (the balance history table below already flips
+  // the sign for exactly this reason). Flipped here too, so the chart shows the
+  // outstanding amount falling as it's paid off, matching both the caption and the
+  // rest of the page.
+  const points = account.history.map((entry) => ({
+    date: entry.snapshotDate,
+    pence: isDebt ? -numericToPence(entry.amount) : numericToPence(entry.amount),
+  }));
+  const path = points.length >= 2 ? seriesToPath(points, { width: 760, height: 120, padding: 6 }) : null;
 
   // Live pricing is genuinely optional (docs/PROPOSAL.md's Open Banking posture, applied
   // here to market data too): with no key configured, holdings just render without a

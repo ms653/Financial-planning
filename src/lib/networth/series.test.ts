@@ -5,7 +5,9 @@ import {
   isTrendRange,
   rangeStartDate,
   seriesToPath,
+  seriesToSegments,
   trendDelta,
+  STALE_GAP_DAYS,
   type SeriesSnapshot,
 } from '@/lib/networth/series';
 import { penceToNumeric } from '@/lib/money';
@@ -372,5 +374,77 @@ describe('seriesToPath', () => {
       { width: 100, height: 100 },
     )!;
     expect(path.line).not.toContain('NaN');
+  });
+});
+
+describe('seriesToSegments', () => {
+  const options = { width: 760, height: 132 };
+
+  it('returns one segment per consecutive pair of points', () => {
+    const points = [
+      { date: '2026-01-01', pence: 100n },
+      { date: '2026-02-01', pence: 110n },
+      { date: '2026-03-01', pence: 120n },
+    ];
+    expect(seriesToSegments(points, options)).toHaveLength(2);
+  });
+
+  it('returns [] for zero or one points', () => {
+    expect(seriesToSegments([], options)).toEqual([]);
+    expect(seriesToSegments([{ date: '2026-01-01', pence: 100n }], options)).toEqual([]);
+  });
+
+  it(`flags a gap over ${STALE_GAP_DAYS} days as stale, and one at/under it as not`, () => {
+    const points = [
+      { date: '2026-01-01', pence: 100n },
+      { date: '2026-01-01', pence: 100n }, // placeholder, overwritten per-case below
+    ];
+
+    const justUnder = seriesToSegments(
+      [points[0]!, { date: '2026-03-31', pence: 100n }], // 89 days
+      options,
+    );
+    expect(justUnder[0]!.stale).toBe(false);
+
+    const exactlyAt = seriesToSegments(
+      [points[0]!, { date: '2026-04-01', pence: 100n }], // 90 days
+      options,
+    );
+    expect(exactlyAt[0]!.stale).toBe(false);
+
+    const over = seriesToSegments(
+      [points[0]!, { date: '2026-04-02', pence: 100n }], // 91 days
+      options,
+    );
+    expect(over[0]!.stale).toBe(true);
+  });
+
+  it("matches seriesToPath's own coordinates for the same points and options", () => {
+    const points = [
+      { date: '2026-01-01', pence: 100n },
+      { date: '2026-04-01', pence: 200n },
+      { date: '2026-07-01', pence: 150n },
+    ];
+    const path = seriesToPath(points, options)!;
+    const segments = seriesToSegments(points, options);
+
+    // The full line's coordinates, in order, should equal the concatenation of each
+    // segment's own two endpoints (each segment's end = the next segment's start).
+    const pathCoords = path.line.replace('M', '').split(' L');
+    expect(segments[0]!.path).toBe(`M${pathCoords[0]} L${pathCoords[1]}`);
+    expect(segments[1]!.path).toBe(`M${pathCoords[1]} L${pathCoords[2]}`);
+  });
+
+  it('flags only the long gap in a realistic three-point series, not the short one either side', () => {
+    // Mirrors the real household case this feature was built for: a recent cluster of
+    // updates (a few days apart) preceded by a long quiet stretch (well over a year).
+    const points = [
+      { date: '2025-02-01', pence: 100_000n },
+      { date: '2026-07-26', pence: 100_000n }, // ~540 days later — stale
+      { date: '2026-08-03', pence: 180_000n }, // 8 days later — not stale
+    ];
+    const segments = seriesToSegments(points, options);
+    expect(segments[0]!.stale).toBe(true);
+    expect(segments[1]!.stale).toBe(false);
   });
 });

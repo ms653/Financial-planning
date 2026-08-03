@@ -1,7 +1,30 @@
 import Link from 'next/link';
 import { formatMoney, formatMoneyParts } from '@/lib/money';
 import { FreshnessLine } from '@/components/ui/States';
-import { RANGE_DESCRIPTIONS, TREND_RANGES, seriesToPath, type NetWorthSeries, type TrendDelta, type TrendRange } from '@/lib/networth/series';
+import { NetWorthTrendChart } from '@/components/networth/NetWorthTrendChart';
+import {
+  RANGE_DESCRIPTIONS,
+  TREND_RANGES,
+  pointPixelCoordinates,
+  seriesToPath,
+  seriesToSegments,
+  type NetWorthSeries,
+  type TrendDelta,
+  type TrendRange,
+} from '@/lib/networth/series';
+
+/** "26 Jul 2026" — used only for the hover tooltip's date label; every other date in
+ * this codebase is displayed as a plain ISO string (see the various `aria-label`s
+ * below), so this is deliberately local rather than a shared formatter nothing else
+ * needs yet. */
+function formatDateLabel(date: string): string {
+  return new Date(`${date}T00:00:00Z`).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
 
 /**
  * The dashboard hero: total net worth, the change across the window, a range selector, and
@@ -55,7 +78,8 @@ function DeltaLine({ delta, range }: { delta: TrendDelta; range: TrendRange }) {
  * to the card width the way the mockup's does.
  */
 function TrendChart({ series, range }: { series: NetWorthSeries; range: TrendRange }) {
-  const path = seriesToPath(series.points, { width: 760, height: 132, padding: 6 });
+  const dimensions = { width: 760, height: 132, padding: 6 };
+  const path = seriesToPath(series.points, dimensions);
 
   if (!path || series.points.length < 2) {
     // DESIGN_SPEC.md, Account Detail edge case, applied here too: "chart area shows a single
@@ -70,43 +94,42 @@ function TrendChart({ series, range }: { series: NetWorthSeries; range: TrendRan
 
   const first = series.first!;
   const last = series.last!;
+  const segments = seriesToSegments(series.points, dimensions);
+  const hasStaleSegment = segments.some((segment) => segment.stale);
+
+  // Every value here is a plain number or a pre-formatted string — never the raw
+  // `bigint` `pence` — so this is safe to hand across the server/client boundary to
+  // `NetWorthTrendChart` (see that component's own doc comment).
+  const coordinates = pointPixelCoordinates(series.points, dimensions);
+  const hoverPoints = series.points.map((point, index) => ({
+    x: coordinates[index]!.x,
+    y: coordinates[index]!.y,
+    dateLabel: formatDateLabel(point.date),
+    amountLabel: formatMoney(point.pence, { showPence: true }),
+  }));
 
   return (
     <div className="mt-6">
-      <svg
-        viewBox="0 0 760 132"
-        preserveAspectRatio="none"
-        role="img"
-        aria-label={`Net worth trend ${RANGE_DESCRIPTIONS[range]}, from ${formatMoney(
+      <NetWorthTrendChart
+        width={dimensions.width}
+        height={dimensions.height}
+        areaPath={path.area}
+        segments={segments}
+        hoverPoints={hoverPoints}
+        ariaLabel={`Net worth trend ${RANGE_DESCRIPTIONS[range]}, from ${formatMoney(
           first.pence,
         )} on ${first.date} to ${formatMoney(last.pence)} on ${last.date}.`}
-        className="h-[132px] w-full"
-      >
-        <defs>
-          <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--brass)" stopOpacity="0.28" />
-            <stop offset="100%" stopColor="var(--brass)" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <g stroke="var(--line)" strokeWidth="1">
-          <line x1="0" y1="22" x2="760" y2="22" />
-          <line x1="0" y1="66" x2="760" y2="66" />
-          <line x1="0" y1="110" x2="760" y2="110" />
-        </g>
-        <path d={path.area} fill="url(#trendFill)" />
-        <path
-          d={path.line}
-          fill="none"
-          stroke="var(--brass)"
-          strokeWidth="2.25"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-      </svg>
+      />
 
       {series.downsampled ? (
         <p className="mt-1.5 text-[11px] text-content-faint">
           Showing a sample of your history to keep the chart readable.
+        </p>
+      ) : null}
+      {hasStaleSegment ? (
+        <p className="mt-1.5 text-[11px] text-content-faint">
+          A dashed section means that period’s figure was carried forward from an
+          older update, not freshly recorded.
         </p>
       ) : null}
     </div>

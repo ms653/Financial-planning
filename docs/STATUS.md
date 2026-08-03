@@ -8,9 +8,11 @@ stack — `7bd4214`. **Milestone 2 (DCF calculator)** shipped and deployed — `
 (calculator), `a520a39` (a real Legacy-endpoint FMP bug, caught and fixed via live-key
 verification), `299dfa8` (a "how to read this" explainer), `be2ffef` (data-driven
 suggested inputs — FCF growth from historical CAGR, discount rate via CAPM using a
-newly-fetched company beta). **Milestone 3 (relative valuation + quality/balance-sheet
-health)** is implemented and tested — see "Phase 4, Milestone 3" below. 723 tests
-passing. **Not yet committed, pushed, or deployed.**)
+newly-fetched company beta), `619129e` (Milestone 3 — relative valuation +
+quality/balance-sheet health). **Also just shipped, outside Phase 4**: net worth chart
+stale-gap segments + hover tooltip, plus a real debt-chart sign-flip bug fix, both
+household-reported — see "Net worth chart: stale-gap segments + hover tooltip" below.
+728 tests passing. **Not yet committed, pushed, or deployed.**)
 
 ## Done
 
@@ -1833,6 +1835,54 @@ both sections correctly, including the peer-average calculation and a peer with 
 data shown as em dashes rather than omitted; a statements-gated ticker shows the same
 "not available" message on both new sections as the DCF section already does.
 
+## Net worth chart: stale-gap segments + hover tooltip (2026-08-03)
+
+Household-reported, using the real dashboard: the net worth trend line looked like a
+staircase compared to an individual account's own (smooth) chart, and a pension update
+that landed 13 months after its last one produced what looked like an unexplained
+spike. Investigated rather than assumed: both charts already share one geometry
+function (`seriesToPath`, `src/lib/networth/series.ts`) with an identical
+time-proportional x-axis — the staircase is real and inherent to aggregating several
+accounts' independent update dates (`buildNetWorthSeries`'s own doc comment already
+explains why), and the "spike" is a genuine, honest reflection of a long gap with no
+recorded data, not a rendering bug. Chose **not** to smooth it — this codebase already
+has a deliberate stance (`downsamplePoints`'s doc comment) against inventing values
+that were never a real net worth on any real date, and interpolating across a 13-month
+gap would do exactly that.
+
+**Shipped instead**: a long gap (`> STALE_GAP_DAYS`, 90 days, between two *plotted*
+points) now renders as a dashed, lower-opacity segment rather than a confident solid
+line, with an explanatory caption. `seriesToPath`'s coordinate math was extracted into
+a shared `computeCoordinates` helper so a new `seriesToSegments` (per-segment paths +
+staleness) can never disagree with it pixel-for-pixel. Documented, known limitation:
+staleness is judged by the gap between plotted net-worth points, not by how old any
+one contributing account's own balance is — good enough for this household's actual
+pattern (a handful of accounts updated in bursts), not built to handle a portfolio with
+constant partial activity masking one quietly-stale account.
+
+**Also added, same conversation**: hovering the net worth chart shows the date and
+exact figure at that point (`NetWorthTrendChart.tsx`, new — a small client component
+split out of the otherwise-server-rendered `NetWorthHero.tsx` purely because hover
+state needs one; receives only pre-computed pixel positions and pre-formatted strings
+from the server, never a raw `bigint`).
+
+**Also fixed, found by the household while reviewing this work**: the per-account
+chart for a debt (e.g. the mortgage) plotted the raw, negative stored balance, which
+*rises* toward zero as the debt is paid off — contradicting its own "a falling line is
+progress" caption and the "Outstanding" figure shown everywhere else on the same page
+(which already flips the sign). The balance-history table below it already did this
+correctly; the chart didn't. Fixed in `src/app/accounts/[id]/page.tsx` by flipping the
+sign for debt accounts before building the chart's points, same as the table already
+does — now the line genuinely falls as a debt is paid down.
+
+728 tests passing (up from 723: `seriesToSegments` unit tests, including a consistency
+check against `seriesToPath`'s own coordinates for the same input). Typecheck, lint,
+and build all clean. Browser-verified in both light and dark mode via a throwaway
+Playwright spec (deleted after use): seeded the household's own real gap pattern (a
+long quiet stretch, then a recent cluster) and confirmed three dashed segments plus one
+solid one render correctly, the hover tooltip shows the right date and figure, and the
+debt chart now falls (£225,000 → £78,000) rather than rises.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -1848,9 +1898,10 @@ data shown as em dashes rather than omitted; a statements-gated ticker shows the
 11. ~~Commit, push, and deploy Milestone 2~~ **Done** — `333809d` (calculator), `a520a39` (the Legacy-endpoint fix), `299dfa8` (the "how to read this" explainer), all live on the real stack.
 12. ~~Add a "how to read this" explainer to the DCF page~~ **Done, `299dfa8`** — household-requested, see "DCF page: an explainer, and data-driven suggested inputs" above.
 13. ~~Add data-driven suggested inputs (FCF growth from history, discount rate via CAPM)~~ **Done** — `be2ffef`, committed, pushed, and deployed to the live stack.
-14. ~~Milestone 3 (relative valuation, quality/balance-sheet screens)~~ Implemented and tested (723 tests) — see "Phase 4, Milestone 3" above. **Not yet committed, pushed, or deployed.**
-15. **Continue Phase 4**: Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
-16. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
+14. ~~Milestone 3 (relative valuation, quality/balance-sheet screens)~~ **Done** — `619129e`, committed, pushed, and deployed to the live stack.
+15. ~~Net worth chart: stale-gap segments, hover tooltip, debt-chart sign-flip fix~~ Implemented and tested (728 tests) — see "Net worth chart: stale-gap segments + hover tooltip" above. **Not yet committed, pushed, or deployed.**
+16. **Continue Phase 4**: Milestone 4 (fundamentals checklist), Milestone 5 (watchlist UI polish + the full workbench screen bringing all methods together, nav slot already wired), per the milestone breakdown in this session's plan.
+17. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
 
 ## Notes for Phase 3
 

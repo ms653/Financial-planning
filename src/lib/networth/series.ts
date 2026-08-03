@@ -214,57 +214,144 @@ export function trendDelta(series: NetWorthSeries): TrendDelta | null {
   };
 }
 
+export interface PixelCoordinate {
+  x: number;
+  y: number;
+}
+
+/** Public wrapper around `computeCoordinates`, for callers that need a point's pixel
+ * position without the full path string (e.g. a hover tooltip positioning itself
+ * against a specific point) — never exposes `bigint` itself, only derived pixels, so
+ * this is safe to compute server-side and hand plain numbers across to a client
+ * component alongside separately-formatted display text. */
+export function pointPixelCoordinates(
+  points: readonly SeriesPoint[],
+  options: { width: number; height: number; padding?: number },
+): PixelCoordinate[] {
+  if (points.length === 0) return [];
+  return computeCoordinates(points, options);
+}
+
 /**
- * Map the series onto an SVG path, in a fixed viewBox.
+ * Shared pixel-scaling math for `seriesToPath` and `seriesToSegments` — extracted so
+ * the two can never silently disagree about where a given point lands.
  *
- * This is the one place a `number` is allowed to hold something derived from money: the
- * output is a pixel coordinate, where a sub-penny rounding error is invisible. Nothing
- * displayed as a figure comes from here.
+ * This is the one place a `number` is allowed to hold something derived from money:
+ * the output is a pixel coordinate, where a sub-penny rounding error is invisible.
+ * Nothing displayed as a figure comes from here.
  *
- * X position is proportional to elapsed calendar time between the first and last point,
- * not point index. A household whose only recent updates land a day or two apart, after
- * a long stretch with no snapshot at all, has genuinely sparse data — plotting those
- * points at evenly-spaced indices regardless of the real gap between their dates would
- * stretch that day or two across the *entire* chart width, drawing a smooth-looking
- * trend line over what was actually a long flat stretch followed by a sudden change.
- * `buildNetWorthSeries` now always anchors the window's actual start with a real point
- * (its own doc comment explains why); this is the other half of the same fix — the
- * anchor point only tells the honest story if its x position reflects how much real time
- * separates it from what follows.
+ * X position is proportional to elapsed calendar time between the first and last
+ * point, not point index. A household whose only recent updates land a day or two
+ * apart, after a long stretch with no snapshot at all, has genuinely sparse data —
+ * plotting those points at evenly-spaced indices regardless of the real gap between
+ * their dates would stretch that day or two across the *entire* chart width, drawing
+ * a smooth-looking trend line over what was actually a long flat stretch followed by
+ * a sudden change. `buildNetWorthSeries` always anchors the window's actual start
+ * with a real point (its own doc comment explains why); this is the other half of the
+ * same fix — the anchor point only tells the honest story if its x position reflects
+ * how much real time separates it from what follows. A flat series or single-date
+ * series has no range/span to scale against — centred rather than divided by zero.
  */
+function computeCoordinates(
+  points: readonly SeriesPoint[],
+  options: { width: number; height: number; padding?: number },
+): PixelCoordinate[] {
+  const { width, height, padding = 4 } = options;
+  const values = points.map((point) => Number(point.pence));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const usableHeight = height - padding * 2;
+
+  const firstMs = dateToMs(points[0]!.date);
+  const lastMs = dateToMs(points.at(-1)!.date);
+  const timeSpanMs = lastMs - firstMs || 1;
+
+  return points.map((point) => {
+    const x =
+      points.length === 1 || lastMs === firstMs
+        ? width / 2
+        : ((dateToMs(point.date) - firstMs) / timeSpanMs) * width;
+    const ratio = max === min ? 0.5 : (Number(point.pence) - min) / span;
+    const y = padding + (1 - ratio) * usableHeight;
+    return { x, y };
+  });
+}
+
+function dateToMs(date: string): number {
+  return Date.parse(`${date}T00:00:00Z`);
+}
+
+/** Map the series onto a single, continuous SVG path (and its filled area), in a
+ * fixed viewBox — see `computeCoordinates` for the pixel-scaling reasoning shared
+ * with `seriesToSegments` below. */
 export function seriesToPath(
   points: readonly SeriesPoint[],
   options: { width: number; height: number; padding?: number },
 ): { line: string; area: string } | null {
   if (points.length === 0) return null;
 
-  const { width, height, padding = 4 } = options;
-  const values = points.map((point) => Number(point.pence));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  // A flat series has no range to scale against; centre it rather than dividing by zero.
-  const span = max - min || 1;
-  const usableHeight = height - padding * 2;
-
-  const dateMs = (date: string): number => Date.parse(`${date}T00:00:00Z`);
-  const firstMs = dateMs(points[0]!.date);
-  const lastMs = dateMs(points.at(-1)!.date);
-  // All points sharing one date (a single-point series, or every point deduplicated onto
-  // the same day) has no time span to scale against — centre it, same reasoning as the
-  // flat-value case above, rather than dividing by zero.
-  const timeSpanMs = lastMs - firstMs || 1;
-
-  const coordinates = points.map((point) => {
-    const x =
-      points.length === 1 || lastMs === firstMs
-        ? width / 2
-        : ((dateMs(point.date) - firstMs) / timeSpanMs) * width;
-    const ratio = max === min ? 0.5 : (Number(point.pence) - min) / span;
-    const y = padding + (1 - ratio) * usableHeight;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  });
+  const { width, height } = options;
+  const coordinates = computeCoordinates(points, options).map((c) => `${c.x.toFixed(2)},${c.y.toFixed(2)}`);
 
   const line = `M${coordinates.join(' L')}`;
   const area = `${line} L${width.toFixed(2)},${height} L0,${height} Z`;
   return { line, area };
+}
+
+/** A gap longer than this between two consecutive *plotted* points is rendered
+ * visually distinct (dashed, lower opacity) rather than as a confident solid line —
+ * see `seriesToSegments`'s own doc comment for the full reasoning and its known
+ * limitation. */
+export const STALE_GAP_DAYS = 90;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+export interface PathSegment {
+  /** A two-point `M x,y L x,y` path for exactly one consecutive pair of points. */
+  path: string;
+  /** True when the gap between this pair's dates exceeds `STALE_GAP_DAYS` — i.e. the
+   * value carried into this segment was last confirmed a long time before it's drawn,
+   * not freshly recorded. */
+  stale: boolean;
+}
+
+/**
+ * Splits the same line `seriesToPath` would draw into one path per consecutive pair
+ * of points, each flagged `stale` when the real calendar gap between that pair is
+ * long — so a caller can render a long, carried-forward gap (e.g. one account update
+ * that landed over a year after its last one) as visually distinct from a genuine
+ * closely-tracked trend, without inventing a smoothed value for what happened during
+ * the gap. Reuses `computeCoordinates`, so every segment endpoint lands at exactly
+ * the pixel `seriesToPath`'s own single path would have used.
+ *
+ * **Known, deliberate limitation**: staleness is judged by the gap between plotted
+ * *net-worth* points, not by how old any one contributing account's own balance is.
+ * `buildNetWorthSeries` adds a plotted point every time *any* account updates — so a
+ * household where some accounts update often would see frequent plotted points (no
+ * gap flagged) even while one particular account's own contribution is quietly very
+ * stale underneath. Catching that properly would mean threading per-account staleness
+ * through the series itself, a materially bigger change than this function makes —
+ * not done here because it isn't how this household's actual data looks (a handful of
+ * accounts that tend to get updated in bursts, not a large portfolio with constant
+ * partial activity masking one stale holding).
+ */
+export function seriesToSegments(
+  points: readonly SeriesPoint[],
+  options: { width: number; height: number; padding?: number },
+): PathSegment[] {
+  if (points.length < 2) return [];
+
+  const coordinates = computeCoordinates(points, options);
+  const segments: PathSegment[] = [];
+  for (let i = 1; i < points.length; i += 1) {
+    const from = coordinates[i - 1]!;
+    const to = coordinates[i]!;
+    const gapDays = (dateToMs(points[i]!.date) - dateToMs(points[i - 1]!.date)) / MS_PER_DAY;
+    segments.push({
+      path: `M${from.x.toFixed(2)},${from.y.toFixed(2)} L${to.x.toFixed(2)},${to.y.toFixed(2)}`,
+      stale: gapDays > STALE_GAP_DAYS,
+    });
+  }
+  return segments;
 }
