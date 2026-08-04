@@ -71,6 +71,13 @@
       "when": 1785791023751,
       "tag": "0009_burly_war_machine",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785794974081,
+      "tag": "0010_common_sasquatch",
+      "breakpoints": true
     }
   ]
 }

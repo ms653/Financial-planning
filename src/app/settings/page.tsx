@@ -3,11 +3,13 @@ import { AppShell } from '@/components/AppShell';
 import { BackupStatusIndicator } from '@/components/BackupStatusIndicator';
 import { PersonForm } from '@/components/setup/SetupSteps';
 import { PersonPanel } from '@/components/settings/PersonPanel';
+import { EmergencyFundForm } from '@/components/settings/EmergencyFundForm';
 import { getBackupStatus } from '@/lib/backup/status';
 import {
   addPensionContribution,
   addPerson,
   deletePensionContribution,
+  updateEmergencyFundTarget,
   updatePerson,
 } from '@/lib/household/actions';
 import { getPeopleWithPensions, getSetupState } from '@/lib/household/queries';
@@ -82,6 +84,7 @@ export default async function SettingsPage() {
                     person.annualGrossIncome === null
                       ? null
                       : formatMoney(numericToPence(person.annualGrossIncome)),
+                  hasFlexiblyAccessedPension: person.hasFlexiblyAccessedPension,
                   contributions: person.pensionContributions.map((contribution) => ({
                     id: contribution.id,
                     method: contribution.method,
@@ -104,6 +107,20 @@ export default async function SettingsPage() {
           </p>
           <div className="mt-5">
             <PersonForm action={addPerson} />
+          </div>
+        </section>
+
+        <section className="rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6">
+          <h2 className="font-serif text-lg text-content">Emergency fund</h2>
+          <p className="mt-1 text-xs text-content-faint">
+            A target balance for the household’s buffer. Tag which cash account(s) count towards
+            it on each account’s own page.
+          </p>
+          <div className="mt-4">
+            <EmergencyFundForm
+              currentTarget={setup.emergencyFundTarget}
+              updateAction={updateEmergencyFundTarget}
+            />
           </div>
         </section>
 

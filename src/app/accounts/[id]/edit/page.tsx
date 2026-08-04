@@ -79,6 +79,7 @@ export default async function EditAccountPage({ params }: { params: { id: string
                 ? // Joint: everyone selected, which is what >1 selected means.
                   people.map((person) => person.id)
                 : [account.personId],
+            isEmergencyFund: account.isEmergencyFund,
             debtTerms: account.debtTerms
               ? {
                   interestRate: account.debtTerms.interestRate,

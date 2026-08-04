@@ -313,3 +313,25 @@ export function ukHistoricalRealReturns(): readonly UkHistoricalReturnYear[] {
 
   return cached;
 }
+
+/**
+ * The arithmetic mean of this series' real equity returns, as a percent string (e.g.
+ * `"5.234"`) — Phase 4.5's default "realistic investment returns" benchmark for the
+ * contribution waterfall's high-interest-debt comparison (any debt rate above this is
+ * "beats realistic returns", per `docs/PROPOSAL.md` §4). Arithmetic, not geometric:
+ * this is used only as a one-off comparison threshold, not to compound a portfolio
+ * over time, so the simpler mean is proportionate — the bootstrap engine (Milestone 5)
+ * still samples the full year-by-year series for compounding, where the geometric
+ * distinction actually matters and a mean would be the wrong tool entirely. Plain
+ * `Number` math converting the final scaled bigint to a percent string is the same
+ * disclosed exception to bigint-only money that `dcf.ts`'s own suggested-input
+ * functions already take, since this is a percent-string config default, not stored
+ * money — precision to 3 decimal places is more than this benchmark needs.
+ */
+export function meanRealEquityReturnPct(): string {
+  const years = ukHistoricalRealReturns();
+  const sumScaled = years.reduce((sum, year) => sum + year.equityRealReturn, 0n);
+  const meanScaled = sumScaled / BigInt(years.length);
+  const meanFraction = Number(meanScaled) / Number(SCALE_UNIT);
+  return (meanFraction * 100).toFixed(3);
+}

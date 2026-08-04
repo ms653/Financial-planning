@@ -46,6 +46,7 @@ export interface AccountFormInitial {
   name: string;
   type: AccountTypeValue;
   ownerIds: number[];
+  isEmergencyFund: boolean;
   debtTerms: {
     interestRate: string | null;
     minimumPayment: string | null;
@@ -142,6 +143,7 @@ export function AccountForm({
 
   const [type, setType] = useState<AccountTypeValue | ''>(initial?.type ?? '');
   const [ownerIds, setOwnerIds] = useState<number[]>(initial?.ownerIds ?? []);
+  const [isEmergencyFund, setIsEmergencyFund] = useState<boolean>(initial?.isEmergencyFund ?? false);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [values, setValues] = useState<FormValues>({
     name: initial?.name ?? '',
@@ -161,9 +163,9 @@ export function AccountForm({
   // Run the real validator over the current values on every render. Gives both the inline
   // messages and the submit button's enabled state, with no second copy of the rules.
   const validation = useMemo(() => {
-    const payload = { ...values, type, ownerIds: ownerIds.map(String) };
+    const payload = { ...values, type, ownerIds: ownerIds.map(String), isEmergencyFund };
     return isEdit ? validateAccountEdit(payload) : validateAccountCreate(payload);
-  }, [values, type, ownerIds, isEdit]);
+  }, [values, type, ownerIds, isEmergencyFund, isEdit]);
 
   const liveErrors: FieldErrors = validation.ok ? {} : validation.errors;
   const serverErrors: FieldErrors = serverErrorsOf(serverState);
@@ -355,6 +357,19 @@ export function AccountForm({
               </Field>
             </div>
           )}
+
+          {type === 'cash' ? (
+            <label className="flex min-h-[44px] cursor-pointer items-center gap-2 text-sm text-content">
+              <input
+                type="checkbox"
+                name="isEmergencyFund"
+                checked={isEmergencyFund}
+                onChange={(event) => setIsEmergencyFund(event.target.checked)}
+                className="h-4 w-4 accent-brass"
+              />
+              Counts towards our emergency fund
+            </label>
+          ) : null}
 
           {isDebt ? (
             <fieldset className="rounded-card border border-line bg-paper-sunken/50 p-4">

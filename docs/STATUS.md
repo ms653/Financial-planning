@@ -2313,6 +2313,92 @@ this milestone as shipped and the three remaining ones (contribution waterfall +
 two schema-gap fixes; debt-vs-save comparator + avalanche/snowball; the Advisor page
 itself). `docs/PROPOSAL.md`'s generated table re-synced.
 
+## Phase 4.5, Milestone 2: the core contribution waterfall
+
+Household-scoped decision before building: given the employer-match-capture and
+personal-allowance-taper-rescue steps both need schema that doesn't exist yet (an
+employer-match policy field; the annual-allowance taper's own income-test thresholds,
+deferred from Milestone 1), the household chose to ship the six waterfall steps with
+solid data now — emergency fund, high-interest debt, LISA, remaining ISA allowance,
+further pension (capped), GIA — and treat employer-match + taper-rescue as a fast
+follow, matching Phase 4.4's own "ship core, extend after" precedent. The household
+also chose a direct £ emergency-fund target over a derived "months of expenses"
+formula, since no monthly-essential-spending concept exists anywhere in the schema and
+inventing one just for this would be a bigger, unrequested feature.
+
+**Three real schema gaps found while scoping this milestone, one fixed here, two
+deferred**: no emergency-fund concept existed at all (fixed: see below); no employer
+pension-match *policy* exists, only the amount currently received (deferred, blocks
+the employer-match step); `cash_isa`/`ss_isa`/`lisa` accounts could be created jointly
+(`personId: null`), which is legally impossible for a UK ISA — not a new gap this
+milestone introduces, but one it has to defend against, since the waterfall is the
+first thing that actually sums ISA/LISA contributions per person.
+
+**Schema** (`drizzle/0010_common_sasquatch.sql`): `people.hasFlexiblyAccessedPension`
+(boolean, default false — the MPAA trigger), `households.emergencyFundTarget`
+(nullable money, an editable planning assumption, same posture as
+`annualGrossIncome`), `accounts.isEmergencyFund` (boolean, default false, enforced
+`cash`-type-only at the action layer, not a DB constraint — mirrors
+`regular_contribution`'s own account-type restrictions).
+
+**Engine** (`src/lib/advisor/`): `taxYear.ts`'s `currentUkTaxYearWindow` (the UK tax
+year runs 6 April–5 April, needed for "how much ISA/LISA allowance has this person
+used so far"). `waterfall.ts`'s `computeContributionWaterfall` — pure, no DB access,
+building on Milestone 1's `taxStatus.ts`. Per-person steps (LISA, remaining ISA,
+further pension) are allocated across the whole household in ascending `personId`
+order, a disclosed default in the absence of any product spec for whose contribution
+takes priority in a two-earner household. High-interest debt is compared against a
+"realistic investment returns" benchmark that defaults to a new
+`meanRealEquityReturnPct()` (`ukHistoricalReturns.ts`) — the arithmetic mean of the
+same UK-calibrated JST equity-return series the retirement engine's bootstrap sampler
+already uses, not an invented number (arithmetic, not geometric: this is a one-off
+comparison threshold, not something being compounded, so the simpler mean is
+proportionate — documented in the function's own doc comment). Further pension is
+capped by `min(annual allowance, gross income)` minus what's already contributed —
+**carry-forward is explicitly not modeled**, since no historical contribution data
+exists anywhere in this schema to compute three years of unused allowance; disclosed,
+not silently guessed at as zero.
+
+`resolveWaterfallInput.ts` is the DB-wired resolution layer (mirrors
+`resolveScenario.ts`'s role for the retirement engine), built on
+`getPeopleWithPensions`, `getAccountsWithBalances`, and a new
+`getDebtAccountsWithTerms` query (`household/queries.ts`) — no existing helper joined
+`account`+`debt_terms` across a whole household, only per-account. Any joint
+ISA/LISA account is excluded from every per-person allowance total and surfaced in a
+`warnings` array instead of silently included or crashed on.
+
+**UI** (input-only — the results view is Milestone 4): a checkbox on the Settings
+page's person panel ("Already flexibly accessed a pension…"), a new "Emergency fund"
+section on Settings (`EmergencyFundForm.tsx`, one money field), and a checkbox on the
+account form shown only for `type: 'cash'` ("Counts towards our emergency fund").
+
+**Tests**: `taxYear.test.ts` (tax-year window boundaries), `waterfall.test.ts` (21
+table-driven cases — emergency fund shortfall/sufficiency, debt ordering by rate and
+the benchmark cutoff, LISA's two-tier age eligibility, ISA/LISA headroom arithmetic,
+MPAA-restricted vs. standard pension caps, the GIA catch-all, stable person ordering),
+`resolveWaterfallInput.integration.test.ts` (4 cases against real Postgres, including
+the joint-ISA exclusion/warning case), plus new vectors in `ukHistoricalReturns.test.ts`
+and `validation.test.ts`. 836 tests passing (up from 796). Typecheck, lint, and build
+all clean.
+
+Browser-verified against a throwaway dev server and scratch Postgres (light and dark):
+checked the MPAA checkbox and saved, set a £15,000 emergency-fund target and saved,
+tagged a cash account as counting towards it — all three persisted correctly on
+reload. (Caught and worked around, not a Phase 4.5 defect: `next dev`'s env loading
+mangles any `.env`/`.env.local` value containing literal `$` characters, including
+this project's own `APP_PASSPHRASE_HASH` — `@next/env`'s dotenv-expand pass treats
+`$argon2id`, `$v`, `$m` etc. as variable-reference tokens and silently strips them.
+Backslash-escaping each `$` in the scratch `.env.local` avoided it for this session;
+worth a real fix later, since it means `next dev` against the real `.env` would
+currently fail login entirely — untested until now because every prior session's
+manual verification generated a *fresh* throwaway hash rather than reusing the
+committed one.)
+
+`ROADMAP_ITEMS`' Phase 4.5 entry: `detail` updated (still `in-progress`) to name this
+milestone as shipped and the three remaining pieces (employer-match + taper-rescue
+follow-up; debt-vs-save comparator + avalanche/snowball; the Advisor page itself).
+`docs/PROPOSAL.md`'s generated table re-synced.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
@@ -2337,7 +2423,8 @@ itself). `docs/PROPOSAL.md`'s generated table re-synced.
 20. Two other open items remain, not phase-blocking but real and flagged above: **Tailscale Serve setup** (item 1 — still outstanding since Phase 1, needed for phone access) and **holdings-to-balance sync** (item 4 — a real Phase 2 gap the household flagged, never built).
 21. ~~Phase 4.4 (retirement accumulation phase)~~ **Done** — see "Phase 4.4: retirement accumulation phase" above.
 22. ~~Phase 4.4 follow-up: regular contributions to non-pension accounts (GIA/ISA/LISA/cash, personal and joint)~~ **Done, household-requested** — see "Phase 4.4 follow-up" above. 782 tests passing. **Committed, pushed, and deployed to the live stack.**
-23. ~~Next phase: Phase 4.5 (Cash Allocation Advisor)~~ **Started.** Milestone 1 (tax-status core — see "Phase 4.5, Milestone 1" above) shipped. Three milestones remain: the contribution waterfall itself (plus two small schema gaps it surfaces — an employer-match-policy field and a flexibly-accessed-pension flag), the debt-vs-save comparator with avalanche/snowball ordering, and the Advisor page/UI.
+23. ~~Next phase: Phase 4.5 (Cash Allocation Advisor)~~ **In progress.** Milestone 1 (tax-status core) and Milestone 2 (the core contribution waterfall — see "Phase 4.5, Milestone 2" above) both shipped. Two pieces remain: the debt-vs-save comparator with avalanche/snowball ordering, and the Advisor page/UI — plus a fast-follow for the employer-match-capture and personal-allowance-taper-rescue waterfall steps, deferred pending their own schema (an employer-match-policy field; the annual-allowance taper's income-test thresholds).
+24. **New, found during Milestone 2**: `next dev`'s env loading silently corrupts any `.env`/`.env.local` value containing `$` characters — including this project's own `APP_PASSPHRASE_HASH` — via `@next/env`'s dotenv-expand pass treating `$argon2id`/`$v`/`$m` as variable references. Confirmed against the real committed `.env`, not just the scratch one. Worth a real fix (likely: backslash-escape the `$`s in the checked-in `.env`/`.env.example`, or find a dotenv-expand opt-out) before the next `next dev` session — until fixed, local dev login against the real `.env` will fail.
 
 ## Notes for Phase 3
 

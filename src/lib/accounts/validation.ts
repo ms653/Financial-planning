@@ -40,6 +40,18 @@ function cleanString(raw: unknown): string {
   return typeof raw === 'string' ? raw.trim() : '';
 }
 
+/** An unchecked `<input type="checkbox">` is simply absent from `FormData` — there is
+ * no "false" to read, only "not present". `'on'` is the browser default `value` for a
+ * checkbox with none set explicitly; `'true'` covers a hidden input using that
+ * convention instead (e.g. a toggle button, as `archived` already does elsewhere in
+ * this codebase). */
+function parseCheckbox(raw: unknown): boolean {
+  // `true` itself covers a client component's own live-preview call (e.g.
+  // `validatePerson(details)` re-run on every keystroke against React state, not
+  // FormData) — the actual submission always goes through FormData's string form.
+  return raw === 'on' || raw === 'true' || raw === true;
+}
+
 /**
  * An ISO `YYYY-MM-DD` date, validated as a real calendar date.
  *
@@ -88,6 +100,10 @@ export interface PersonInput {
   dateOfBirth: string;
   /** NUMERIC string, or null when not entered — an editable planning assumption. */
   annualGrossIncome: string | null;
+  /** Triggers the £10,000 Money Purchase Annual Allowance — see schema.ts's doc
+   * comment on the column. Unlike income, this always has a correct default (false),
+   * so a checkbox's absence just means "no", not "not entered yet". */
+  hasFlexiblyAccessedPension: boolean;
 }
 
 export function validatePerson(
@@ -132,8 +148,10 @@ export function validatePerson(
     }
   }
 
+  const hasFlexiblyAccessedPension = parseCheckbox(raw.hasFlexiblyAccessedPension);
+
   if (Object.keys(errors).length > 0) return { ok: false, errors };
-  return { ok: true, value: { name, dateOfBirth, annualGrossIncome } };
+  return { ok: true, value: { name, dateOfBirth, annualGrossIncome, hasFlexiblyAccessedPension } };
 }
 
 /* ---------------------------------------------------------------------------------
@@ -223,6 +241,10 @@ export interface AccountInput {
   /** Every person the user selected — >1 is what makes it joint. */
   ownerIds: number[];
   debtTerms: DebtTermsInput | null;
+  /** Only meaningful for `type: 'cash'` — silently forced false for every other type
+   * rather than a form error, since the field is hidden from the form entirely
+   * outside that type. See schema.ts's doc comment on the column. */
+  isEmergencyFund: boolean;
 }
 
 /** Create additionally captures an opening balance; edit doesn't. See below. */
@@ -417,6 +439,7 @@ export function validateAccountCreate(
   }
 
   const debtTerms = isLiability ? validateDebtTerms(raw, errors) : null;
+  const isEmergencyFund = type === 'cash' && parseCheckbox(raw.isEmergencyFund);
 
   if (Object.keys(errors).length > 0) return { ok: false, errors };
   return {
@@ -427,6 +450,7 @@ export function validateAccountCreate(
       personId: resolveOwnership(ownerIds),
       ownerIds,
       debtTerms,
+      isEmergencyFund,
       openingBalance,
       asOfDate,
     },
@@ -447,6 +471,7 @@ export function validateAccountEdit(raw: Record<string, unknown>): Validated<Acc
   const errors: FieldErrors = {};
   const { name, type, ownerIds } = validateAccountCore(raw, errors);
   const debtTerms = type !== '' && isLiabilityType(type) ? validateDebtTerms(raw, errors) : null;
+  const isEmergencyFund = type === 'cash' && parseCheckbox(raw.isEmergencyFund);
 
   if (Object.keys(errors).length > 0) return { ok: false, errors };
   return {
@@ -457,6 +482,7 @@ export function validateAccountEdit(raw: Record<string, unknown>): Validated<Acc
       personId: resolveOwnership(ownerIds),
       ownerIds,
       debtTerms,
+      isEmergencyFund,
     },
   };
 }
@@ -628,4 +654,23 @@ export function validateHouseholdName(raw: Record<string, unknown>): Validated<{
   if (name === '') return { ok: false, errors: { name: 'Give your household a name.' } };
   if (name.length > MAX_NAME_LENGTH) return { ok: false, errors: { name: 'That name is too long.' } };
   return { ok: true, value: { name } };
+}
+
+/**
+ * The household's emergency-fund target — Phase 4.5's Cash Allocation Advisor,
+ * waterfall step 1. A blank entry clears it back to null ("not set"), the same
+ * as `person.annual_gross_income`'s own optional-money-field handling.
+ */
+export function validateEmergencyFundTarget(
+  raw: Record<string, unknown>,
+): Validated<{ emergencyFundTarget: string | null }> {
+  const targetRaw = cleanString(raw.emergencyFundTarget);
+  if (targetRaw === '') return { ok: true, value: { emergencyFundTarget: null } };
+
+  const parsed = parseMoneyInput(targetRaw);
+  if (!parsed.ok) return { ok: false, errors: { emergencyFundTarget: 'Enter an amount like 15000.' } };
+  if (parsed.pence < 0n) {
+    return { ok: false, errors: { emergencyFundTarget: 'A target can’t be negative.' } };
+  }
+  return { ok: true, value: { emergencyFundTarget: penceToNumeric(parsed.pence) } };
 }

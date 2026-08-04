@@ -8,6 +8,7 @@ import {
   validateAccountCreate,
   validateAccountEdit,
   validateBalanceUpdate,
+  validateEmergencyFundTarget,
   validateHolding,
   validateHouseholdName,
   validatePensionContribution,
@@ -294,6 +295,34 @@ describe('validateAccountCreate', () => {
       );
     });
   });
+
+  describe('isEmergencyFund', () => {
+    it('records it for a cash account when checked', () => {
+      const result = validateAccountCreate(
+        { ...validAccount, type: 'cash', isEmergencyFund: 'on' },
+        NOW,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.isEmergencyFund).toBe(true);
+    });
+
+    it('forces it false for a non-cash type even if the field is present', () => {
+      // The form hides the checkbox outside `cash`; this defends a malformed submission
+      // from silently tagging, say, a GIA as the emergency fund.
+      const result = validateAccountCreate({ ...validAccount, isEmergencyFund: 'on' }, NOW);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.isEmergencyFund).toBe(false);
+    });
+
+    it('defaults false when unchecked', () => {
+      const result = validateAccountCreate({ ...validAccount, type: 'cash' }, NOW);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.isEmergencyFund).toBe(false);
+    });
+  });
 });
 
 describe('validateAccountEdit', () => {
@@ -375,7 +404,18 @@ describe('validatePerson', () => {
       name: 'Alex',
       dateOfBirth: '1985-04-12',
       annualGrossIncome: null,
+      hasFlexiblyAccessedPension: false,
     });
+  });
+
+  it('records hasFlexiblyAccessedPension when the checkbox is checked', () => {
+    const result = validatePerson(
+      { name: 'Alex', dateOfBirth: '1985-04-12', hasFlexiblyAccessedPension: 'on' },
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.hasFlexiblyAccessedPension).toBe(true);
   });
 
   it('requires a date of birth', () => {
@@ -520,6 +560,29 @@ describe('validateHouseholdName', () => {
   it('requires a name', () => {
     expect(validateHouseholdName({ name: '' }).ok).toBe(false);
     expect(validateHouseholdName({ name: 'The Strutton household' }).ok).toBe(true);
+  });
+});
+
+describe('validateEmergencyFundTarget', () => {
+  it('records a target as a NUMERIC string', () => {
+    const result = validateEmergencyFundTarget({ emergencyFundTarget: '£15,000' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.emergencyFundTarget).toBe('15000.00');
+  });
+
+  it('keeps a blank entry as null rather than zero', () => {
+    const result = validateEmergencyFundTarget({ emergencyFundTarget: '  ' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.emergencyFundTarget).toBeNull();
+  });
+
+  it('rejects a negative target', () => {
+    const result = validateEmergencyFundTarget({ emergencyFundTarget: '-500' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.emergencyFundTarget).toBe('A target can’t be negative.');
   });
 });
 

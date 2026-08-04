@@ -27,6 +27,8 @@ export interface PersonPanelData {
   annualGrossIncome: string | null;
   /** Pre-formatted for display; the raw NUMERIC string is what the form edits. */
   incomeLabel: string | null;
+  /** Triggers the £10,000 Money Purchase Annual Allowance — Phase 4.5. */
+  hasFlexiblyAccessedPension: boolean;
   contributions: Array<{
     id: number;
     method: PensionContributionMethodValue;
@@ -69,6 +71,7 @@ export function PersonPanel({
     name: person.name,
     dateOfBirth: person.dateOfBirth,
     annualGrossIncome: person.annualGrossIncome ?? '',
+    hasFlexiblyAccessedPension: person.hasFlexiblyAccessedPension,
   });
   const [contribution, setContribution] = useState({
     amount: '',
@@ -190,6 +193,19 @@ export function PersonPanel({
               ) : null}
             </div>
           </div>
+
+          <label className="flex min-h-[44px] cursor-pointer items-center gap-2 text-sm text-content">
+            <input
+              type="checkbox"
+              name="hasFlexiblyAccessedPension"
+              checked={details.hasFlexiblyAccessedPension}
+              onChange={(event) =>
+                setDetails((c) => ({ ...c, hasFlexiblyAccessedPension: event.target.checked }))
+              }
+              className="h-4 w-4 accent-brass"
+            />
+            Already flexibly accessed a pension (triggers the £10,000 Money Purchase Annual Allowance)
+          </label>
 
           <div className="flex items-center gap-3">
             <Saving label="Save" pending={detailsPending} />

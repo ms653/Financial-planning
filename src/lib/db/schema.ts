@@ -141,6 +141,15 @@ export const households = pgTable(
   {
     id: serial('id').primaryKey(),
     name: text('name').notNull(),
+
+    /**
+     * Phase 4.5's Cash Allocation Advisor, waterfall step 1: a direct target balance,
+     * not a derived "N months of expenses" formula — no monthly-essential-spending
+     * concept exists anywhere in this schema, and inventing one just to derive this
+     * would be a bigger, unrequested feature. Nullable: an unset target means "not
+     * entered yet," not zero — same reasoning as `person.annual_gross_income`.
+     */
+    emergencyFundTarget: money('emergency_fund_target'),
     ...timestamps,
   },
   (table) => ({
@@ -196,6 +205,16 @@ export const people = pgTable(
 
     /** Pre-sacrifice contractual salary. Nullable — see the note above. */
     annualGrossIncome: money('annual_gross_income'),
+
+    /**
+     * Whether this person has already flexibly accessed a pension (drawn from a DC
+     * pot beyond the tax-free lump sum), which triggers the £10,000 Money Purchase
+     * Annual Allowance — `src/lib/advisor/taxStatus.ts`'s `computeAnnualAllowanceStatus`
+     * takes this as an explicit parameter. Defaults false, not nullable: unlike
+     * income, "not yet accessed" is the correct default for everyone who hasn't
+     * retired, not an unentered-planning-assumption gap.
+     */
+    hasFlexiblyAccessedPension: boolean('has_flexibly_accessed_pension').notNull().default(false),
     ...timestamps,
   },
   (table) => ({
@@ -318,6 +337,15 @@ export const accounts = pgTable(
      * destructive delete from this screen."
      */
     archived: boolean('archived').notNull().default(false),
+
+    /**
+     * Phase 4.5's Cash Allocation Advisor, waterfall step 1: which cash sits earmarked
+     * as the household's emergency fund vs. general spare cash. Only meaningful for
+     * `type: 'cash'` — enforced at the action layer (reject/ignore otherwise), the
+     * same posture `regular_contribution`'s own account-type restrictions already
+     * take, not a DB constraint.
+     */
+    isEmergencyFund: boolean('is_emergency_fund').notNull().default(false),
     ...timestamps,
   },
   (table) => ({

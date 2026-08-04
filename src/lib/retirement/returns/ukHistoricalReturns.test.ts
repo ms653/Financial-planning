@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ukHistoricalRealReturns } from './ukHistoricalReturns';
+import { meanRealEquityReturnPct, ukHistoricalRealReturns } from './ukHistoricalReturns';
 import { formatScaledDecimal } from '@/lib/portfolio/valuation';
 import { RATE_SCALE } from '@/lib/retirement/engineTypes';
 
@@ -83,5 +83,20 @@ describe('ukHistoricalRealReturns', () => {
       return Math.exp(logSum / data.length) - 1;
     };
     expect(geo('giltRealReturn')).toBeLessThan(geo('equityRealReturn'));
+  });
+});
+
+describe('meanRealEquityReturnPct', () => {
+  it('is a plausible UK-calibrated percent string, matching a hand-computed arithmetic mean', () => {
+    const data = ukHistoricalRealReturns();
+    const expected = data.reduce((sum, row) => sum + toNumber(row.equityRealReturn), 0) / data.length;
+    const result = meanRealEquityReturnPct();
+    expect(Number(result)).toBeCloseTo(expected * 100, 1);
+    expect(Number(result)).toBeGreaterThan(3);
+    expect(Number(result)).toBeLessThan(10);
+  });
+
+  it('matches the percent field regex used elsewhere for stored rates', () => {
+    expect(meanRealEquityReturnPct()).toMatch(/^\d+\.\d{3}$/);
   });
 });

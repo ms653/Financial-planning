@@ -70,6 +70,29 @@ export const PENSION_ANNUAL_ALLOWANCE_PENCE_2026_27 = 60_000_00n;
 export const MPAA_PENCE_2026_27 = 10_000_00n;
 
 /**
+ * The Cash ISA under-65 sub-limit (Phase 4.5, waterfall step "remaining ISA
+ * allowance"). Per Autumn Budget 2025, from 6 April 2027 Cash ISA contributions are
+ * capped at £12,000/year for under-65s (over-65s keep the full £20,000 cash
+ * allowance), still within the overall £20,000 combined ISA allowance —
+ * `docs/PROPOSAL.md` §2 names this as a "forward-looking rule change to model now, not
+ * retrofit later." Dates are compared as plain `YYYY-MM-DD` strings throughout this
+ * module (see `statePensionDate`'s own note above) rather than parsed to `Date`, so
+ * this follows the same convention: whether someone is under 65 is resolved by
+ * comparing today against their 65th birthday date, not by subtracting years.
+ */
+const CASH_ISA_SUBLIMIT_START_ISO = '2027-04-06';
+export const CASH_ISA_UNDER_65_SUBLIMIT_PENCE = 12_000_00n;
+
+/** Returns the Cash ISA sub-limit that applies to this person today, or `null` when
+ * the general £20,000 combined ISA allowance is the only limit that applies (before 6
+ * April 2027, or once they've turned 65). */
+export function cashIsaSubLimitPence(todayIso: string, dateOfBirth: string): bigint | null {
+  if (todayIso < CASH_ISA_SUBLIMIT_START_ISO) return null;
+  const sixtyFifthBirthday = addCalendarYears(dateOfBirth, 65);
+  return todayIso < sixtyFifthBirthday ? CASH_ISA_UNDER_65_SUBLIMIT_PENCE : null;
+}
+
+/**
  * A UK State Pension age band, as gov.uk's own "State Pension age timetable" states it
  * (published under the Pensions Act 2007 and Pensions Act 2014). Fetched and
  * transcribed 2026-07-27 from

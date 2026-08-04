@@ -21,6 +21,7 @@ import {
   validateAccountCreate,
   validateAccountEdit,
   validateBalanceUpdate,
+  validateEmergencyFundTarget,
   validateHolding,
   validateHouseholdName,
   validatePensionContribution,
@@ -147,6 +148,7 @@ export async function addPerson(formData: FormData): Promise<ActionResult> {
         name: parsed.value.name,
         dateOfBirth: parsed.value.dateOfBirth,
         annualGrossIncome: parsed.value.annualGrossIncome,
+        hasFlexiblyAccessedPension: parsed.value.hasFlexiblyAccessedPension,
       });
   } catch (error) {
     return logAndWrap('addPerson', error);
@@ -175,6 +177,7 @@ export async function updatePerson(formData: FormData): Promise<ActionResult> {
         name: parsed.value.name,
         dateOfBirth: parsed.value.dateOfBirth,
         annualGrossIncome: parsed.value.annualGrossIncome,
+        hasFlexiblyAccessedPension: parsed.value.hasFlexiblyAccessedPension,
         updatedAt: sql`now()`,
       })
       .where(and(eq(people.id, personId), eq(people.householdId, householdId)));
@@ -184,6 +187,30 @@ export async function updatePerson(formData: FormData): Promise<ActionResult> {
 
   revalidatePath('/settings');
   revalidatePath('/');
+  return { ok: true };
+}
+
+/**
+ * Set (or clear, on a blank submission) the household's emergency-fund target —
+ * Phase 4.5's Cash Allocation Advisor, waterfall step 1. Household-level, not
+ * per-person: an emergency fund is a shared buffer, the same framing `households`'
+ * other fields already use.
+ */
+export async function updateEmergencyFundTarget(formData: FormData): Promise<ActionResult> {
+  const parsed = validateEmergencyFundTarget(fieldValues(formData));
+  if (!parsed.ok) return parsed;
+
+  try {
+    const householdId = await requireHouseholdId();
+    await getDb()
+      .update(households)
+      .set({ emergencyFundTarget: parsed.value.emergencyFundTarget, updatedAt: sql`now()` })
+      .where(eq(households.id, householdId));
+  } catch (error) {
+    return logAndWrap('updateEmergencyFundTarget', error);
+  }
+
+  revalidatePath('/settings');
   return { ok: true };
 }
 
@@ -319,6 +346,7 @@ export async function createAccount(formData: FormData): Promise<ActionResult> {
           type: input.type,
           // Derived from the type, never taken from the form — see accounts/types.ts.
           taxWrapper: taxWrapperForType(input.type),
+          isEmergencyFund: input.isEmergencyFund,
         })
         .returning({ id: accounts.id });
 
@@ -415,6 +443,7 @@ export async function updateAccount(formData: FormData): Promise<ActionResult> {
           type: input.type,
           taxWrapper: taxWrapperForType(input.type),
           personId: input.personId,
+          isEmergencyFund: input.isEmergencyFund,
           updatedAt: sql`now()`,
         })
         .where(and(eq(accounts.id, accountId), eq(accounts.householdId, householdId)));

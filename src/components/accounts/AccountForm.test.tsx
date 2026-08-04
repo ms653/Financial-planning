@@ -154,6 +154,17 @@ describe('conditional fields by type', () => {
     expect(screen.getByLabelText('As of')).toBeVisible();
     expect(screen.queryByLabelText('Interest rate')).not.toBeInTheDocument();
   });
+
+  it('shows the emergency-fund checkbox only for a cash account', async () => {
+    const user = userEvent.setup();
+    renderForm();
+
+    await user.click(typeTile('Cash ISA'));
+    expect(screen.queryByRole('checkbox', { name: /emergency fund/i })).not.toBeInTheDocument();
+
+    await user.click(typeTile('Cash'));
+    expect(screen.getByRole('checkbox', { name: /emergency fund/i })).not.toBeChecked();
+  });
 });
 
 describe('owner chips', () => {
@@ -175,7 +186,13 @@ describe('owner chips', () => {
     await user.click(typeTile('Cash'));
 
     expect(screen.queryByRole('radio')).not.toBeInTheDocument();
-    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    // One checkbox per owner, plus `cash`'s own "counts towards our emergency fund"
+    // checkbox (Phase 4.5) — scoped by name so this doesn't silently pass if an owner
+    // chip goes missing.
+    for (const person of PEOPLE) {
+      expect(screen.getByRole('checkbox', { name: person.name })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole('checkbox')).toHaveLength(PEOPLE.length + 1);
   });
 
   it('says the account will be joint once more than one owner is selected', async () => {
@@ -388,6 +405,7 @@ describe('edit mode', () => {
     name: 'Mortgage — 14 Elm Grove',
     type: 'debt' as const,
     ownerIds: [1, 2],
+    isEmergencyFund: false,
     debtTerms: {
       interestRate: '4.250',
       minimumPayment: '1450.00',

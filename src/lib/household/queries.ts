@@ -33,6 +33,8 @@ import type {
 export interface SetupState {
   householdId: number | null;
   householdName: string | null;
+  /** NUMERIC string, or null when not set — Phase 4.5's emergency-fund target. */
+  emergencyFundTarget: string | null;
   personCount: number;
   accountCount: number;
   /** True once there's a household, at least one person and at least one account. */
@@ -55,7 +57,7 @@ export async function getSetupState(): Promise<SetupState> {
   const db = getDb();
 
   const [household] = await db
-    .select({ id: households.id, name: households.name })
+    .select({ id: households.id, name: households.name, emergencyFundTarget: households.emergencyFundTarget })
     .from(households)
     .orderBy(asc(households.id))
     .limit(1);
@@ -64,6 +66,7 @@ export async function getSetupState(): Promise<SetupState> {
     return {
       householdId: null,
       householdName: null,
+      emergencyFundTarget: null,
       personCount: 0,
       accountCount: 0,
       complete: false,
@@ -84,6 +87,7 @@ export async function getSetupState(): Promise<SetupState> {
   return {
     householdId: household.id,
     householdName: household.name,
+    emergencyFundTarget: household.emergencyFundTarget,
     personCount,
     accountCount,
     complete: personCount > 0 && accountCount > 0,
@@ -95,6 +99,7 @@ export interface PersonSummary {
   name: string;
   dateOfBirth: string;
   annualGrossIncome: string | null;
+  hasFlexiblyAccessedPension: boolean;
 }
 
 export async function getPeople(householdId: number): Promise<PersonSummary[]> {
@@ -105,6 +110,7 @@ export async function getPeople(householdId: number): Promise<PersonSummary[]> {
       name: people.name,
       dateOfBirth: people.dateOfBirth,
       annualGrossIncome: people.annualGrossIncome,
+      hasFlexiblyAccessedPension: people.hasFlexiblyAccessedPension,
     })
     .from(people)
     .where(eq(people.householdId, householdId))
@@ -120,6 +126,8 @@ export interface AccountWithBalance {
   taxWrapper: TaxWrapperValue;
   currency: string;
   archived: boolean;
+  /** Only meaningful for `type: 'cash'` — see schema.ts's doc comment on the column. */
+  isEmergencyFund: boolean;
   /** NULL means jointly owned at household level. */
   personId: number | null;
   ownerName: string | null;
@@ -158,6 +166,7 @@ export async function getAccountsWithBalances(
       taxWrapper: accounts.taxWrapper,
       currency: accounts.currency,
       archived: accounts.archived,
+      isEmergencyFund: accounts.isEmergencyFund,
       personId: accounts.personId,
       ownerName: people.name,
     })
@@ -246,6 +255,7 @@ export async function getAccountDetail(
       taxWrapper: accounts.taxWrapper,
       currency: accounts.currency,
       archived: accounts.archived,
+      isEmergencyFund: accounts.isEmergencyFund,
       personId: accounts.personId,
       ownerName: people.name,
     })
@@ -488,6 +498,36 @@ export async function getRegularContributionAmounts(householdId: number): Promis
     .from(regularContributions)
     .innerJoin(accounts, eq(accounts.id, regularContributions.accountId))
     .where(eq(accounts.householdId, householdId));
+}
+
+export interface DebtAccountWithTerms {
+  accountId: number;
+  accountName: string;
+  /** NULL means jointly owned at household level — same convention as everywhere else. */
+  personId: number | null;
+  terms: DebtTerms | null;
+}
+
+/**
+ * Every `debt`-type account in the household, with its `debt_terms` row if it has one
+ * (terms are optional per account — see `validateDebtTerms`'s own doc comment).
+ * `getAccountDetail` only joins this for a single account; Phase 4.5's debt-vs-save
+ * comparator and avalanche/snowball ordering need the whole household's debts at once.
+ */
+export async function getDebtAccountsWithTerms(householdId: number): Promise<DebtAccountWithTerms[]> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      accountId: accounts.id,
+      accountName: accounts.name,
+      personId: accounts.personId,
+      terms: debtTerms,
+    })
+    .from(accounts)
+    .leftJoin(debtTerms, eq(debtTerms.accountId, accounts.id))
+    .where(and(eq(accounts.householdId, householdId), eq(accounts.type, 'debt'), eq(accounts.archived, false)));
+
+  return rows.map((row) => ({ ...row, terms: row.terms ?? null }));
 }
 
 /**
