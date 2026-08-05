@@ -59,8 +59,12 @@ lands in shell history or the process list:
 npm run passphrase:hash
 ```
 
-Paste the printed `APP_PASSPHRASE_HASH='...'` line into `.env`. **Keep the single
-quotes** — the hash contains `$` characters that a shell would otherwise expand.
+The script prints two ready-to-paste lines, labelled by destination. For a `docker
+compose` deploy (this section), paste the one under "For .env (docker compose)" into
+`.env` as-is, single quotes included. The other line — under "For .env.local" — is
+pre-escaped for `next dev` run directly, without Docker; see the note under
+`ALPHA_VANTAGE_API_KEY` below for why the two aren't interchangeable, and don't
+hand-copy one into the other's file.
 
 Pick a memorable multi-word phrase over a short complex one. Both people have to type it
 on a phone keyboard, and the threat model is device loss and houseguests, not a
@@ -75,10 +79,19 @@ determined remote attacker — Tailscale already handles that part.
 free key (no card) at <https://www.alphavantage.co/support/#api-key>. Leave it unset and
 the app works exactly as before, with holdings showing "Price unavailable" instead of a
 live value — the same graceful-degradation posture as the account-sync provider in a
-later phase. If you're running `npm run dev` directly against a `.env.local` rather than
-`docker compose`, see the note in `.env.example` about escaping `$` in the passphrase
-hash — the same Next.js env-loading quirk applies to any `.env.local` value shaped like
-one, though `ALPHA_VANTAGE_API_KEY` itself has no `$` in it and isn't affected.
+later phase. It has no `$` in it, so it isn't affected by the passphrase-hash quirk
+below.
+
+If you're running `npm run dev` directly against a `.env.local` rather than `docker
+compose`: Next's own env loader (`@next/env`, bundling dotenv-expand) runs every
+`.env`/`.env.local` value through variable interpolation before your app ever sees it,
+and treats a bare `$word` as a reference to another variable — silently stripping it.
+An argon2id hash is built entirely out of that shape (`$argon2id$v=19$...`), so a
+value that's correct for `docker compose` (which passes `.env` straight through,
+untouched) comes out mangled under `next dev`, and login fails with "not a valid
+argon2id hash" — no hint that `$` was the cause. `npm run passphrase:hash` prints a
+second, pre-escaped line for exactly this case (see above) — use that one for
+`.env.local`, never a value copied straight from `.env`.
 
 ### 1.2 Bring the stack up
 

@@ -6,9 +6,24 @@
  * Reads the passphrase from stdin rather than from argv so it never lands in shell
  * history or in the process list, and echoes nothing but the resulting hash. The
  * plaintext passphrase is never written to disk by this script.
+ *
+ * Prints two variants, not one: an argon2id PHC string is full of literal `$`
+ * characters ($argon2id$v=19$...), and `docker compose` vs. `next dev` disagree about
+ * what to do with those. Compose passes a `.env` value straight through to the
+ * container untouched, so the raw hash is correct there. `next dev` reading a
+ * `.env`/`.env.local` file runs every value through `@next/env`'s bundled
+ * dotenv-expand first, which silently mangles that shape — see
+ * `escapeForDotenvExpand`'s own doc comment (`src/lib/auth/passphrase.ts`) for why
+ * only backslash-escaping fixes it, and why the Compose-bound copy must NOT be
+ * escaped the same way. Two copies, each correct for its own destination, so nobody
+ * has to hand-edit either at 11pm and get the direction backwards.
  */
 import { createInterface } from 'node:readline';
-import { hashPassphrase, looksLikeArgon2idHash } from '../src/lib/auth/passphrase';
+import {
+  escapeForDotenvExpand,
+  hashPassphrase,
+  looksLikeArgon2idHash,
+} from '../src/lib/auth/passphrase';
 
 const MIN_LENGTH = 12;
 
@@ -56,12 +71,16 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  process.stderr.write('\nAdd this to .env.local (or your deploy environment):\n\n');
-  // The hash goes to stdout so it can be piped or redirected; all prose goes to stderr.
+  // Both variants go to stdout so either line can be piped or redirected on its own;
+  // all prose goes to stderr.
+  process.stderr.write('\nFor .env (docker compose) — paste as-is:\n\n');
   process.stdout.write(`APP_PASSPHRASE_HASH='${hash}'\n`);
   process.stderr.write(
-    "\nSingle-quoted because the hash contains '$'. Never commit this value.\n",
+    '\nFor .env.local (running `npm run dev` directly, no Docker) — every `$` escaped\n' +
+      'so `next dev`\'s own env loader stops treating the hash as variable references:\n\n',
   );
+  process.stdout.write(`APP_PASSPHRASE_HASH='${escapeForDotenvExpand(hash)}'\n`);
+  process.stderr.write('\nUse whichever line matches how you run the app. Never commit either.\n');
 }
 
 main().catch((error: unknown) => {

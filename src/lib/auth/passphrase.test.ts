@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   ARGON2_OPTIONS,
+  escapeForDotenvExpand,
   hashPassphrase,
   looksLikeArgon2idHash,
   verifyPassphrase,
@@ -42,6 +46,45 @@ describe('hashPassphrase', () => {
 
   it('refuses to hash an empty passphrase', async () => {
     await expect(hashPassphrase('')).rejects.toThrow(/empty passphrase/i);
+  });
+});
+
+describe('escapeForDotenvExpand', () => {
+  const originalHashEnv = process.env.APP_PASSPHRASE_HASH;
+
+  afterEach(() => {
+    if (originalHashEnv === undefined) {
+      delete process.env.APP_PASSPHRASE_HASH;
+    } else {
+      process.env.APP_PASSPHRASE_HASH = originalHashEnv;
+    }
+  });
+
+  it('round-trips an argon2id hash through the real @next/env loader unmangled', async () => {
+    // Reproduces the actual bug, not just the regex: `next dev` reads .env files
+    // through @next/env's bundled dotenv-expand, which treats a bare `$word` as a
+    // variable reference. An unescaped hash comes back with every `$argon2id`,
+    // `$v=19`, `$m=...` segment silently stripped. This drives the real loader
+    // (not a hand-rolled stand-in for it) to confirm the escaped form survives.
+    const hash =
+      '$argon2id$v=19$m=19456,t=2,p=1$1WpS3idYwgu2+MxUJTfZsA$1OtmRvANhrvfZhtjOciau4KxrCR9/ID7rCHDMun4J+4';
+    const escaped = escapeForDotenvExpand(hash);
+    expect(escaped).not.toBe(hash); // sanity: the fixture actually exercises escaping
+
+    const dir = await mkdtemp(join(tmpdir(), 'dotenv-expand-test-'));
+    try {
+      await writeFile(join(dir, '.env'), `APP_PASSPHRASE_HASH='${escaped}'\n`);
+      const { loadEnvConfig } = await import('@next/env');
+      const silentLogger = { info() {}, error() {}, warn() {} };
+      const { combinedEnv } = loadEnvConfig(dir, false, silentLogger, true);
+      expect(combinedEnv.APP_PASSPHRASE_HASH).toBe(hash);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a value with no `$` unchanged', () => {
+    expect(escapeForDotenvExpand('no-dollar-signs-here')).toBe('no-dollar-signs-here');
   });
 });
 

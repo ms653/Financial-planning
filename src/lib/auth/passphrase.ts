@@ -44,6 +44,21 @@ export const ARGON2_OPTIONS = {
 
 const ARGON2ID_PREFIX = '$argon2id$';
 
+/**
+ * Escape every `$` as `\$` — the one shape `@next/env`'s bundled dotenv-expand leaves
+ * alone (it skips a `$` preceded by `\`, then un-escapes it back to a literal `$`).
+ * An argon2id PHC string is otherwise full of the exact pattern dotenv-expand treats
+ * as a variable reference ($argon2id$v=19$...), which `next dev` silently mangles
+ * when reading it from `.env`/`.env.local` — `scripts/hash-passphrase.ts` uses this to
+ * print a version safe for that specific case. Quoting the value does NOT help here;
+ * dotenv-expand strips quotes before scanning for `$`, same as the unescaped case.
+ * Not needed for `docker compose`, which passes `.env` values straight through — and
+ * escaping there would be actively wrong, handing the container literal backslashes.
+ */
+export function escapeForDotenvExpand(value: string): string {
+  return value.replace(/\$/g, '\\$');
+}
+
 /** Produce an argon2id PHC-format hash of a passphrase. Used by scripts/hash-passphrase.ts. */
 export async function hashPassphrase(passphrase: string): Promise<string> {
   if (passphrase.length === 0) {
