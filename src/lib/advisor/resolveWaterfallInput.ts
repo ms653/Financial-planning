@@ -18,16 +18,11 @@
 
 import { eq, inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
-import { accounts, regularContributions } from '@/lib/db/schema';
-import {
-  getAccountsWithBalances,
-  getDebtAccountsWithTerms,
-  getPeopleWithPensions,
-  getSetupState,
-} from '@/lib/household/queries';
+import { households, regularContributions } from '@/lib/db/schema';
+import { getAccountsWithBalances, getDebtAccountsWithTerms, getPeopleWithPensions } from '@/lib/household/queries';
 import { numericToPence } from '@/lib/money';
 import { todayIso } from '@/lib/accounts/validation';
-import { meanRealEquityReturnPct } from '@/lib/retirement/returns/ukHistoricalReturns';
+import { meanNominalEquityReturnPct } from '@/lib/retirement/returns/ukHistoricalReturns';
 import type { DebtInput, PersonWaterfallInput, WaterfallInput } from './waterfall';
 
 const ISA_TYPE_SET = new Set(['cash_isa', 'ss_isa', 'lisa']);
@@ -43,8 +38,12 @@ export interface ResolvedWaterfallInput {
 /**
  * Resolves `householdId`'s waterfall input for `extraAmountPence` extra to allocate.
  * `debtBenchmarkRatePctOverride` lets a caller substitute a household-chosen "realistic
- * returns" assumption; defaults to `meanRealEquityReturnPct()` — UK-calibrated, already
- * the retirement engine's own source of truth for realistic returns, not invented here.
+ * returns" assumption; defaults to `meanNominalEquityReturnPct()` — UK-calibrated,
+ * nominal (comparable to a debt's own nominal APR — see `waterfall.ts`'s doc comment
+ * on `debtBenchmarkRatePct` for why real would be the wrong figure here), already the
+ * retirement engine's own source of truth for realistic returns, not invented here.
+ * An override that isn't a valid finite rate is ignored (with a warning) rather than
+ * silently producing `NaN` comparisons downstream.
  */
 export async function resolveWaterfallInput(
   householdId: number,
@@ -55,29 +54,47 @@ export async function resolveWaterfallInput(
   const today = todayIso(options.now);
   const warnings: string[] = [];
 
-  const [people, accountsWithBalances, debts] = await Promise.all([
+  const [people, accountsWithBalances, debts, [household]] = await Promise.all([
     getPeopleWithPensions(householdId),
     getAccountsWithBalances(householdId),
     getDebtAccountsWithTerms(householdId),
+    db
+      .select({ emergencyFundTarget: households.emergencyFundTarget })
+      .from(households)
+      .where(eq(households.id, householdId))
+      .limit(1),
   ]);
 
   const emergencyFundCurrentPence = accountsWithBalances
     .filter((account) => account.type === 'cash' && account.isEmergencyFund)
     .reduce((sum, account) => sum + (account.latestAmount ? numericToPence(account.latestAmount) : 0n), 0n);
 
-  const isaTypeAccountIds = accountsWithBalances
-    .filter((account) => ISA_TYPE_SET.has(account.type))
-    .map((account) => account.id);
-
   const isaUsedPenceByPersonId = new Map<number, bigint>();
   const lisaUsedPenceByPersonId = new Map<number, bigint>();
   const hasExistingLisaByPersonId = new Map<number, boolean>();
 
+  // Every ISA-type account is checked for the joint-ownership defect here, in one
+  // place, regardless of whether it has any `regular_contribution` rows — a joint
+  // account with zero contributions was previously excluded from `hasExistingLisa`
+  // with no warning at all, silently rather than flagged. `isaTypeAccountIds` below
+  // (used for the contribution-summing query) is pre-filtered to non-joint accounts
+  // only, so nothing downstream needs to re-check `personId` a second time.
   for (const account of accountsWithBalances) {
-    if (account.type === 'lisa' && account.personId !== null) {
+    if (!ISA_TYPE_SET.has(account.type)) continue;
+    if (account.personId === null) {
+      warnings.push(
+        `${account.name} is a jointly-owned ${account.type === 'lisa' ? 'LISA' : 'ISA'} account, which isn’t legally possible in the UK — it was excluded from every allowance total.`,
+      );
+      continue;
+    }
+    if (account.type === 'lisa') {
       hasExistingLisaByPersonId.set(account.personId, true);
     }
   }
+
+  const isaTypeAccountIds = accountsWithBalances
+    .filter((account) => ISA_TYPE_SET.has(account.type) && account.personId !== null)
+    .map((account) => account.id);
 
   if (isaTypeAccountIds.length > 0) {
     const accountById = new Map(accountsWithBalances.map((account) => [account.id, account]));
@@ -89,25 +106,25 @@ export async function resolveWaterfallInput(
     for (const row of rows) {
       const account = accountById.get(row.accountId);
       if (!account) continue; // defensive; can't happen given the id list above
-
-      if (account.personId === null) {
-        warnings.push(
-          `${account.name} is a jointly-owned ${account.type === 'lisa' ? 'LISA' : 'ISA'} account, which isn’t legally possible in the UK — its regular contribution was excluded from every allowance total.`,
-        );
-        continue;
-      }
-
+      // account.personId is guaranteed non-null: isaTypeAccountIds already excludes
+      // joint accounts above.
+      const personId = account.personId!;
       const amountPence = numericToPence(row.amount);
-      isaUsedPenceByPersonId.set(
-        account.personId,
-        (isaUsedPenceByPersonId.get(account.personId) ?? 0n) + amountPence,
-      );
+      isaUsedPenceByPersonId.set(personId, (isaUsedPenceByPersonId.get(personId) ?? 0n) + amountPence);
       if (account.type === 'lisa') {
-        lisaUsedPenceByPersonId.set(
-          account.personId,
-          (lisaUsedPenceByPersonId.get(account.personId) ?? 0n) + amountPence,
-        );
+        lisaUsedPenceByPersonId.set(personId, (lisaUsedPenceByPersonId.get(personId) ?? 0n) + amountPence);
       }
+    }
+  }
+
+  let debtBenchmarkRatePct = meanNominalEquityReturnPct();
+  if (options.debtBenchmarkRatePctOverride !== undefined) {
+    if (Number.isFinite(Number(options.debtBenchmarkRatePctOverride))) {
+      debtBenchmarkRatePct = options.debtBenchmarkRatePctOverride;
+    } else {
+      warnings.push(
+        `The debt-benchmark rate override ("${options.debtBenchmarkRatePctOverride}") isn't a valid rate, so the UK-calibrated default was used instead.`,
+      );
     }
   }
 
@@ -135,16 +152,16 @@ export async function resolveWaterfallInput(
     interestRatePct: debt.terms?.interestRate ?? null,
   }));
 
-  const setup = await getSetupState();
-
   return {
     input: {
       todayIso: today,
       extraAmountPence,
-      emergencyFundTargetPence: setup.emergencyFundTarget ? numericToPence(setup.emergencyFundTarget) : null,
+      emergencyFundTargetPence: household?.emergencyFundTarget
+        ? numericToPence(household.emergencyFundTarget)
+        : null,
       emergencyFundCurrentPence,
       debts: resolvedDebts,
-      debtBenchmarkRatePct: options.debtBenchmarkRatePctOverride ?? meanRealEquityReturnPct(),
+      debtBenchmarkRatePct,
       people: resolvedPeople,
     },
     warnings,

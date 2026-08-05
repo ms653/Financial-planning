@@ -32,8 +32,12 @@
  */
 
 import { ageAsOf } from '@/lib/retirement/personAge';
-import { cashIsaSubLimitPence } from '@/lib/retirement/taxYearConfig';
-import { computeAnnualAllowanceStatus, type PensionContributionInput } from './taxStatus';
+import {
+  computeAnnualAllowanceStatus,
+  memberGrossContributionPence,
+  pensionAllowanceConsumedPence,
+  type PensionContributionInput,
+} from './taxStatus';
 import { currentUkTaxYearWindow, type UkTaxYearWindow } from './taxYear';
 
 const ISA_ALLOWANCE_PENCE = 20_000_00n;
@@ -84,10 +88,14 @@ export interface WaterfallInput {
   emergencyFundCurrentPence: bigint;
   debts: DebtInput[];
   /** The "realistic investment returns" benchmark a debt's rate must beat to count as
-   * "high-interest" — a percent string like "5.500". Not hardcoded: the resolver
-   * defaults this from `ukHistoricalReturns.ts`'s own UK-calibrated geometric-mean
-   * real return, the same source of truth the retirement engine already uses for
-   * "realistic returns", surfaced as an assumption rather than baked in silently. */
+   * "high-interest" — a percent string like "9.998". Not hardcoded: the resolver
+   * defaults this from `ukHistoricalReturns.ts`'s `meanNominalEquityReturnPct()` — the
+   * arithmetic mean of the same UK-calibrated JST series the retirement engine already
+   * uses, converted to **nominal** terms via the Fisher relation. Nominal, not real,
+   * deliberately: a debt's interest rate is itself a nominal figure (a lender's quoted
+   * APR is never inflation-adjusted), so comparing it against a *real* return
+   * understated the true threshold by roughly the long-run inflation rate — a bug
+   * found and fixed during Phase 4.5's first independent review. */
   debtBenchmarkRatePct: string;
   people: PersonWaterfallInput[];
 }
@@ -156,31 +164,53 @@ export function computeContributionWaterfall(input: WaterfallInput): WaterfallRe
     );
   }
 
-  // 2. High-interest debt — any debt whose rate beats the benchmark, highest rate first.
+  // 2. High-interest debt — any debt whose rate beats the benchmark, highest rate
+  // first. A non-finite benchmark (a malformed override slipping past the resolver's
+  // own validation) would make every `>` comparison false silently — guarded
+  // explicitly so it instead skips the step with a warning, never a silent no-op.
   const benchmark = Number(input.debtBenchmarkRatePct);
-  const highInterestDebts = input.debts
-    .filter((debt) => debt.interestRatePct !== null && Number(debt.interestRatePct) > benchmark)
-    .sort((a, b) => Number(b.interestRatePct) - Number(a.interestRatePct));
-  for (const debt of highInterestDebts) {
-    allocate(
-      'high_interest_debt',
-      debt.personId,
-      `Pay down ${debt.name}`,
-      debt.balancePence,
-      `${debt.interestRatePct}% APR beats the ${input.debtBenchmarkRatePct}% realistic-returns benchmark.`,
+  if (!Number.isFinite(benchmark)) {
+    dataQualityWarnings.push(
+      `The debt interest-rate benchmark ("${input.debtBenchmarkRatePct}") isn't a valid rate, so the high-interest-debt step was skipped.`,
     );
+  } else {
+    const highInterestDebts = input.debts
+      .filter((debt) => debt.interestRatePct !== null && Number(debt.interestRatePct) > benchmark)
+      .sort((a, b) => Number(b.interestRatePct) - Number(a.interestRatePct));
+    for (const debt of highInterestDebts) {
+      if (debt.balancePence <= 0n) {
+        dataQualityWarnings.push(
+          `${debt.name}: no balance entered, so it can't be recommended for payoff even though its rate qualifies as high-interest.`,
+        );
+        continue;
+      }
+      allocate(
+        'high_interest_debt',
+        debt.personId,
+        `Pay down ${debt.name}`,
+        debt.balancePence,
+        `${debt.interestRatePct}% APR beats the ${input.debtBenchmarkRatePct}% realistic-returns benchmark.`,
+      );
+    }
   }
 
   const orderedPeople = [...input.people].sort((a, b) => a.personId - b.personId);
+
+  // Tracks each person's ISA usage live as the waterfall allocates into it — seeded
+  // from the resolved input, then incremented by the LISA step's own allocation
+  // below. Reading `person.isaUsedPence` directly in the remaining-ISA step (as an
+  // earlier version of this function did) double-counted LISA money against the same
+  // £20,000 combined allowance, since a LISA contribution counts against both its own
+  // £4,000 sub-limit and the overall ISA allowance simultaneously.
+  const isaUsedPenceByPersonId = new Map(orderedPeople.map((p) => [p.personId, p.isaUsedPence]));
 
   // 3. LISA, per eligible person.
   for (const person of orderedPeople) {
     const age = ageAsOf(person.dateOfBirth, input.todayIso);
     if (!isLisaEligible(age, person.hasExistingLisa)) continue;
-    const headroom = minBigint(
-      LISA_SUBLIMIT_PENCE - person.lisaUsedPence,
-      ISA_ALLOWANCE_PENCE - person.isaUsedPence,
-    );
+    const isaUsedPence = isaUsedPenceByPersonId.get(person.personId)!;
+    const headroom = minBigint(LISA_SUBLIMIT_PENCE - person.lisaUsedPence, ISA_ALLOWANCE_PENCE - isaUsedPence);
+    const beforeRemaining = remaining;
     allocate(
       'lisa',
       person.personId,
@@ -188,21 +218,36 @@ export function computeContributionWaterfall(input: WaterfallInput): WaterfallRe
       headroom > 0n ? headroom : 0n,
       '25% government bonus, within this tax year’s £4,000 LISA sub-limit.',
     );
+    const allocatedPence = beforeRemaining - remaining;
+    if (allocatedPence > 0n) {
+      isaUsedPenceByPersonId.set(person.personId, isaUsedPence + allocatedPence);
+    }
   }
 
-  // 4. Remaining ISA allowance, per person.
+  // 4. Remaining ISA allowance, per person. The Cash ISA-specific £12,000-under-65
+  // sub-limit that applies from 6 April 2027 is deliberately not enforced here: this
+  // step is wrapper-agnostic (it doesn't distinguish cash vs. S&S ISA), and applying a
+  // cash-specific cap to a blended recommendation would need splitting ISA usage
+  // tracking by sub-type — a larger redesign than this fix pass, and dormant until
+  // 2027 regardless. Known limitation, not silently guessed at: an earlier version of
+  // this rationale claimed the cap was applied when it wasn't.
   for (const person of orderedPeople) {
-    const headroom = ISA_ALLOWANCE_PENCE - person.isaUsedPence;
-    const cashCap = cashIsaSubLimitPence(input.todayIso, person.dateOfBirth);
-    const rationale =
-      cashCap !== null
-        ? 'Remaining £20,000 ISA allowance this tax year. A dated Cash ISA sub-limit applies for anyone under 65 from 6 April 2027.'
-        : 'Remaining £20,000 ISA allowance this tax year.';
-    allocate('remaining_isa', person.personId, `${person.name}: ISA`, headroom > 0n ? headroom : 0n, rationale);
+    const isaUsedPence = isaUsedPenceByPersonId.get(person.personId)!;
+    const headroom = ISA_ALLOWANCE_PENCE - isaUsedPence;
+    allocate(
+      'remaining_isa',
+      person.personId,
+      `${person.name}: ISA`,
+      headroom > 0n ? headroom : 0n,
+      'Remaining £20,000 ISA allowance this tax year.',
+    );
   }
 
-  // 5. Further pension, capped by the annual allowance (MPAA-restricted where it
-  // applies) and 100% of relevant UK earnings — no carry-forward.
+  // 5. Further pension, capped by the lesser of two independent limits — neither is
+  // "member + employer combined against income": the annual allowance (MPAA-restricted
+  // where it applies) tests member+employer together, but the 100%-of-relevant-earnings
+  // limit tests the *member's own* contribution only, since employer contributions
+  // aren't limited by the member's earnings. No carry-forward modelled either way.
   for (const person of orderedPeople) {
     if (person.grossIncomePence === null) {
       dataQualityWarnings.push(
@@ -211,19 +256,24 @@ export function computeContributionWaterfall(input: WaterfallInput): WaterfallRe
       continue;
     }
     const annualAllowance = computeAnnualAllowanceStatus(person.hasFlexiblyAccessedPension);
-    const alreadyContributedPence = person.pensionContributions.reduce(
-      (sum, c) => sum + c.amountPence + c.employerAmountPence,
+    const memberGrossContributedPence = person.pensionContributions.reduce(
+      (sum, c) => sum + memberGrossContributionPence(c),
       0n,
     );
-    const cap = minBigint(annualAllowance.effectiveAllowancePence, person.grossIncomePence);
-    const headroom = cap - alreadyContributedPence;
+    const allowanceConsumedPence = person.pensionContributions.reduce(
+      (sum, c) => sum + pensionAllowanceConsumedPence(c),
+      0n,
+    );
+    const earningsHeadroom = person.grossIncomePence - memberGrossContributedPence;
+    const allowanceHeadroom = annualAllowance.effectiveAllowancePence - allowanceConsumedPence;
+    const headroom = minBigint(earningsHeadroom, allowanceHeadroom);
     allocate(
       'further_pension',
       person.personId,
       `${person.name}: pension`,
       headroom > 0n ? headroom : 0n,
       annualAllowance.mpaaRestricted
-        ? 'Capped by the £10,000 Money Purchase Annual Allowance. No carry-forward modelled.'
+        ? 'Capped by the £10,000 Money Purchase Annual Allowance and relevant UK earnings. No carry-forward modelled.'
         : 'Capped by the £60,000 annual allowance and relevant UK earnings. No carry-forward modelled.',
     );
   }

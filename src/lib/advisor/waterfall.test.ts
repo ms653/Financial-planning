@@ -103,6 +103,27 @@ describe('computeContributionWaterfall', () => {
     expect(result.steps.find((s) => s.id === 'high_interest_debt')).toBeUndefined();
   });
 
+  it('warns instead of silently dropping a high-interest debt with no balance entered', () => {
+    const result = computeContributionWaterfall(
+      baseInput({
+        debts: [{ accountId: 1, name: 'Credit card', personId: 1, balancePence: 0n, interestRatePct: '24.900' }],
+      }),
+    );
+    expect(result.steps.find((s) => s.id === 'high_interest_debt')).toBeUndefined();
+    expect(result.dataQualityWarnings.some((w) => w.includes('Credit card') && w.includes('no balance'))).toBe(true);
+  });
+
+  it('skips the high-interest-debt step with a warning rather than NaN-comparing on an invalid benchmark', () => {
+    const result = computeContributionWaterfall(
+      baseInput({
+        debtBenchmarkRatePct: 'not-a-rate',
+        debts: [{ accountId: 1, name: 'Credit card', personId: 1, balancePence: 3_000_00n, interestRatePct: '24.900' }],
+      }),
+    );
+    expect(result.steps.find((s) => s.id === 'high_interest_debt')).toBeUndefined();
+    expect(result.dataQualityWarnings.some((w) => w.includes('benchmark'))).toBe(true);
+  });
+
   it('is not LISA-eligible for someone 40+ with no existing LISA', () => {
     const result = computeContributionWaterfall(
       baseInput({ people: [person({ dateOfBirth: '1980-01-01' })] }), // 46 on TODAY
@@ -148,6 +169,23 @@ describe('computeContributionWaterfall', () => {
     expect(isaStep?.amountPence).toBe(6_000_00n);
   });
 
+  it('does not double-count a LISA allocation against the combined £20,000 ISA allowance', () => {
+    // Regression test for the double-allocation bug found by independent review:
+    // reading the resolver's static isaUsedPence in the remaining-ISA step let LISA
+    // money count against the allowance twice.
+    const result = computeContributionWaterfall(
+      baseInput({
+        extraAmountPence: 30_000_00n,
+        people: [person({ dateOfBirth: '2000-01-01' })], // 26, LISA-eligible
+      }),
+    );
+    const lisaPence = result.steps.find((s) => s.id === 'lisa')?.amountPence ?? 0n;
+    const isaPence = result.steps.find((s) => s.id === 'remaining_isa')?.amountPence ?? 0n;
+    expect(lisaPence).toBe(4_000_00n);
+    expect(isaPence).toBe(16_000_00n);
+    expect(lisaPence + isaPence).toBe(20_000_00n); // the combined allowance, not a penny over.
+  });
+
   it('reduces remaining ISA headroom by what has already been used this tax year', () => {
     const result = computeContributionWaterfall(
       baseInput({
@@ -156,6 +194,25 @@ describe('computeContributionWaterfall', () => {
       }),
     );
     expect(result.steps.find((s) => s.id === 'remaining_isa')).toMatchObject({ amountPence: 2_000_00n });
+  });
+
+  it('does not claim to enforce the Cash ISA sub-limit it does not apply, even after 6 April 2027', () => {
+    // Regression test: an earlier version's rationale text implied the £12,000
+    // under-65 Cash ISA cap was applied when the (wrapper-agnostic) step never
+    // actually capped the amount by it.
+    const result = computeContributionWaterfall(
+      baseInput({
+        todayIso: '2027-05-01',
+        extraAmountPence: 20_000_00n,
+        // Default dateOfBirth (1985-04-12) is 42 on this date — not LISA-eligible —
+        // so the LISA step doesn't consume any ISA headroom and this test isolates
+        // the remaining-ISA step's own rationale/amount.
+        people: [person()],
+      }),
+    );
+    const isaStep = result.steps.find((s) => s.id === 'remaining_isa');
+    expect(isaStep?.amountPence).toBe(20_000_00n);
+    expect(isaStep?.rationale).not.toMatch(/sub-limit/i);
   });
 
   it('caps further pension by the standard £60,000 annual allowance minus what is already contributed', () => {
@@ -174,6 +231,50 @@ describe('computeContributionWaterfall', () => {
     );
     // 60,000 allowance - 55,000 already contributed = 5,000 headroom.
     expect(result.steps.find((s) => s.id === 'further_pension')).toMatchObject({ amountPence: 5_000_00n });
+  });
+
+  it('gross up a relief-at-source contribution before consuming it against the annual allowance', () => {
+    // Regression test: an earlier version summed amountPence + employerAmountPence at
+    // face value regardless of method, understating a RAS contribution's true
+    // allowance usage by 20%.
+    const result = computeContributionWaterfall(
+      baseInput({
+        extraAmountPence: 100_000_00n,
+        people: [
+          person({
+            grossIncomePence: 100_000_00n,
+            pensionContributions: [
+              { amountPence: 40_000_00n, method: 'relief_at_source', employerAmountPence: 0n },
+            ],
+          }),
+        ],
+      }),
+    );
+    // £40,000 RAS -> £50,000 gross consumed; £60,000 allowance - £50,000 = £10,000 headroom.
+    expect(result.steps.find((s) => s.id === 'further_pension')).toMatchObject({ amountPence: 10_000_00n });
+  });
+
+  it('does not apply the earnings-based cap to employer contributions', () => {
+    // Regression test: the 100%-of-relevant-earnings limit constrains the member's own
+    // contribution only; an earlier version subtracted member+employer together from
+    // income, wrongly limiting headroom by money the member never earned against.
+    const result = computeContributionWaterfall(
+      baseInput({
+        extraAmountPence: 100_000_00n,
+        people: [
+          person({
+            grossIncomePence: 20_000_00n,
+            pensionContributions: [
+              { amountPence: 2_000_00n, method: 'net_pay', employerAmountPence: 15_000_00n },
+            ],
+          }),
+        ],
+      }),
+    );
+    // Earnings headroom: £20,000 income - £2,000 member = £18,000.
+    // Allowance headroom: £60,000 - £17,000 (member+employer) = £43,000.
+    // Binding limit is earnings: £18,000.
+    expect(result.steps.find((s) => s.id === 'further_pension')).toMatchObject({ amountPence: 18_000_00n });
   });
 
   it('restricts further pension to the £10,000 MPAA once flexibly accessed', () => {

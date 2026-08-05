@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { meanRealEquityReturnPct, ukHistoricalRealReturns } from './ukHistoricalReturns';
+import { meanNominalEquityReturnPct, meanRealEquityReturnPct, ukHistoricalRealReturns } from './ukHistoricalReturns';
 import { formatScaledDecimal } from '@/lib/portfolio/valuation';
 import { RATE_SCALE } from '@/lib/retirement/engineTypes';
 
@@ -98,5 +98,32 @@ describe('meanRealEquityReturnPct', () => {
 
   it('matches the percent field regex used elsewhere for stored rates', () => {
     expect(meanRealEquityReturnPct()).toMatch(/^\d+\.\d{3}$/);
+  });
+});
+
+describe('meanNominalEquityReturnPct', () => {
+  it('is higher than the real mean by roughly the long-run inflation rate', () => {
+    const real = Number(meanRealEquityReturnPct());
+    const nominal = Number(meanNominalEquityReturnPct());
+    expect(nominal).toBeGreaterThan(real);
+    // Fisher relation means the gap approximates mean inflation, not exactly equals it
+    // (compounding cross-term) — a wide but meaningful sanity band.
+    expect(nominal - real).toBeGreaterThan(1);
+    expect(nominal - real).toBeLessThan(6);
+  });
+
+  it('matches the percent field regex used elsewhere for stored rates', () => {
+    expect(meanNominalEquityReturnPct()).toMatch(/^\d+\.\d{3}$/);
+  });
+
+  it('matches a hand-computed Fisher-relation arithmetic mean', () => {
+    const data = ukHistoricalRealReturns();
+    const expected =
+      data.reduce((sum, row) => {
+        const real = toNumber(row.equityRealReturn);
+        const inflation = toNumber(row.inflationRate);
+        return sum + ((1 + real) * (1 + inflation) - 1);
+      }, 0) / data.length;
+    expect(Number(meanNominalEquityReturnPct())).toBeCloseTo(expected * 100, 0);
   });
 });

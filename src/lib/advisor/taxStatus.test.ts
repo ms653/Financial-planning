@@ -3,6 +3,8 @@ import {
   computeAdjustedNetIncomePence,
   computeAnnualAllowanceStatus,
   computePersonalAllowanceTaperStatus,
+  memberGrossContributionPence,
+  pensionAllowanceConsumedPence,
   personalAllowanceTaperCeilingPence,
   type PensionContributionInput,
 } from './taxStatus';
@@ -130,5 +132,39 @@ describe('computeAnnualAllowanceStatus', () => {
     expect(status.mpaaRestricted).toBe(true);
     expect(status.standardAllowancePence).toBe(60_000_00n);
     expect(status.effectiveAllowancePence).toBe(10_000_00n);
+  });
+});
+
+describe('memberGrossContributionPence', () => {
+  it('grosses up a relief-at-source amount by ÷0.8', () => {
+    expect(
+      memberGrossContributionPence(contribution({ amountPence: 40_000_00n, method: 'relief_at_source' })),
+    ).toBe(50_000_00n);
+  });
+
+  it('takes salary-sacrifice and net-pay amounts at face value', () => {
+    expect(
+      memberGrossContributionPence(contribution({ amountPence: 40_000_00n, method: 'salary_sacrifice' })),
+    ).toBe(40_000_00n);
+    expect(memberGrossContributionPence(contribution({ amountPence: 40_000_00n, method: 'net_pay' }))).toBe(
+      40_000_00n,
+    );
+  });
+});
+
+describe('pensionAllowanceConsumedPence', () => {
+  it('sums the grossed member contribution and the employer contribution', () => {
+    const consumed = pensionAllowanceConsumedPence(
+      contribution({ amountPence: 40_000_00n, method: 'relief_at_source', employerAmountPence: 5_000_00n }),
+    );
+    // £40,000 RAS -> £50,000 gross, plus £5,000 employer -> £55,000.
+    expect(consumed).toBe(55_000_00n);
+  });
+
+  it('never grosses up the employer amount itself', () => {
+    const consumed = pensionAllowanceConsumedPence(
+      contribution({ amountPence: 0n, method: 'relief_at_source', employerAmountPence: 10_000_00n }),
+    );
+    expect(consumed).toBe(10_000_00n);
   });
 });

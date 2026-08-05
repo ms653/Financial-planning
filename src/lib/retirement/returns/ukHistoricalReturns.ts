@@ -335,3 +335,30 @@ export function meanRealEquityReturnPct(): string {
   const meanFraction = Number(meanScaled) / Number(SCALE_UNIT);
   return (meanFraction * 100).toFixed(3);
 }
+
+/**
+ * The arithmetic mean of this series' **nominal** equity returns, as a percent string
+ * — the correct benchmark for comparing against a debt's interest rate, which is
+ * itself a nominal figure (a lender's quoted APR is never inflation-adjusted). Using
+ * `meanRealEquityReturnPct` for that comparison was a real bug: it understated the
+ * true nominal threshold by roughly the long-run inflation rate, found and fixed
+ * during Phase 4.5's first independent review.
+ *
+ * Nominal isn't stored directly on `UkHistoricalReturnYear` (only the real series is
+ * kept, per this file's own "genuine total returns, not prices or yields" sourcing
+ * discipline) — recomputed per year via the Fisher relation forward,
+ * `nominal = (1 + real) × (1 + inflation) − 1`, the exact inverse of
+ * `realReturnFraction` above, rather than re-deriving it from a second independently
+ * fetched nominal series this module doesn't otherwise need.
+ */
+export function meanNominalEquityReturnPct(): string {
+  const years = ukHistoricalRealReturns();
+  const sumScaled = years.reduce((sum, year) => {
+    const nominalScaled =
+      roundDiv((SCALE_UNIT + year.equityRealReturn) * (SCALE_UNIT + year.inflationRate), SCALE_UNIT) - SCALE_UNIT;
+    return sum + nominalScaled;
+  }, 0n);
+  const meanScaled = sumScaled / BigInt(years.length);
+  const meanFraction = Number(meanScaled) / Number(SCALE_UNIT);
+  return (meanFraction * 100).toFixed(3);
+}

@@ -15,7 +15,7 @@ import {
 import { taxWrapperForType } from '@/lib/accounts/types';
 import { todayIso } from '@/lib/accounts/validation';
 import { penceToNumeric } from '@/lib/money';
-import { meanRealEquityReturnPct } from '@/lib/retirement/returns/ukHistoricalReturns';
+import { meanNominalEquityReturnPct } from '@/lib/retirement/returns/ukHistoricalReturns';
 import { resolveWaterfallInput } from './resolveWaterfallInput';
 
 /**
@@ -141,7 +141,7 @@ describe.skipIf(!connectionString)('resolveWaterfallInput against a real Postgre
       interestRatePct: '24.900',
     });
 
-    expect(input.debtBenchmarkRatePct).toBe(meanRealEquityReturnPct());
+    expect(input.debtBenchmarkRatePct).toBe(meanNominalEquityReturnPct());
 
     expect(input.people).toHaveLength(1);
     const resolvedAlex = input.people[0]!;
@@ -177,6 +177,24 @@ describe.skipIf(!connectionString)('resolveWaterfallInput against a real Postgre
     expect(warnings[0]).toContain('jointly-owned');
   });
 
+  it('flags a jointly-owned LISA even when it has no regular_contribution row', async () => {
+    // Regression test: the joint-account warning previously only fired inside the
+    // regular_contribution loop, so a joint LISA with zero contributions was silently
+    // excluded from hasExistingLisa with no warning at all.
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    const householdId = household!.id;
+    await db.insert(people).values({ householdId, name: 'Alex', dateOfBirth: '1985-04-12' });
+
+    await seedAccount(householdId, null, 'lisa', 500_00n, { name: 'Joint LISA' });
+
+    const { input, warnings } = await resolveWaterfallInput(householdId, 5_000_00n);
+
+    expect(input.people[0]!.hasExistingLisa).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('Joint LISA');
+    expect(warnings[0]).toContain('jointly-owned');
+  });
+
   it('accepts an explicit debt-benchmark-rate override instead of the default', async () => {
     const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
     const { input } = await resolveWaterfallInput(household!.id, 1_000_00n, {
@@ -185,9 +203,26 @@ describe.skipIf(!connectionString)('resolveWaterfallInput against a real Postgre
     expect(input.debtBenchmarkRatePct).toBe('7.000');
   });
 
+  it('falls back to the default rate, with a warning, on an invalid override', async () => {
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    const { input, warnings } = await resolveWaterfallInput(household!.id, 1_000_00n, {
+      debtBenchmarkRatePctOverride: 'not-a-rate',
+    });
+    expect(input.debtBenchmarkRatePct).toBe(meanNominalEquityReturnPct());
+    expect(warnings.some((w) => w.includes('not-a-rate'))).toBe(true);
+  });
+
   it('treats a household with no emergency-fund target set as null, not zero', async () => {
     const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
     const { input } = await resolveWaterfallInput(household!.id, 1_000_00n);
     expect(input.emergencyFundTargetPence).toBeNull();
   });
+
+  // A dedicated "reads the target of the householdId actually passed in, not some
+  // other household's" test isn't expressible here: `household_singleton` (a
+  // `uniqueIndex` on `sql\`(true)\`` — see schema.ts) hard-limits this table to one
+  // row app-wide, so a second household can't even be inserted to prove the scoping
+  // against. The fix (querying `households` by `eq(households.id, householdId)`
+  // instead of via `getSetupState()`'s always-lowest-id lookup) is still correct and
+  // exercised by every test above, which all pass a real `householdId` through.
 });

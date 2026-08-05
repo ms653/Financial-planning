@@ -58,6 +58,33 @@ export interface PensionContributionInput {
 }
 
 /**
+ * A single member contribution, grossed up to what actually lands in the pension.
+ * `relief_at_source` amounts are what the member pays from net (post-tax) pay, grossed
+ * ÷0.8 by the scheme's own basic-rate top-up; `salary_sacrifice`/`net_pay` amounts are
+ * already the gross figure (paid pre-tax, 1:1). This is the figure the **annual
+ * allowance** and the **100%-of-relevant-earnings** cap both test against — a
+ * different question from ANI's own grossing above (which subtracts RAS at the same
+ * ×1.25 rate, but for a different reason: reducing taxable income, not measuring
+ * pension input).
+ */
+export function memberGrossContributionPence(contribution: PensionContributionInput): bigint {
+  return contribution.method === 'relief_at_source'
+    ? (contribution.amountPence * 5n) / 4n
+    : contribution.amountPence;
+}
+
+/**
+ * How much of the pension annual allowance one contribution consumes: the member's own
+ * grossed contribution (see `memberGrossContributionPence`) plus the employer's, which
+ * is never grossed up (it was never subject to relief). Use this — not
+ * `amountPence + employerAmountPence` — anywhere the annual allowance is being tested,
+ * or a `relief_at_source` contribution understates its true allowance usage by 20%.
+ */
+export function pensionAllowanceConsumedPence(contribution: PensionContributionInput): bigint {
+  return memberGrossContributionPence(contribution) + contribution.employerAmountPence;
+}
+
+/**
  * Adjusted net income (ANI) — the personal-allowance-taper test.
  *
  * `grossIncomePence` is pre-sacrifice contractual salary, matching
