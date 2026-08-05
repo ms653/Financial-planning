@@ -128,6 +128,17 @@ export const ROADMAP_ITEMS: readonly RoadmapItem[] = [
     dependsOn: ['phase-4-5-cash-allocation'],
   },
   {
+    id: 'phase-4-8-fire-planning',
+    phaseLabel: '4.8',
+    title: 'FIRE planning',
+    summary:
+      'Financial-independence tracking — your FIRE number, current savings rate, and a Coast FIRE projection — plus honest UK-specific guidance on bridging the gap between an early retirement and pension access age.',
+    detail:
+      "FIRE (Financial Independence, Retire Early) metrics, reusing the Phase 3 engine rather than a separate calculator: a **FIRE number** (target annual spending ÷ a safe withdrawal rate — Phase 3 already defaults to a UK-calibrated 3.0–3.5% rate for long retirements, more conservative and more defensible than the commonly-cited flat 4% rule, which most current FIRE research itself now qualifies down to ~3–3.5% for 35–50-year horizons); a **savings rate** metric (not currently tracked anywhere in this app despite being the single most-cited FIRE input); and a **Coast FIRE** projection (the age at which current savings alone, left to compound with no further contributions, reach the FIRE number by a target retirement age) — computed by running the existing engine with contributions zeroed from today, not new simulation code. Early retirement itself is not a new scenario type: Phase 4.6 already names it as a scenario-comparison case, so this phase is the FIRE-specific *metrics layer* on top of that, not a duplicate retirement calculator. **The UK-specific piece genuinely worth calling out**: pension access age is 55 today, rising to 57 from April 2028, so anyone retiring before then needs a funded 'bridge' from ISA/GIA drawdown while their pension keeps compounding untouched — modeling that bridge accurately is exactly Phase 8's wrapper-aware withdrawal sequencing (ISA vs. pension vs. GIA order), so a first version here can show the FIRE number/savings rate/Coast FIRE date against Phase 3's existing fixed-order assumption, but the bridge-years figure only becomes fully accurate once Phase 8 ships — a disclosed limitation, not a hard blocker for shipping this phase first.",
+    status: 'queued',
+    dependsOn: ['phase-3-retirement-engine', 'phase-4-6-scenario-planning'],
+  },
+  {
     id: 'phase-5-open-banking',
     phaseLabel: '5',
     title: 'Bank sync (Open Banking)',
@@ -162,7 +173,7 @@ export const ROADMAP_ITEMS: readonly RoadmapItem[] = [
     summary:
       'A more advanced retirement feature: choosing the smartest order to draw down ISA vs. pension vs. taxable accounts. Ongoing maintenance as UK tax rules change, so kept optional and last.',
     detail:
-      "Wrapper-aware withdrawal sequencing (ISA vs. pension vs. GIA drawdown order, PCLS timing optimization, CGT/dividend-allowance-aware GIA drawdown) — explicit maintenance burden as UK tax rules and allowances change most tax years. **Note**: Phase 3's engine already takes \"wrapper withdrawal order\" as a scenario input (Data model, above) — its Phase 3 treatment must be an honestly documented simplification (e.g. a fixed or user-specified order, not optimized), not a half-implementation of this phase arriving early and undocumented.",
+      "Wrapper-aware withdrawal sequencing (ISA vs. pension vs. GIA drawdown order, PCLS timing optimization, CGT/dividend-allowance-aware GIA drawdown) — explicit maintenance burden as UK tax rules and allowances change most tax years. **Note**: Phase 3's engine already takes \"wrapper withdrawal order\" as a scenario input (Data model, above) — its Phase 3 treatment must be an honestly documented simplification (e.g. a fixed or user-specified order, not optimized), not a half-implementation of this phase arriving early and undocumented. Also what makes Phase 4.8's FIRE bridge-years figure (ISA/GIA drawdown before pension access age) fully accurate, rather than resting on Phase 3's fixed-order assumption.",
     status: 'queued',
     dependsOn: ['phase-3-retirement-engine'],
   },
