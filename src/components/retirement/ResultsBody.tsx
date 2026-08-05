@@ -45,6 +45,7 @@ export function ResultsBody({
   editHref,
   preRetirementContributions,
   jointAnnualContribution,
+  anyoneStillWorking,
 }: {
   scenarioId: number;
   targetSuccessRatePct: string;
@@ -55,13 +56,21 @@ export function ResultsBody({
   referencePersonName: string;
   scenarioUpdatedAtIso: string;
   editHref: string;
-  /** People still short of their own `retirementAge` — Phase 4.4. Empty when everyone
-   * modelled has already reached theirs; the note doesn't render at all in that case. */
+  /** People still short of their own `retirementAge` with a nonzero personal
+   * contribution — Phase 4.4. Can be empty even while `anyoneStillWorking` is true
+   * (e.g. only a joint contribution, or none at all): the card's own visibility is
+   * gated on `anyoneStillWorking`, not on this array having entries. */
   preRetirementContributions: PreRetirementContribution[];
   /** Pre-formatted, e.g. "£2,400/year" — total regular_contribution amount across
    * every jointly-owned account, shown only when there's at least one still-working
    * person (the same condition that keeps it actually landing in the simulation). */
   jointAnnualContribution: string | null;
+  /** Whether the "Before retirement" card should render at all. Independent of
+   * `preRetirementContributions.length` on purpose — a household can have someone
+   * still working with zero *personal* contributions recorded (only a joint one, or
+   * none), and the engine is still simulating that (withholding all drawdown, plus
+   * any joint contribution) regardless, so the disclosure still belongs on screen. */
+  anyoneStillWorking: boolean;
 }) {
   const [runId, setRunId] = useState<number | null>(initialRun?.id ?? null);
   const [starting, setStarting] = useState(false);
@@ -215,7 +224,7 @@ export function ResultsBody({
 
       <AssumptionsSummary assumptions={assumptions} personNames={personNamesMap} />
 
-      {preRetirementContributions.length > 0 ? (
+      {anyoneStillWorking ? (
         <div className="rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6">
           <h2 className="font-serif text-lg text-content">Before retirement</h2>
           <p className="mt-1 text-sm text-content-muted">
@@ -226,14 +235,18 @@ export function ResultsBody({
             </Link>
             , everything else via each account’s own page) and draws down nothing.
           </p>
-          <ul className="mt-3 space-y-1 text-sm text-content">
-            {preRetirementContributions.map((p) => (
-              <li key={p.personId}>
-                {p.name}: {p.annualContribution}/year until age {p.retirementAge}
-              </li>
-            ))}
-            {jointAnnualContribution ? <li>Joint accounts: {jointAnnualContribution}/year</li> : null}
-          </ul>
+          {preRetirementContributions.length > 0 || jointAnnualContribution ? (
+            <ul className="mt-3 space-y-1 text-sm text-content">
+              {preRetirementContributions.map((p) => (
+                <li key={p.personId}>
+                  {p.name}: {p.annualContribution}/year until age {p.retirementAge}
+                </li>
+              ))}
+              {jointAnnualContribution ? <li>Joint accounts: {jointAnnualContribution}/year</li> : null}
+            </ul>
+          ) : (
+            <p className="mt-3 text-sm text-content-faint">No contributions currently recorded.</p>
+          )}
         </div>
       ) : null}
 

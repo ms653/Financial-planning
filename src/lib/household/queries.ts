@@ -490,14 +490,19 @@ export interface RegularContributionAmount {
  * retirement results page's "Before retirement" note (Phase 4.4's follow-up). Not
  * filtered by account type: only non-pension, non-debt, non-property accounts ever get
  * a row in the first place (enforced at the action layer), same trust-the-invariant
- * posture `getPortfolioHoldings` already takes toward `holdsSecurities`. */
+ * posture `getPortfolioHoldings` already takes toward `holdsSecurities`. **Is** filtered
+ * by `archived`, matching `getAccountsWithBalances`'s own default: `resolveScenario.ts`
+ * sources contributions through that same archived-excluding query, so an archived
+ * account's contribution used to appear in this note while the engine silently
+ * excluded it from the simulation — a real UI/engine divergence, fixed by agreeing on
+ * the same "live accounts only" scope here. */
 export async function getRegularContributionAmounts(householdId: number): Promise<RegularContributionAmount[]> {
   const db = getDb();
   return db
     .select({ personId: accounts.personId, amount: regularContributions.amount })
     .from(regularContributions)
     .innerJoin(accounts, eq(accounts.id, regularContributions.accountId))
-    .where(eq(accounts.householdId, householdId));
+    .where(and(eq(accounts.householdId, householdId), eq(accounts.archived, false)));
 }
 
 export interface DebtAccountWithTerms {

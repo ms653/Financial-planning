@@ -298,6 +298,52 @@ describe.skipIf(!connectionString)('resolveScenario against a real Postgres', ()
     expect(resolved!.jointAnnualContributionsPence.cash_isa).toBe(240_000n);
   });
 
+  it('sums a regular_contribution on a sipp_pension account with pension_contribution, rather than one overwriting the other', async () => {
+    // Regression test: a plain object-spread previously let whichever of the two
+    // sources was applied second silently clobber the other on the shared
+    // `sipp_pension` key. This data shape (a regular_contribution row landing on a
+    // sipp_pension-typed account) is now refused going forward by the account-edit
+    // guard in household/actions.ts, but the merge itself should still be correct
+    // defense in depth, not dependent on that guard alone.
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    const householdId = household!.id;
+    const [alex] = await db
+      .insert(people)
+      .values({ householdId, name: 'Alex', dateOfBirth: dobYearsAgo(40) })
+      .returning();
+
+    await db
+      .insert(pensionContributions)
+      .values({ personId: alex!.id, amount: '5000.00', method: 'salary_sacrifice', employerAmount: '2000.00' });
+
+    const [sipp] = await db
+      .insert(accounts)
+      .values({ householdId, personId: alex!.id, name: 'Alex SIPP', type: 'sipp_pension', taxWrapper: 'pension' })
+      .returning();
+    await db.insert(regularContributions).values([{ accountId: sipp!.id, ticker: null, amount: '1000.00' }]);
+
+    const assumptions = {
+      schemaVersion: 1,
+      annualSpending: '30000.00',
+      inflationPct: '2.500',
+      equityAllocationPct: '60.000',
+      targetSuccessRatePct: '90.000',
+      flatEffectiveTaxRatePct: '20.000',
+      wrapperWithdrawalOrder: ['sipp_pension'],
+      people: [{ personId: alex!.id, retirementAge: 65, planEndAge: 95 }],
+    };
+    const [scenario] = await db
+      .insert(retirementScenarios)
+      .values({ householdId, name: 'Baseline', assumptions })
+      .returning();
+
+    const resolved = await resolveScenario(scenario!.id, householdId);
+
+    const alexResolved = resolved!.people.find((p) => p.personId === alex!.id)!;
+    // pension_contribution: (5000 + 2000) * 100 = 700,000. regular_contribution: 100,000.
+    expect(alexResolved.annualContributionsPence.sipp_pension).toBe(800_000n);
+  });
+
   it('returns null for a scenario that does not exist', async () => {
     const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
     expect(await resolveScenario(999_999, household!.id)).toBeNull();

@@ -435,6 +435,29 @@ export async function updateAccount(formData: FormData): Promise<ActionResult> {
       };
     }
 
+    // Same reasoning as the asset/liability boundary above, for a narrower case:
+    // addRegularContribution refuses debt/property/sipp_pension outright, but an edit
+    // could previously retype an account *into* one of those after a contribution
+    // already existed on it — resolveScenario.ts would then either silently drop the
+    // contribution or, worse, merge it into an unrelated pension_contribution row on
+    // the same wrapper key. Refused here instead, matching this function's own
+    // "re-create the account instead" posture.
+    if (REGULAR_CONTRIBUTION_INELIGIBLE_TYPES.has(input.type)) {
+      const [hasContribution] = await db
+        .select({ id: regularContributions.id })
+        .from(regularContributions)
+        .where(eq(regularContributions.accountId, accountId))
+        .limit(1);
+      if (hasContribution) {
+        return {
+          ok: false,
+          errors: {},
+          formError:
+            'This account has a regular contribution recorded, which isn’t valid for that type. Remove the contribution first, or archive this account and add a new one instead.',
+        };
+      }
+    }
+
     await db.transaction(async (tx) => {
       await tx
         .update(accounts)

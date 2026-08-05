@@ -763,6 +763,61 @@ describe.skipIf(!connectionString)('Phase 1 end-to-end flow', () => {
       const detail = await queries.getAccountDetail(householdId, isa.id);
       expect(detail!.type).toBe('ss_isa');
     });
+
+    it('refuses to retype an account with a regular contribution into an ineligible type', async () => {
+      // Regression test: addRegularContribution refuses debt/property/sipp_pension
+      // outright, but updateAccount only blocked the asset/liability boundary — a
+      // GIA already carrying a contribution could previously be retyped to
+      // sipp_pension afterwards, silently orphaning or misattributing that
+      // contribution in resolveScenario.ts.
+      const { householdId, alex } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+
+      await actions.addRegularContribution(
+        form({ accountId: String(isa.id), amount: '2400', ticker: '' }),
+      );
+
+      const result = await actions.updateAccount(
+        form({
+          accountId: String(isa.id),
+          name: 'Vanguard S&S ISA',
+          type: 'sipp_pension',
+          ownerIds: [String(alex.id)],
+        }),
+      );
+
+      expect(result.ok).toBe(false);
+      const detail = await queries.getAccountDetail(householdId, isa.id);
+      expect(detail!.type).toBe('ss_isa');
+    });
+
+    it('still allows retyping into an ineligible type once the contribution is removed', async () => {
+      const { householdId, alex } = await completeGuidedSetup();
+      const accounts = await queries.getAccountsWithBalances(householdId);
+      const isa = accounts.find((account) => account.name === 'Vanguard S&S ISA')!;
+
+      await actions.addRegularContribution(
+        form({ accountId: String(isa.id), amount: '2400', ticker: '' }),
+      );
+      const detailBefore = await queries.getAccountDetail(householdId, isa.id);
+      await actions.deleteRegularContribution(
+        form({ contributionId: String(detailBefore!.regularContributions[0]!.id) }),
+      );
+
+      const result = await actions.updateAccount(
+        form({
+          accountId: String(isa.id),
+          name: 'Vanguard S&S ISA',
+          type: 'sipp_pension',
+          ownerIds: [String(alex.id)],
+        }),
+      );
+
+      expect(result.ok).toBe(true);
+      const detail = await queries.getAccountDetail(householdId, isa.id);
+      expect(detail!.type).toBe('sipp_pension');
+    });
   });
 
   describe('holdings', () => {

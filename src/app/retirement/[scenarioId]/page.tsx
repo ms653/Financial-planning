@@ -60,6 +60,19 @@ export default async function ScenarioResultsPage({ params }: { params: { scenar
     }
   }
 
+  // Whether the "Before retirement" card should show at all — independent of
+  // contribution *amounts*. Regression fix: this used to be derived from
+  // `preRetirementContributions.length > 0`, so a household with a still-working
+  // person but zero *personal* contributions (only a joint one, or none at all) got
+  // no card whatsoever — even though the engine was still both simulating a joint
+  // contribution and withholding all drawdown until everyone retires, with nothing on
+  // screen disclosing either.
+  const anyoneStillWorking = assumptions.people.some((assumptionPerson) => {
+    const person = people.find((p) => p.id === assumptionPerson.personId);
+    if (!person) return false;
+    return ageAsOf(person.dateOfBirth, today) < assumptionPerson.retirementAge;
+  });
+
   const preRetirementContributions: PreRetirementContribution[] = assumptions.people.flatMap((assumptionPerson) => {
     const person = people.find((p) => p.id === assumptionPerson.personId);
     if (!person) return [];
@@ -85,9 +98,7 @@ export default async function ScenarioResultsPage({ params }: { params: { scenar
   // (deterministicCore.ts's householdFullyRetired gate) — shown only alongside at
   // least one still-working person, the same condition that keeps them landing.
   const jointAnnualContribution =
-    jointRegularContributionPence > 0n && preRetirementContributions.length > 0
-      ? formatMoney(jointRegularContributionPence)
-      : null;
+    jointRegularContributionPence > 0n && anyoneStillWorking ? formatMoney(jointRegularContributionPence) : null;
 
   const otherScenarios = (await getScenarios(setup.householdId)).filter((s) => s.id !== scenarioId);
 
@@ -177,6 +188,7 @@ export default async function ScenarioResultsPage({ params }: { params: { scenar
         editHref={`/retirement/${scenarioId}/edit`}
         preRetirementContributions={preRetirementContributions}
         jointAnnualContribution={jointAnnualContribution}
+        anyoneStillWorking={anyoneStillWorking}
       />
     </AppShell>
   );

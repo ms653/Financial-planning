@@ -146,10 +146,17 @@ export async function resolveScenario(
       );
     }
     const pensionPence = pensionContributionPenceByPersonId.get(person.personId);
+    // Sums onto any existing `sipp_pension` key rather than overwriting it — a plain
+    // object-spread here previously let a `regular_contribution` row that had wrongly
+    // ended up on a `sipp_pension` account (possible before the account-edit guard in
+    // `household/actions.ts` was added) silently clobber the real
+    // `pension_contribution` figure, or vice versa, instead of the two combining.
     const annualContributionsPence: Partial<Record<DrawdownAccountType, bigint>> = {
       ...personalContributionsByPersonId.get(person.personId),
-      ...(pensionPence ? { sipp_pension: pensionPence } : {}),
     };
+    if (pensionPence) {
+      annualContributionsPence.sipp_pension = (annualContributionsPence.sipp_pension ?? 0n) + pensionPence;
+    }
     return {
       personId: person.personId,
       currentAge: ageAsOf(dob, today),

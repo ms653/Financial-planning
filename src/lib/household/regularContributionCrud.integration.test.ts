@@ -10,6 +10,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import * as schema from '@/lib/db/schema';
 import { accounts, households, regularContributions, type AccountTypeValue } from '@/lib/db/schema';
 import { addRegularContribution, deleteRegularContribution, updateRegularContribution } from '@/lib/household/actions';
+import { getRegularContributionAmounts } from '@/lib/household/queries';
 import { taxWrapperForType } from '@/lib/accounts/types';
 
 /**
@@ -46,10 +47,16 @@ describe.skipIf(!connectionString)('regular contribution CRUD against a real Pos
     householdId = household!.id;
   });
 
-  async function seedAccount(type: AccountTypeValue): Promise<number> {
+  async function seedAccount(type: AccountTypeValue, overrides: Partial<{ archived: boolean }> = {}): Promise<number> {
     const [account] = await db
       .insert(accounts)
-      .values({ householdId, name: `Test ${type}`, type, taxWrapper: taxWrapperForType(type) })
+      .values({
+        householdId,
+        name: `Test ${type}`,
+        type,
+        taxWrapper: taxWrapperForType(type),
+        archived: overrides.archived ?? false,
+      })
       .returning();
     return account!.id;
   }
@@ -130,5 +137,54 @@ describe.skipIf(!connectionString)('regular contribution CRUD against a real Pos
     // forged id fails loudly rather than silently matching zero rows.
     const result = await deleteRegularContribution(formData({ contributionId: '999999' }));
     expect(result.ok).toBe(false);
+  });
+});
+
+describe.skipIf(!connectionString)('getRegularContributionAmounts against a real Postgres', () => {
+  let pool: Pool;
+  let db: NodePgDatabase<typeof schema>;
+  let householdId: number;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString, max: 4 });
+    db = drizzle(pool, { schema });
+    await pool.query('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;');
+    await pool.query('DROP SCHEMA IF EXISTS drizzle CASCADE;');
+    await migrate(db, { migrationsFolder: './drizzle' });
+    process.env.DATABASE_URL = connectionString;
+  }, 60_000);
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  beforeEach(async () => {
+    await pool.query('TRUNCATE TABLE regular_contribution, account, household RESTART IDENTITY CASCADE;');
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    householdId = household!.id;
+  });
+
+  it('excludes an archived account’s contribution — matching resolveScenario.ts, which never simulates it', async () => {
+    // Regression test: this query had no archived filter, so an archived account's
+    // regular contribution appeared in the retirement results page's disclosure note
+    // while resolveScenario.ts (sourced via getAccountsWithBalances, which does
+    // exclude archived accounts) never simulated it — a real UI/engine divergence.
+    const [live] = await db
+      .insert(accounts)
+      .values({ householdId, name: 'Live GIA', type: 'gia', taxWrapper: taxWrapperForType('gia') })
+      .returning();
+    const [archived] = await db
+      .insert(accounts)
+      .values({ householdId, name: 'Archived ISA', type: 'cash_isa', taxWrapper: taxWrapperForType('cash_isa'), archived: true })
+      .returning();
+    await db.insert(regularContributions).values([
+      { accountId: live!.id, amount: '2400.00' },
+      { accountId: archived!.id, amount: '3600.00' },
+    ]);
+
+    const rows = await getRegularContributionAmounts(householdId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.amount).toBe('2400.00');
   });
 });
