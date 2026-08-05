@@ -106,8 +106,21 @@ export interface FmpStatements {
   peers: Array<{ ticker: string; companyName: string }>;
 }
 
+/** Which optional fields genuinely failed this fetch (rate-limited/network-error) as
+ * opposed to confirmed-empty (a real `not-found`/empty-array response) — the two look
+ * identical once collapsed to `null`/`[]` on `FmpStatements` itself, so this is tracked
+ * separately. `ensureFreshFundamentals` uses it to fall back to the previous cached
+ * value for exactly the fields that failed, never for a field that's legitimately
+ * empty, and to mark the returned view `stale` when anything failed. */
+export interface OptionalFieldFailures {
+  beta: boolean;
+  ratios: boolean;
+  keyMetrics: boolean;
+  peers: boolean;
+}
+
 export type FundamentalsFetchResult =
-  | ({ status: 'ok'; ticker: string } & FmpStatements)
+  | ({ status: 'ok'; ticker: string; failed: OptionalFieldFailures } & FmpStatements)
   | { status: 'not-found' }
   | { status: 'rate-limited' }
   | { status: 'network-error'; message: string };
@@ -273,9 +286,24 @@ export async function fetchFundamentals(
           .map((p) => ({ ticker: p.symbol, companyName: p.companyName }))
       : [];
 
+  // A genuine failure (rate-limited/network-error) is different from a confirmed-empty
+  // `not-found` — the latter is a real, cacheable answer ("this ticker has no ratios"),
+  // the former is "we don't actually know," and treating it the same as an empty
+  // result would fabricate an authoritative-looking gap. `ensureFreshFundamentals`
+  // uses this to fall back to whatever was cached before, field by field, rather than
+  // overwrite it — never for a field that's legitimately empty.
+  const didOptionalCallFail = (result: StatementFetchResult) =>
+    result.status === 'rate-limited' || result.status === 'network-error';
+
   return {
     status: 'ok',
     ticker,
+    failed: {
+      beta: didOptionalCallFail(profile),
+      ratios: didOptionalCallFail(ratios),
+      keyMetrics: didOptionalCallFail(keyMetrics),
+      peers: didOptionalCallFail(peersResult),
+    },
     incomeStatements: income.data,
     balanceSheets: balance.data,
     cashFlowStatements: cashFlow.data,
@@ -283,6 +311,44 @@ export async function fetchFundamentals(
     ratios: ratios.status === 'ok' ? ratios.data : [],
     keyMetrics: keyMetrics.status === 'ok' ? keyMetrics.data : [],
     peers,
+  };
+}
+
+export interface RatiosAndKeyMetrics {
+  ratios: FmpStatementPeriod[];
+  keyMetrics: FmpStatementPeriod[];
+}
+
+/**
+ * Just a ticker's `ratios` and `keyMetrics` — 2 calls, not the full 7-call
+ * `fetchFundamentals` set. For peer-comparison rows on the ticker page, which only
+ * ever read these two fields (`relativeValuation.ts`'s `derivePeerComparison`) — a
+ * cold render with `MAX_PEERS` peers previously cost 5 × 7 = 35 calls just for peers,
+ * on top of the primary ticker's own 7, found disproportionate to what the feature
+ * actually uses by independent review.
+ *
+ * Deliberately **not** cached through `fundamentals_cache`/`ensureFreshFundamentals`:
+ * that cache's freshness check has no concept of "this row only has ratios/keyMetrics,
+ * not the full statement set" — writing a partial row under a peer's ticker would risk
+ * a later visit to that same ticker *as a primary ticker* seeing it as "fresh, no DCF
+ * data available" for up to the staleness window, when the real data was simply never
+ * fetched. Refetching a handful of peers' 2 calls each on every page view is a real,
+ * accepted cost, not a caching gap — for a household-scale tool viewing a handful of
+ * pages a day, this is far cheaper than the 35-call worst case it replaces, and safer
+ * than a cache shape this table doesn't actually support.
+ */
+export async function fetchRatiosAndKeyMetrics(
+  ticker: string,
+  apiKey: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<RatiosAndKeyMetrics> {
+  const [ratios, keyMetrics] = await Promise.all([
+    fetchFmpStatement('ratios', ticker, apiKey, fetchImpl),
+    fetchFmpStatement('key-metrics', ticker, apiKey, fetchImpl),
+  ]);
+  return {
+    ratios: ratios.status === 'ok' ? ratios.data : [],
+    keyMetrics: keyMetrics.status === 'ok' ? keyMetrics.data : [],
   };
 }
 
@@ -316,10 +382,28 @@ export interface FundamentalsView {
    * no cached value exists at all (mirrors `QuoteView.price`'s convention exactly). */
   statements: FmpStatements | null;
   fetchedAt: Date;
-  /** True when this value is older than the staleness threshold and a refetch was
-   * attempted and failed (provider error or network error) — the last cached value is
-   * being served instead of nothing. */
+  /** True whenever this value isn't fully current: either the whole refetch failed
+   * (provider error or network error) and a cached value is being served instead of
+   * nothing, or the required statements refreshed fine but at least one optional field
+   * (beta/ratios/keyMetrics/peers) didn't and is falling back to its own last
+   * successfully-fetched value — see `ensureFreshFundamentals`'s own doc comment. */
   stale: boolean;
+}
+
+/** Cached rows written before `ratios`/`keyMetrics`/`peers` existed (Milestone 2, before
+ * Milestone 3 added them) simply lack those keys — `undefined`, not `[]` — which none of
+ * this module's consumers guard against at their own call sites (they assume the array
+ * is always at least present and empty, matching every other field's own convention).
+ * Normalized here, the one place a cached row is read back, so nothing downstream has
+ * to know this history exists. */
+function normalizeStatements(raw: FmpStatements | null): FmpStatements | null {
+  if (raw === null) return null;
+  return {
+    ...raw,
+    ratios: raw.ratios ?? [],
+    keyMetrics: raw.keyMetrics ?? [],
+    peers: raw.peers ?? [],
+  };
 }
 
 /**
@@ -361,31 +445,43 @@ export async function ensureFreshFundamentals(
 
     if (isFresh) {
       result.set(ticker, {
-        statements: existing.statements as FmpStatements | null,
+        statements: normalizeStatements(existing.statements as FmpStatements | null),
         fetchedAt: existing.fetchedAt,
         stale: false,
       });
       continue;
     }
 
+    const existingStatements = existing ? normalizeStatements(existing.statements as FmpStatements | null) : null;
+
     try {
       const fetchResult = await options.source.fetchFundamentals(ticker);
 
       if (fetchResult.status === 'ok') {
+        // Fields that genuinely failed this round (`fetchResult.failed.*`, not a
+        // legitimately-empty confirmed result) fall back to whatever was cached for
+        // that specific field, instead of overwriting known-good data with a
+        // fabricated empty array; the view is marked `stale` whenever anything failed,
+        // even though the required statements themselves are fresh (intentionally
+        // distinct from the whole-fetch-failed case below, which keeps the entire
+        // previous value including its old `fetchedAt`).
+        const partial = Object.values(fetchResult.failed).some(Boolean);
         const statements: FmpStatements = {
           incomeStatements: fetchResult.incomeStatements,
           balanceSheets: fetchResult.balanceSheets,
           cashFlowStatements: fetchResult.cashFlowStatements,
-          beta: fetchResult.beta,
-          ratios: fetchResult.ratios,
-          keyMetrics: fetchResult.keyMetrics,
-          peers: fetchResult.peers,
+          beta: fetchResult.failed.beta ? (existingStatements?.beta ?? null) : fetchResult.beta,
+          ratios: fetchResult.failed.ratios ? (existingStatements?.ratios ?? []) : fetchResult.ratios,
+          keyMetrics: fetchResult.failed.keyMetrics
+            ? (existingStatements?.keyMetrics ?? [])
+            : fetchResult.keyMetrics,
+          peers: fetchResult.failed.peers ? (existingStatements?.peers ?? []) : fetchResult.peers,
         };
         await db
           .insert(fundamentalsCache)
           .values({ ticker, statements, fetchedAt: now })
           .onConflictDoUpdate({ target: fundamentalsCache.ticker, set: { statements, fetchedAt: now } });
-        result.set(ticker, { statements, fetchedAt: now, stale: false });
+        result.set(ticker, { statements, fetchedAt: now, stale: partial });
         continue;
       }
 
@@ -400,20 +496,12 @@ export async function ensureFreshFundamentals(
 
       console.error(`[stocks/fmp] ${ticker}: ${fetchResult.status}, serving cached value`);
       if (existing) {
-        result.set(ticker, {
-          statements: existing.statements as FmpStatements | null,
-          fetchedAt: existing.fetchedAt,
-          stale: true,
-        });
+        result.set(ticker, { statements: existingStatements, fetchedAt: existing.fetchedAt, stale: true });
       }
     } catch (error) {
       console.error(`[stocks/fmp] ${ticker}: failed to refresh`, error);
       if (existing) {
-        result.set(ticker, {
-          statements: existing.statements as FmpStatements | null,
-          fetchedAt: existing.fetchedAt,
-          stale: true,
-        });
+        result.set(ticker, { statements: existingStatements, fetchedAt: existing.fetchedAt, stale: true });
       }
     }
   }

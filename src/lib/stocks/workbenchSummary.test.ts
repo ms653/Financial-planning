@@ -42,7 +42,14 @@ describe('buildWorkbenchSummary', () => {
       deltaLine: null,
       checklist: null,
       checklistCounts: null,
+      stale: false,
+      statementsCurrency: null,
     });
+  });
+
+  it('defaults stale to false, and passes an explicit value straight through unchanged', () => {
+    expect(buildWorkbenchSummary(null, null, DCF_INPUTS).stale).toBe(false);
+    expect(buildWorkbenchSummary(null, null, DCF_INPUTS, true).stale).toBe(true);
   });
 
   it('still computes dcfResult and checklist without a quote — only price-dependent fields go null', () => {
@@ -53,8 +60,63 @@ describe('buildWorkbenchSummary', () => {
     expect(summary.checklist).toHaveLength(6);
   });
 
+  it('computes deltaLine against intrinsic value, not market price, as its own label requires', () => {
+    // Regression test for a real bug (found by independent review): the denominator
+    // was market price, while the label says "% below/above intrinsic value" —
+    // wrong whenever the two diverge by more than a token amount. Verified two ways:
+    // self-consistency against the actual computed intrinsic value, and a
+    // deliberately large, easy-to-hand-check gap.
+    const summary = buildWorkbenchSummary(healthyStatements(), '5.00', DCF_INPUTS);
+    const intrinsic = summary.dcfResult!.intrinsicValuePerSharePence!;
+    const market = summary.marketPricePence!;
+    // Sanity check that this fixture actually exercises a divergent, non-trivial case
+    // (otherwise a market-price-denominator bug and an intrinsic-denominator fix would
+    // coincidentally produce the same string, and the test below would prove nothing).
+    expect(intrinsic).not.toBe(market);
+
+    const expectedPct = (Number(intrinsic - market) / Number(intrinsic)) * 100;
+    expect(summary.deltaLine).toBe(
+      expectedPct >= 0
+        ? `${expectedPct.toFixed(1)}% below intrinsic value`
+        : `${Math.abs(expectedPct).toFixed(1)}% above intrinsic value`,
+    );
+  });
+
   it('surfaces unknown checklist items, not a crash, when ratios are missing (the COF case)', () => {
     const summary = buildWorkbenchSummary(healthyStatements({ ratios: [] }), '5.00', DCF_INPUTS);
     expect(summary.checklistCounts).toEqual({ pass: 3, warn: 0, fail: 0, unknown: 3 });
+  });
+
+  describe('currency mismatch', () => {
+    it('reports statementsCurrency as null when the field is absent (assume USD)', () => {
+      const summary = buildWorkbenchSummary(healthyStatements(), '5.00', DCF_INPUTS);
+      expect(summary.statementsCurrency).toBeNull();
+      expect(summary.deltaLine).not.toBeNull();
+    });
+
+    it('reports statementsCurrency as USD unaffected', () => {
+      const summary = buildWorkbenchSummary(
+        healthyStatements({ incomeStatements: [{ date: '2026-06-30', weightedAverageShsOutDil: 1_000_000, reportedCurrency: 'USD' }] }),
+        '5.00',
+        DCF_INPUTS,
+      );
+      expect(summary.statementsCurrency).toBe('USD');
+      expect(summary.deltaLine).not.toBeNull();
+    });
+
+    it('suppresses deltaLine (but still computes dcfResult) when statements are reported in a non-USD currency', () => {
+      // Regression test for a real gap (found by independent review): comparing a
+      // USD quote against an intrinsic value derived from non-USD statements (a real
+      // risk for a US-listed ADR filing in its home currency) is comparing two
+      // different currencies as if they were the same.
+      const summary = buildWorkbenchSummary(
+        healthyStatements({ incomeStatements: [{ date: '2026-06-30', weightedAverageShsOutDil: 1_000_000, reportedCurrency: 'JPY' }] }),
+        '5.00',
+        DCF_INPUTS,
+      );
+      expect(summary.statementsCurrency).toBe('JPY');
+      expect(summary.dcfResult).not.toBeNull(); // the DCF itself still computes
+      expect(summary.deltaLine).toBeNull(); // but the cross-currency comparison is suppressed
+    });
   });
 });

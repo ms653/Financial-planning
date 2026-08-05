@@ -204,7 +204,17 @@ describe('deriveDcfBaseInputs', () => {
       baseFcfPence: 123_456_700n, // £1,234,567.00 -> pence
       netDebtPence: 300_000_000n, // £3,000,000.00 -> pence, read directly from `netDebt`
       dilutedShares: 1_000_000n,
+      reportedCurrency: null, // absent from this fixture's income statement
     });
+  });
+
+  it('reads reportedCurrency off the latest income statement when present', () => {
+    const result = deriveDcfBaseInputs(
+      statements({
+        incomeStatements: [{ date: '2025-12-31', weightedAverageShsOutDil: 1_000_000, reportedCurrency: 'JPY' }],
+      }),
+    );
+    expect(result?.reportedCurrency).toBe('JPY');
   });
 
   it('a net cash position (negative netDebt) is preserved as negative pence', () => {
@@ -261,38 +271,66 @@ describe('suggestDiscountRatePct', () => {
 });
 
 describe('suggestGrowthRatePct', () => {
-  function period(freeCashFlow: number | undefined, date = '2025-12-31'): FmpStatementPeriod {
+  /** Real FMP annual statements each carry their own fiscal-year-end `date`; a caller
+   * must supply one explicitly rather than defaulting to a constant, since the whole
+   * point of these tests (post-fix) is that the year span comes from the dates, not
+   * from counting array entries. */
+  function period(freeCashFlow: number | undefined, date: string): FmpStatementPeriod {
     return freeCashFlow === undefined ? { date } : { date, freeCashFlow };
   }
 
   it('computes a CAGR between the newest and oldest usable period (newest-first array)', () => {
-    // newest 1,331 -> oldest 1,000 over 3 years is exactly 10% CAGR.
-    const cashFlowStatements = [period(1331), period(1210), period(1100), period(1000)];
-    expect(suggestGrowthRatePct(cashFlowStatements)).toBe('10.000');
+    // newest 1,331 -> oldest 1,000 over 3 calendar years is a 10% CAGR exactly — the
+    // year span itself is computed as days-elapsed / 365.25 (see suggestGrowthRatePct's
+    // own comment), so a real 3-calendar-year gap lands at 9.998, not bit-perfectly
+    // 10.000; immaterial for a suggested default the household can freely override.
+    const cashFlowStatements = [
+      period(1331, '2025-12-31'),
+      period(1210, '2024-12-31'),
+      period(1100, '2023-12-31'),
+      period(1000, '2022-12-31'),
+    ];
+    expect(suggestGrowthRatePct(cashFlowStatements)).toBe('9.998');
   });
 
   it('produces a negative rate for declining FCF', () => {
-    const cashFlowStatements = [period(800), period(1000)];
+    const cashFlowStatements = [period(800, '2025-12-31'), period(1000, '2024-12-31')];
     const result = suggestGrowthRatePct(cashFlowStatements);
     expect(result).not.toBeNull();
     expect(Number(result)).toBeLessThan(0);
   });
 
   it('returns null with fewer than two usable periods', () => {
-    expect(suggestGrowthRatePct([period(1000)])).toBeNull();
+    expect(suggestGrowthRatePct([period(1000, '2025-12-31')])).toBeNull();
     expect(suggestGrowthRatePct([])).toBeNull();
   });
 
   it('returns null when the newest or oldest usable FCF is zero or negative', () => {
-    expect(suggestGrowthRatePct([period(-100), period(1000)])).toBeNull();
-    expect(suggestGrowthRatePct([period(100), period(-1000)])).toBeNull();
-    expect(suggestGrowthRatePct([period(0), period(1000)])).toBeNull();
+    expect(suggestGrowthRatePct([period(-100, '2025-12-31'), period(1000, '2024-12-31')])).toBeNull();
+    expect(suggestGrowthRatePct([period(100, '2025-12-31'), period(-1000, '2024-12-31')])).toBeNull();
+    expect(suggestGrowthRatePct([period(0, '2025-12-31'), period(1000, '2024-12-31')])).toBeNull();
   });
 
-  it('skips periods with a missing or non-numeric freeCashFlow rather than treating them as zero', () => {
-    const cashFlowStatements = [period(1100), period(undefined), period(1000)];
-    // Once the missing middle period is skipped, two usable periods remain
-    // (newest 1,100, oldest 1,000) — a clean 10% CAGR over the resulting 1 year gap.
-    expect(suggestGrowthRatePct(cashFlowStatements)).toBe('10.000');
+  it('uses the real calendar span, not the surviving period count, when a period is skipped', () => {
+    // Regression test for a real bug (found by independent review): the year span used
+    // to be `usable.length - 1`, so skipping the missing middle period shortened the
+    // implied horizon along with the array, computing a 1-year CAGR over what's
+    // actually a 2-year gap (2025 -> 2023) and roughly doubling the true rate.
+    const cashFlowStatements = [period(1100, '2025-12-31'), period(undefined, '2024-12-31'), period(1000, '2023-12-31')];
+    const result = suggestGrowthRatePct(cashFlowStatements);
+    // True ~2-year CAGR: (1100/1000)^(1/2) - 1 ≈ 4.881%, not the 10% a wrongly-computed
+    // 1-year span would give (nor the 100%-clamped figure a shorter span still could,
+    // per the finding's own worked example with a wider ratio). 4.877 rather than a
+    // bit-perfect 4.881 for the same days/365.25 reason as the test above.
+    expect(result).toBe('4.877');
+  });
+
+  it('skips a period with a missing or non-numeric freeCashFlow entirely, not treating it as zero', () => {
+    const withGap = [period(1100, '2025-12-31'), period(undefined, '2024-12-31'), period(1000, '2023-12-31')];
+    const withoutGap = [period(1100, '2025-12-31'), period(1000, '2023-12-31')];
+    // Same two usable periods and the same real date span either way -> same result,
+    // confirming the skipped period genuinely drops out rather than being counted as
+    // a zero-FCF year (which would change the computed span or the result).
+    expect(suggestGrowthRatePct(withGap)).toBe(suggestGrowthRatePct(withoutGap));
   });
 });

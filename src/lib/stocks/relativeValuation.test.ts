@@ -126,7 +126,12 @@ describe('derivePeerComparison', () => {
     expect(result.peerAverageEvToEbitda).toBeNull();
   });
 
-  it("doesn't filter out a real negative multiple (e.g. negative P/E from negative earnings)", () => {
+  it("shows a peer's own real negative multiple (e.g. negative P/E from negative earnings) as-is, but excludes it from the average", () => {
+    // Regression test for a real bug (found by independent review): a loss-making
+    // peer's negative multiple used to be blended into peerAveragePeRatio, producing
+    // a nonsensical negative "average" that read as "far cheaper than peers." The
+    // per-peer figure is still shown unfiltered (a household reading the table should
+    // see the real number); only the average now excludes it as unrankable.
     const result = derivePeerComparison(primary, [
       {
         ticker: 'SONY',
@@ -136,6 +141,24 @@ describe('derivePeerComparison', () => {
       },
     ]);
     expect(result.peers[0]!.peRatio).toBe(-57.1);
-    expect(result.peerAveragePeRatio).toBe(-57.1);
+    expect(result.peerAveragePeRatio).toBeNull();
+  });
+
+  it('excludes a loss-making peer from the average while a profitable peer still counts', () => {
+    const result = derivePeerComparison(primary, [
+      {
+        ticker: 'SONY',
+        companyName: 'Sony Group Corporation',
+        ratios: [{ date: '2025-12-31', priceToEarningsRatio: -57.1 }],
+        keyMetrics: [],
+      },
+      {
+        ticker: 'MSFT',
+        companyName: 'Microsoft Corporation',
+        ratios: [{ date: '2025-12-31', priceToEarningsRatio: 20 }],
+        keyMetrics: [],
+      },
+    ]);
+    expect(result.peerAveragePeRatio).toBe(20); // not (-57.1 + 20) / 2
   });
 });

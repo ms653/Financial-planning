@@ -70,8 +70,16 @@ function extractMultiples(
   };
 }
 
-function average(values: readonly (number | null)[]): number | null {
-  const usable = values.filter((v): v is number => v !== null);
+/** Excludes non-positive values, not just `null` ones — a negative P/E or EV/EBITDA
+ * (a loss-making peer, seen live for real tickers like SONY per `fmp.ts`'s own doc
+ * comment) is unrankable on that metric, not a genuine data point to blend in. A real
+ * bug, found by independent review: one loss-making peer at -50x averaged against a
+ * healthy peer at 20x previously gave "-15.0x", reading as "far cheaper than peers"
+ * when the honest comparison is "one peer can't be compared on this metric, the other
+ * trades at 20x." Displaying a single loss-making peer's own negative multiple as-is
+ * (not filtered) is unaffected — this only changes what feeds the *average*. */
+function averagePositive(values: readonly (number | null)[]): number | null {
+  const usable = values.filter((v): v is number => v !== null && v > 0);
   if (usable.length === 0) return null;
   return usable.reduce((sum, v) => sum + v, 0) / usable.length;
 }
@@ -87,8 +95,10 @@ export interface PeerComparison {
    * `ratios`/`keyMetrics` (both fields `null`), so the household can see *which*
    * peers had no data available rather than silently dropping them. */
   peers: PeerMultiples[];
-  /** Averaged over only the peers with a non-null value for that metric — `null`,
-   * not `NaN`, when zero peers have one. */
+  /** Averaged over only the peers with a positive value for that metric — a
+   * loss-making peer's negative multiple is excluded from the average (not
+   * comparable, not a valid data point to blend in) while still shown as-is on that
+   * peer's own row. `null`, not `NaN`, when zero peers qualify. */
   peerAveragePeRatio: number | null;
   peerAverageEvToEbitda: number | null;
 }
@@ -119,7 +129,7 @@ export function derivePeerComparison(
   return {
     primary: extractMultiples(primary.ratios, primary.keyMetrics),
     peers: peerMultiples,
-    peerAveragePeRatio: average(peerMultiples.map((p) => p.peRatio)),
-    peerAverageEvToEbitda: average(peerMultiples.map((p) => p.evToEbitda)),
+    peerAveragePeRatio: averagePositive(peerMultiples.map((p) => p.peRatio)),
+    peerAverageEvToEbitda: averagePositive(peerMultiples.map((p) => p.evToEbitda)),
   };
 }

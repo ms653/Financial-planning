@@ -93,6 +93,17 @@ describe('buildFundamentalsChecklist', () => {
       );
       expect(item.status).toBe('fail');
     });
+
+    it('fails, not passes, a negative debt/equity ratio (negative shareholder equity)', () => {
+      // Regression test for a real bug (found by independent review): the pass
+      // comparison (< 2) had no lower bound, so a negative ratio — which signals
+      // negative equity, not low debt — slipped through as a green "pass".
+      const item = itemById(
+        buildFundamentalsChecklist(statements({ ratios: [{ date: '2026-06-30', debtToEquityRatio: -3.4 }] }), NOW),
+        'debt-level',
+      );
+      expect(item.status).toBe('fail');
+    });
   });
 
   describe('liquidity', () => {

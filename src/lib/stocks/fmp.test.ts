@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fetchFundamentals } from './fmp';
+import { fetchFundamentals, fetchRatiosAndKeyMetrics } from './fmp';
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
@@ -32,6 +32,7 @@ describe('fetchFundamentals', () => {
     expect(result).toEqual({
       status: 'ok',
       ticker: 'AAPL',
+      failed: { beta: false, ratios: false, keyMetrics: false, peers: false },
       incomeStatements: INCOME,
       balanceSheets: BALANCE,
       cashFlowStatements: CASH_FLOW,
@@ -84,6 +85,11 @@ describe('fetchFundamentals', () => {
     expect(result).toEqual({
       status: 'ok',
       ticker: 'AAPL',
+      // The profile call itself failed (503) -> beta genuinely failed. The three
+      // subsequent calls all return `[]` (an empty array, not an error), which is a
+      // legitimate confirmed-empty result, not a failure -- `mockResolvedValue`
+      // (no "Once") covers every call after the four explicit ones, including these.
+      failed: { beta: true, ratios: false, keyMetrics: false, peers: false },
       incomeStatements: INCOME,
       balanceSheets: BALANCE,
       cashFlowStatements: CASH_FLOW,
@@ -119,6 +125,10 @@ describe('fetchFundamentals', () => {
       ratios: [],
       keyMetrics: KEY_METRICS,
       peers: [],
+      // ratios/peers genuinely failed (503, and a bad-key-shaped error object
+      // respectively) -- distinct from key-metrics, which succeeded, and distinct
+      // from a legitimately empty confirmed result (see the beta test above).
+      failed: { beta: false, ratios: true, keyMetrics: false, peers: true },
     });
   });
 
@@ -204,5 +214,29 @@ describe('fetchFundamentals', () => {
 
     expect(result).toEqual({ status: 'network-error', message: 'HTTP 503' });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('fetchRatiosAndKeyMetrics', () => {
+  it('makes exactly 2 calls (ratios, key-metrics), not the full 7-call fundamentals set', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse(RATIOS)).mockResolvedValueOnce(jsonResponse(KEY_METRICS));
+
+    const result = await fetchRatiosAndKeyMetrics('MSFT', 'key', fetchImpl);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const urls = fetchImpl.mock.calls.map((call) => new URL(call[0] as string));
+    expect(urls.map((u) => u.pathname).sort()).toEqual(['/stable/key-metrics', '/stable/ratios']);
+    expect(result).toEqual({ ratios: RATIOS, keyMetrics: KEY_METRICS });
+  });
+
+  it('degrades each field to [] independently on failure, never throwing', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({}, false, 503))
+      .mockResolvedValueOnce(jsonResponse(KEY_METRICS));
+
+    const result = await fetchRatiosAndKeyMetrics('MSFT', 'key', fetchImpl);
+
+    expect(result).toEqual({ ratios: [], keyMetrics: KEY_METRICS });
   });
 });

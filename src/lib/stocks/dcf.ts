@@ -221,6 +221,11 @@ export interface DcfBaseInputs {
   baseFcfPence: bigint;
   netDebtPence: bigint;
   dilutedShares: bigint;
+  /** The currency the statement figures above are reported in, e.g. `"USD"` —
+   * `null` when the field is absent (an older cached row, or the field genuinely
+   * missing). See this function's own doc comment on `reportedCurrency` for what this
+   * guards against and the caveat on how confidently the field name itself is known. */
+  reportedCurrency: string | null;
 }
 
 /**
@@ -253,6 +258,37 @@ export interface DcfBaseInputs {
  * the subtraction (both gave 76,443,000,000) — reading the provider's own authoritative
  * figure directly is simpler and more robust to edge cases (e.g. a company where "net
  * debt" isn't just `totalDebt - cash` by some other convention) than re-deriving it.
+ *
+ * **Disclosed methodology simplification, flagged by independent review, not fixed**:
+ * FMP's `freeCashFlow` (operating cash flow minus capex) is *levered* (equity) free
+ * cash flow, since operating cash flow already sits after interest paid — not the
+ * unlevered FCFF a textbook enterprise-value DCF is built to discount. `computeDcf`
+ * discounts this levered figure at a cost-of-equity-style rate (`suggestDiscountRatePct`
+ * is CAPM, itself a cost-of-equity estimate, not a WACC) and *then* subtracts net debt
+ * to reach `equityValuePence` — for a company with meaningful net debt, that
+ * effectively costs it twice, once implicitly (levered FCF is already net of interest)
+ * and once explicitly (the net-debt subtraction), understating intrinsic value by
+ * roughly the net-debt amount. A correct fix needs unlevered FCF
+ * (`freeCashFlow + afterTaxInterestExpense`, which needs an interest-expense figure
+ * and a tax rate this module doesn't currently fetch) and a genuine WACC — real
+ * scope beyond a bug fix, so this is named here rather than silently left for the
+ * next person to rediscover. Net-cash companies (negative net debt) aren't
+ * meaningfully affected either way.
+ *
+ * **`reportedCurrency` — read defensively, not live-verified this session.** FMP's
+ * income/balance-sheet/cash-flow statement endpoints are commonly documented to carry
+ * a `reportedCurrency` field (e.g. `"USD"`), but unlike every other field name this
+ * function's own doc comment above cites, this one hasn't been confirmed against a
+ * real key in this codebase's own verification passes — flagged honestly, not
+ * presented as equally certain. It exists to guard a real gap independent review
+ * found: nothing in this module checks whether a ticker's statements are reported in
+ * the same currency as its market quote (hardcoded USD elsewhere in this codebase),
+ * so a US-listed ADR filing in its home currency (e.g. a JPY filer) would previously
+ * have its intrinsic value computed in the wrong currency entirely and compared
+ * directly against a USD price with no warning. `null` here (field absent or this
+ * name turns out to be wrong) means "unknown," and the caller's own comparison logic
+ * treats unknown the same as USD — this narrows the gap for tickers where the field
+ * is present, it doesn't close it for tickers where it isn't.
  */
 export function deriveDcfBaseInputs(statements: FmpStatements): DcfBaseInputs | null {
   const latestCashFlow = statements.cashFlowStatements[0];
@@ -276,10 +312,13 @@ export function deriveDcfBaseInputs(statements: FmpStatements): DcfBaseInputs | 
     return null;
   }
 
+  const reportedCurrency = typeof latestIncome.reportedCurrency === 'string' ? latestIncome.reportedCurrency : null;
+
   return {
     baseFcfPence: BigInt(Math.round(freeCashFlow * 100)),
     netDebtPence: BigInt(Math.round(netDebt * 100)),
     dilutedShares: BigInt(Math.round(dilutedSharesRaw)),
+    reportedCurrency,
   };
 }
 
@@ -333,16 +372,31 @@ export function suggestDiscountRatePct(beta: number | null): string | null {
  */
 export function suggestGrowthRatePct(cashFlowStatements: readonly FmpStatementPeriod[]): string | null {
   const usable = cashFlowStatements.filter(
-    (period): period is FmpStatementPeriod & { freeCashFlow: number } =>
-      typeof period.freeCashFlow === 'number' && Number.isFinite(period.freeCashFlow),
+    (period): period is FmpStatementPeriod & { freeCashFlow: number; date: string } =>
+      typeof period.freeCashFlow === 'number' &&
+      Number.isFinite(period.freeCashFlow) &&
+      typeof period.date === 'string',
   );
   if (usable.length < 2) return null;
 
-  const newestFcf = usable[0]!.freeCashFlow;
-  const oldestFcf = usable[usable.length - 1]!.freeCashFlow;
-  if (newestFcf <= 0 || oldestFcf <= 0) return null;
+  const newest = usable[0]!;
+  const oldest = usable[usable.length - 1]!;
+  if (newest.freeCashFlow <= 0 || oldest.freeCashFlow <= 0) return null;
 
-  const years = usable.length - 1;
-  const cagr = Math.pow(newestFcf / oldestFcf, 1 / years) - 1;
+  const newestDate = new Date(newest.date);
+  const oldestDate = new Date(oldest.date);
+  if (Number.isNaN(newestDate.getTime()) || Number.isNaN(oldestDate.getTime())) return null;
+
+  // The actual calendar span between the newest and oldest *usable* period's own
+  // dates — not `usable.length - 1` — since a period skipped by the filter above (a
+  // missing/non-numeric freeCashFlow) shortens the surviving array without shortening
+  // the real time span it covers. Dividing by the too-small period count inflated the
+  // implied growth rate: a real bug found by independent review — a 2-year span with
+  // one missing period in between computed as a 1-year CAGR (double the true rate,
+  // sometimes clamped all the way to the 100% ceiling below).
+  const years = (newestDate.getTime() - oldestDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000);
+  if (years <= 0) return null;
+
+  const cagr = Math.pow(newest.freeCashFlow / oldest.freeCashFlow, 1 / years) - 1;
   return formatSuggestedPercent(cagr * 100, { min: -100, max: 100 });
 }

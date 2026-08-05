@@ -29,6 +29,7 @@ describe.skipIf(!connectionString)('ensureFreshFundamentals against real Postgre
     keyMetrics: [{ date: '2025-12-31', evToEBITDA: 15 }],
     peers: [{ ticker: 'MSFT', companyName: 'Microsoft Corporation' }],
   };
+  const NO_FAILURES = { failed: { beta: false, ratios: false, keyMetrics: false, peers: false } };
 
   beforeAll(async () => {
     pool = new Pool({ connectionString, max: 4 });
@@ -70,7 +71,7 @@ describe.skipIf(!connectionString)('ensureFreshFundamentals against real Postgre
 
   it('fetches and caches a ticker with no existing row', async () => {
     const { source, calls } = fakeSource({
-      AAPL: { status: 'ok', ticker: 'AAPL', ...STATEMENTS },
+      AAPL: { status: 'ok', ticker: 'AAPL', ...STATEMENTS, ...NO_FAILURES },
     });
 
     const result = await ensureFreshFundamentals(['AAPL'], { source, staleAfterHours: 24 });
@@ -106,7 +107,7 @@ describe.skipIf(!connectionString)('ensureFreshFundamentals against real Postgre
       fetchedAt: new Date(now.getTime() - 25 * 60 * 60 * 1000), // 25h old
     });
     const updated = { ...STATEMENTS, incomeStatements: [{ date: '2026-12-31', revenue: 2000 }] };
-    const { source, calls } = fakeSource({ AAPL: { status: 'ok', ticker: 'AAPL', ...updated } });
+    const { source, calls } = fakeSource({ AAPL: { status: 'ok', ticker: 'AAPL', ...updated, ...NO_FAILURES } });
 
     const result = await ensureFreshFundamentals(['AAPL'], { source, staleAfterHours: 24, now });
 
@@ -128,6 +129,50 @@ describe.skipIf(!connectionString)('ensureFreshFundamentals against real Postgre
     expect(result.get('AAPL')).toMatchObject({ statements: STATEMENTS, stale: true });
     const rows = await db.select().from(fundamentalsCache);
     expect(rows[0]!.statements).toEqual(STATEMENTS); // left as-is, not overwritten with nothing
+  });
+
+  it('falls back to the cached value for just the field that failed, keeping fresh data for the rest', async () => {
+    // Regression test: an earlier version cached an empty array for any optional field
+    // that failed, indistinguishable from a legitimately empty confirmed result, and
+    // that fabricated "no data" persisted for the full staleness window. Now: only the
+    // genuinely-failed field falls back to its last cached value; fields that
+    // succeeded (even a new, different value) still update, and the view is marked
+    // `stale` to disclose that not everything is current.
+    const now = new Date('2026-07-27T12:00:00Z');
+    await db.insert(fundamentalsCache).values({
+      ticker: 'AAPL',
+      statements: STATEMENTS,
+      fetchedAt: new Date(now.getTime() - 25 * 60 * 60 * 1000), // past staleness, will refetch
+    });
+
+    const newRatios = [{ date: '2026-12-31', priceToEarningsRatio: 25 }];
+    const { source } = fakeSource({
+      AAPL: {
+        status: 'ok',
+        ticker: 'AAPL',
+        incomeStatements: STATEMENTS.incomeStatements,
+        balanceSheets: STATEMENTS.balanceSheets,
+        cashFlowStatements: STATEMENTS.cashFlowStatements,
+        beta: STATEMENTS.beta,
+        ratios: newRatios,
+        keyMetrics: [], // ratios and keyMetrics both "failed" below, despite the arrays present
+        peers: STATEMENTS.peers,
+        failed: { beta: false, ratios: false, keyMetrics: true, peers: false },
+      },
+    });
+
+    const result = await ensureFreshFundamentals(['AAPL'], { source, staleAfterHours: 24, now });
+
+    expect(result.get('AAPL')).toMatchObject({
+      stale: true, // something failed, even though the required statements are fresh
+      statements: {
+        ratios: newRatios, // succeeded this round -> uses the fresh value
+        keyMetrics: STATEMENTS.keyMetrics, // failed this round -> falls back to cached
+        peers: STATEMENTS.peers,
+      },
+    });
+    const rows = await db.select().from(fundamentalsCache);
+    expect(rows[0]!.statements).toMatchObject({ ratios: newRatios, keyMetrics: STATEMENTS.keyMetrics });
   });
 
   it('omits a ticker entirely when there is no cache and the fetch fails', async () => {
@@ -155,7 +200,7 @@ describe.skipIf(!connectionString)('ensureFreshFundamentals against real Postgre
   });
 
   it('de-duplicates a repeated ticker into one fetch', async () => {
-    const { source, calls } = fakeSource({ AAPL: { status: 'ok', ticker: 'AAPL', ...STATEMENTS } });
+    const { source, calls } = fakeSource({ AAPL: { status: 'ok', ticker: 'AAPL', ...STATEMENTS, ...NO_FAILURES } });
 
     const result = await ensureFreshFundamentals(['AAPL', 'AAPL'], { source, staleAfterHours: 24 });
 

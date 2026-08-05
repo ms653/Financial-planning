@@ -137,7 +137,8 @@ async function WatchlistBody({ householdId }: { householdId: number }) {
       }
     }
 
-    summaries.set(ticker, buildWorkbenchSummary(statements, quotePrice, dcfInputs));
+    const stale = (fundamentals.get(ticker)?.stale ?? false) || (quotes.get(ticker)?.stale ?? false);
+    summaries.set(ticker, buildWorkbenchSummary(statements, quotePrice, dcfInputs, stale));
   }
 
   return (
@@ -169,6 +170,15 @@ async function WatchlistBody({ householdId }: { householdId: number }) {
                   >
                     {item.ticker}
                   </Link>
+                  {summary?.stale ? (
+                    <span
+                      title="Showing the last successfully fetched data — a fresh check just now didn’t go through"
+                      aria-label="data may be out of date"
+                      className="ml-1.5 text-xs text-content-faint"
+                    >
+                      ⟳
+                    </span>
+                  ) : null}
                 </td>
                 <td className="py-2.5 pr-4 tabular text-content-muted">
                   {summary?.marketPricePence != null

@@ -92,6 +92,20 @@ function checkDebtLevel(statements: FmpStatements): ChecklistItem {
   const debtToEquity = latestNumber(statements.ratios, 'debtToEquityRatio');
   if (debtToEquity === null) return unknownItem('debt-level', 'Debt is manageable', 'No debt/equity data available.');
   const formatted = `Debt/equity: ${debtToEquity.toFixed(2)}x.`;
+  // "Lower is better" only holds for a non-negative ratio — a negative one means
+  // equity itself is negative, and the comparison's own lower bound was previously
+  // unchecked, so a company in that state passed this exact check (found by
+  // independent review: -3.4x rendered a green "Debt is manageable"). The adjacent
+  // shareholder-equity check below catches the same root cause with clearer wording;
+  // this one should fail, not pass, rather than stay silent about it.
+  if (debtToEquity < 0) {
+    return {
+      id: 'debt-level',
+      label: 'Debt is manageable',
+      status: 'fail',
+      detail: `${formatted} Negative — shareholder equity itself is negative, so this ratio isn’t a meaningful "manageable" signal on its own. See the shareholder-equity check below.`,
+    };
+  }
   if (debtToEquity < 2) return { id: 'debt-level', label: 'Debt is manageable', status: 'pass', detail: formatted };
   if (debtToEquity <= 4) {
     return { id: 'debt-level', label: 'Debt is manageable', status: 'warn', detail: `${formatted} Higher than the conventional 2x rule of thumb — not unusual for some industries, worth knowing why.` };

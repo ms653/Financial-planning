@@ -6,7 +6,12 @@ import { getSetupState } from '@/lib/household/queries';
 import { getStockAnalysis } from '@/lib/stocks/queries';
 import { saveDcfInputs } from '@/lib/stocks/actions';
 import { DEFAULT_DCF_INPUTS, parseDcfInputs, suggestDiscountRatePct, suggestGrowthRatePct } from '@/lib/stocks/dcf';
-import { createFmpFundamentalsSource, ensureFreshFundamentals, type FundamentalsView } from '@/lib/stocks/fmp';
+import {
+  createFmpFundamentalsSource,
+  ensureFreshFundamentals,
+  fetchRatiosAndKeyMetrics,
+  type RatiosAndKeyMetrics,
+} from '@/lib/stocks/fmp';
 import { deriveQualityMetrics, derivePeerComparison } from '@/lib/stocks/relativeValuation';
 import type { ChecklistItem } from '@/lib/stocks/checklist';
 import { buildWorkbenchSummary } from '@/lib/stocks/workbenchSummary';
@@ -109,29 +114,49 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
     // data-driven suggestions where available rather than the generic hardcoded
     // defaults. Once the household saves anything, their saved values always win;
     // this only ever affects what an unvisited ticker's form starts out showing.
-    dcfInputs = {
+    //
+    // Routed through parseDcfInputs — not handed to computeDcf directly — so the
+    // `terminalGrowthRatePct < discountRatePct` invariant is enforced here too, not
+    // just on a saved/user-submitted payload. Today `suggestDiscountRatePct` always
+    // lands above `DEFAULT_DCF_INPUTS.terminalGrowthRatePct` given the current
+    // risk-free-rate constant, so this was unreachable in practice — but only by
+    // construction of that one constant, not by anything actually checking it here,
+    // which is exactly the kind of invariant that should never depend on a caller
+    // getting it right by accident.
+    const suggested = {
       ...DEFAULT_DCF_INPUTS,
       growthRatePct: suggestedGrowthRatePct ?? DEFAULT_DCF_INPUTS.growthRatePct,
       discountRatePct: suggestedDiscountRatePct ?? DEFAULT_DCF_INPUTS.discountRatePct,
     };
+    try {
+      dcfInputs = parseDcfInputs(suggested);
+    } catch {
+      dcfInputs = DEFAULT_DCF_INPUTS;
+    }
   }
 
-  const workbenchSummary = buildWorkbenchSummary(fundamentalsView?.statements ?? null, quoteView?.price ?? null, dcfInputs);
-  const { marketPricePence, dcfResult, deltaLine, checklist, checklistCounts } = workbenchSummary;
+  const workbenchSummary = buildWorkbenchSummary(
+    fundamentalsView?.statements ?? null,
+    quoteView?.price ?? null,
+    dcfInputs,
+    (fundamentalsView?.stale ?? false) || (quoteView?.stale ?? false),
+  );
+  const { marketPricePence, dcfResult, deltaLine, checklist, checklistCounts, statementsCurrency } = workbenchSummary;
+  const currencyMismatch = statementsCurrency !== null && statementsCurrency !== 'USD';
 
   // Milestone 3: quality/balance-sheet health (no peer data needed) and relative
-  // valuation (needs each peer's own ratios/key-metrics — a second
-  // `ensureFreshFundamentals` call, over the capped peer list; that function was
-  // already built multi-ticker-capable in Milestone 1 for exactly this kind of reuse).
+  // valuation (needs each peer's own ratios/key-metrics only — fetchRatiosAndKeyMetrics,
+  // not the full 7-call fetchFundamentals set; see that function's own doc comment for
+  // why this is deliberately uncached rather than routed through ensureFreshFundamentals).
   const cappedPeers = fundamentalsView?.statements?.peers.slice(0, MAX_PEERS) ?? [];
   const fmpKey = fmpApiKey();
-  const peerFundamentals: Map<string, FundamentalsView> =
+  const peerFundamentals: Map<string, RatiosAndKeyMetrics> = new Map(
     fmpKey && cappedPeers.length > 0
-      ? await ensureFreshFundamentals(
-          cappedPeers.map((peer) => peer.ticker),
-          { source: createFmpFundamentalsSource(fmpKey), staleAfterHours: fundamentalsStaleAfterHours() },
+      ? await Promise.all(
+          cappedPeers.map(async (peer) => [peer.ticker, await fetchRatiosAndKeyMetrics(peer.ticker, fmpKey)] as const),
         )
-      : new Map();
+      : [],
+  );
 
   const qualityMetrics = fundamentalsView?.statements
     ? deriveQualityMetrics(fundamentalsView.statements.ratios, fundamentalsView.statements.keyMetrics)
@@ -141,12 +166,12 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
     ? derivePeerComparison(
         { ratios: fundamentalsView.statements.ratios, keyMetrics: fundamentalsView.statements.keyMetrics },
         cappedPeers.map((peer) => {
-          const peerView = peerFundamentals.get(peer.ticker);
+          const peerRatios = peerFundamentals.get(peer.ticker);
           return {
             ticker: peer.ticker,
             companyName: peer.companyName,
-            ratios: peerView?.statements?.ratios ?? [],
-            keyMetrics: peerView?.statements?.keyMetrics ?? [],
+            ratios: peerRatios?.ratios ?? [],
+            keyMetrics: peerRatios?.keyMetrics ?? [],
           };
         }),
       )
@@ -163,6 +188,17 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
       </nav>
 
       <h1 className="font-serif text-3xl leading-tight text-content">{ticker}</h1>
+
+      {fundamentalsView?.stale || quoteView?.stale ? (
+        <p
+          role="status"
+          className="mt-3 rounded-card border border-line bg-paper-sunken px-3.5 py-2.5 text-xs text-content-muted"
+        >
+          Showing the last successfully fetched data below — a fresh check just now
+          didn’t go through (a provider rate limit or network issue), so some figures
+          may be a little out of date.
+        </p>
+      ) : null}
 
       <section className="mt-7 rounded-card border border-line bg-paper-raised p-5 shadow-card sm:p-6">
         <h2 className="font-serif text-lg text-content">DCF (discounted cash flow)</h2>
@@ -267,7 +303,13 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
               No FMP API key configured — fundamentals can’t be fetched yet. See{' '}
               <code className="text-xs">FMP_API_KEY</code> in <code className="text-xs">.env</code>.
             </p>
-          ) : fundamentalsView?.statements == null ? (
+          ) : fundamentalsView === null ? (
+            <p className="text-sm text-content-faint">
+              Couldn’t fetch fundamentals for {ticker} right now — this is usually
+              temporary (a rate limit or network issue), not a sign the ticker doesn’t
+              exist. Try reloading in a minute.
+            </p>
+          ) : fundamentalsView.statements === null ? (
             <p className="text-sm text-content-faint">
               No fundamentals available for {ticker} — either this ticker isn’t
               recognised, or it needs a paid FMP plan. This happens even for some
@@ -286,10 +328,23 @@ export default async function StockTickerPage({ params }: { params: { ticker: st
                 <p className="text-xs uppercase tracking-wider text-content-faint">Intrinsic value per share</p>
                 <p className="mt-1 font-serif text-2xl text-content tabular">
                   {dcfResult.intrinsicValuePerSharePence !== null
-                    ? formatMoney(dcfResult.intrinsicValuePerSharePence, { showPence: true, currency: 'USD' })
+                    ? formatMoney(dcfResult.intrinsicValuePerSharePence, {
+                        showPence: true,
+                        // A currency code not in this codebase's small known-symbol map
+                        // (GBP/USD/EUR) falls back to a plain "XYZ " prefix rather than
+                        // guessing at a symbol — exactly what's wanted here, since this
+                        // figure is genuinely not in USD when there's a mismatch.
+                        currency: currencyMismatch && statementsCurrency ? statementsCurrency : 'USD',
+                      })
                     : '—'}
                 </p>
-                {marketPricePence !== null ? (
+                {currencyMismatch ? (
+                  <p className="mt-1 text-xs text-content-faint">
+                    {ticker}’s statements are reported in {statementsCurrency}, but the market quote above is
+                    USD — this workbench doesn’t convert between currencies yet, so the two can’t be honestly
+                    compared. The intrinsic value figure is in {statementsCurrency}, not USD, despite the symbol.
+                  </p>
+                ) : marketPricePence !== null ? (
                   <p className="mt-1 text-sm text-content-muted">
                     Market price: {formatMoney(marketPricePence, { showPence: true, currency: 'USD' })}
                     {deltaLine ? ` — ${deltaLine}` : ''}

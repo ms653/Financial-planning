@@ -10,6 +10,7 @@ import {
   pensionContributions,
   regularContributions,
 } from '@/lib/db/schema';
+import { numericToPence, penceToNumeric } from '@/lib/money';
 import type {
   AccountTypeValue,
   DebtTerms,
@@ -366,15 +367,27 @@ export async function getPortfolioHoldings(householdId: number): Promise<Portfol
     .from(regularContributions)
     .innerJoin(accounts, eq(accounts.id, regularContributions.accountId))
     .where(and(eq(accounts.householdId, householdId), isNotNull(regularContributions.ticker)));
-  const contributionByAccountAndTicker = new Map(
-    contributionRows.map((row) => [`${row.accountId}:${row.ticker}`, row.amount]),
-  );
+  // Summed in pence, not collapsed into one Map entry per (accountId, ticker) via
+  // last-write-wins — a household can record more than one regular_contribution row
+  // for the same ticker on the same account (nothing prevents it), and the engine
+  // (resolveScenario.ts) already sums them; this table used to silently show only one.
+  const contributionPenceByAccountAndTicker = new Map<string, bigint>();
+  for (const row of contributionRows) {
+    const key = `${row.accountId}:${row.ticker}`;
+    contributionPenceByAccountAndTicker.set(
+      key,
+      (contributionPenceByAccountAndTicker.get(key) ?? 0n) + numericToPence(row.amount),
+    );
+  }
 
-  return rows.map((row) => ({
-    ...row,
-    ownerName: row.personId === null ? null : row.ownerName,
-    regularContributionAmount: contributionByAccountAndTicker.get(`${row.accountId}:${row.ticker}`) ?? null,
-  }));
+  return rows.map((row) => {
+    const contributionPence = contributionPenceByAccountAndTicker.get(`${row.accountId}:${row.ticker}`);
+    return {
+      ...row,
+      ownerName: row.personId === null ? null : row.ownerName,
+      regularContributionAmount: contributionPence !== undefined ? penceToNumeric(contributionPence) : null,
+    };
+  });
 }
 
 export interface SnapshotPoint {

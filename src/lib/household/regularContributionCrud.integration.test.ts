@@ -8,9 +8,9 @@ import { Pool } from 'pg';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import * as schema from '@/lib/db/schema';
-import { accounts, households, regularContributions, type AccountTypeValue } from '@/lib/db/schema';
+import { accounts, holdings, households, regularContributions, type AccountTypeValue } from '@/lib/db/schema';
 import { addRegularContribution, deleteRegularContribution, updateRegularContribution } from '@/lib/household/actions';
-import { getRegularContributionAmounts } from '@/lib/household/queries';
+import { getPortfolioHoldings, getRegularContributionAmounts } from '@/lib/household/queries';
 import { taxWrapperForType } from '@/lib/accounts/types';
 
 /**
@@ -186,5 +186,65 @@ describe.skipIf(!connectionString)('getRegularContributionAmounts against a real
 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.amount).toBe('2400.00');
+  });
+});
+
+describe.skipIf(!connectionString)('getPortfolioHoldings against a real Postgres', () => {
+  let pool: Pool;
+  let db: NodePgDatabase<typeof schema>;
+  let householdId: number;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString, max: 4 });
+    db = drizzle(pool, { schema });
+    await pool.query('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;');
+    await pool.query('DROP SCHEMA IF EXISTS drizzle CASCADE;');
+    await migrate(db, { migrationsFolder: './drizzle' });
+    process.env.DATABASE_URL = connectionString;
+  }, 60_000);
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  beforeEach(async () => {
+    await pool.query('TRUNCATE TABLE holding, regular_contribution, account, household RESTART IDENTITY CASCADE;');
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    householdId = household!.id;
+  });
+
+  it('sums two regular_contribution rows for the same (account, ticker), rather than showing only the last one', async () => {
+    // Regression test for a real bug (found by independent review): the lookup Map
+    // was keyed by (accountId, ticker) with no summing, so a second contribution row
+    // for the same ticker on the same account silently overwrote the first instead of
+    // adding to it — resolveScenario.ts (the retirement engine) already summed both
+    // correctly, so the portfolio table was under-reporting relative to what's
+    // actually simulated.
+    const [gia] = await db
+      .insert(accounts)
+      .values({ householdId, name: 'GIA', type: 'gia', taxWrapper: taxWrapperForType('gia') })
+      .returning();
+    await db.insert(holdings).values({ accountId: gia!.id, ticker: 'VWRL', quantity: '10', costBasis: '1000.00' });
+    await db.insert(regularContributions).values([
+      { accountId: gia!.id, ticker: 'VWRL', amount: '1200.00' },
+      { accountId: gia!.id, ticker: 'VWRL', amount: '600.00' },
+    ]);
+
+    const rows = await getPortfolioHoldings(householdId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.regularContributionAmount).toBe('1800.00');
+  });
+
+  it('reports null, not "0.00", when a holding has no regular contribution at all', async () => {
+    const [gia] = await db
+      .insert(accounts)
+      .values({ householdId, name: 'GIA', type: 'gia', taxWrapper: taxWrapperForType('gia') })
+      .returning();
+    await db.insert(holdings).values({ accountId: gia!.id, ticker: 'VWRL', quantity: '10', costBasis: '1000.00' });
+
+    const rows = await getPortfolioHoldings(householdId);
+
+    expect(rows[0]!.regularContributionAmount).toBeNull();
   });
 });
