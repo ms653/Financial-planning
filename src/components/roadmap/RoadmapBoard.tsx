@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useRef, useState, useTransition } from 'react';
 import {
   DndContext,
   KeyboardSensor,
@@ -72,7 +72,15 @@ export function RoadmapBoard({
 }) {
   const initialOrder = items.map((item) => item.id);
   const [order, setOrder] = useState<string[]>(initialOrder);
-  const [lastSavedOrder, setLastSavedOrder] = useState<string[]>(initialOrder);
+  // A ref, not `useState`: `handleDragEnd`'s async `startTransition` callback is
+  // recreated on every render and closes over whatever was in scope *at that render*,
+  // not necessarily what's current by the time it actually resolves. A second drag
+  // starting before the first one's save resolves previously closed over a stale
+  // `lastSavedOrder` (from before the first drag's own success updated it) — a failed
+  // second drag then reverted further back than the comment two lines below always
+  // claimed it did. A ref is mutated synchronously and read fresh on every access, so
+  // there's no snapshot to go stale.
+  const lastSavedOrderRef = useRef<string[]>(initialOrder);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -93,14 +101,27 @@ export function RoadmapBoard({
     setError(null);
 
     startTransition(async () => {
-      const result = await action(next);
-      if (result.ok) {
-        setLastSavedOrder(next);
-      } else {
-        // Revert to the last order that actually saved, not the page's original
-        // props — those could be several successful reorders stale by now.
-        setError(result.formError ?? 'Couldn’t save this right now');
-        setOrder(lastSavedOrder);
+      try {
+        const result = await action(next);
+        if (result.ok) {
+          lastSavedOrderRef.current = next;
+        } else {
+          // Revert to the last order that actually saved, not the page's original
+          // props — those could be several successful reorders stale by now. Read via
+          // the ref (see its own comment above), not a captured state value, so this
+          // is always the true latest save even if another drag started in between.
+          setError(result.formError ?? 'Couldn’t save this right now');
+          setOrder(lastSavedOrderRef.current);
+        }
+      } catch {
+        // Defense in depth: `saveRoadmapOrder` itself no longer throws for a
+        // malformed payload (see its own doc comment), but nothing guarantees a
+        // Server Action call can never reject for some other reason (a network drop
+        // mid-request, for one) — without this, an unhandled rejection here would
+        // leave the UI showing the locally-reordered list as if it had saved, with
+        // nothing actually written and no error shown.
+        setError('Couldn’t save this right now');
+        setOrder(lastSavedOrderRef.current);
       }
     });
   }

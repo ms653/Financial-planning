@@ -89,4 +89,40 @@ describe.skipIf(!connectionString)('saveRoadmapOrder against a real Postgres', (
     expect(result.ok).toBe(false);
     expect(await db.select().from(roadmapOrder)).toHaveLength(0);
   });
+
+  it('suggests a reload for an id-set mismatch specifically, not the generic malformed-payload message', async () => {
+    const result = await saveRoadmapOrder(draggableIds.slice(1));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.formError).toContain('reload');
+  });
+
+  it('does not throw on a non-array payload — returns ok:false instead', async () => {
+    // Regression test for a real gap (found by independent review): this is a Server
+    // Action a modified client could call directly with an arbitrary payload, and the
+    // validation used to run before any array-shape check, so a non-array threw
+    // instead of returning the intended result.
+    // @ts-expect-error deliberately malformed, simulating a modified-client call
+    const result = await saveRoadmapOrder(null);
+    expect(result.ok).toBe(false);
+    expect(await db.select().from(roadmapOrder)).toHaveLength(0);
+  });
+
+  it('two concurrent first-ever saves both land, rather than the second failing outright', async () => {
+    // Regression test for a real race (found by independent review): the previous
+    // SELECT-then-branch let two concurrent saves both observe zero rows and both
+    // attempt INSERT, so the second hit the unique constraint and failed with a
+    // generic error instead of landing as an update.
+    const orderA = draggableIds;
+    const orderB = [...draggableIds].reverse();
+    const [resultA, resultB] = await Promise.all([saveRoadmapOrder(orderA), saveRoadmapOrder(orderB)]);
+
+    expect(resultA.ok).toBe(true);
+    expect(resultB.ok).toBe(true);
+    const rows = await db.select().from(roadmapOrder);
+    expect(rows).toHaveLength(1); // still exactly one row, not a duplicate
+    // Whichever wrote last (indeterminate under real concurrency) is what's stored —
+    // the point of this test is that neither request failed, not which one won.
+    expect([orderA, orderB]).toContainEqual(rows[0]!.itemIds);
+  });
 });

@@ -123,7 +123,14 @@ export function ScenarioWizard({
         </button>
       </div>
 
-      <div className="mt-6">
+      {/* Direct mode wraps its own fields in `<fieldset disabled={locked}>` so a
+          running simulation can't be edited out from under itself — the guided path
+          previously only disabled the "Run simulation" button itself, leaving every
+          field (including ones on earlier steps, reachable via Back) fully editable
+          mid-run, with the Review step then silently summarising the *edited* values
+          rather than the ones actually being computed. Same fieldset here, same
+          reasoning, same `disabled:opacity-60` dimming as a visible cue. */}
+      <fieldset disabled={locked} className="mt-6 disabled:opacity-60">
         {step.key === 'intro' ? (
           <div className="space-y-4">
             <h2 className="font-serif text-2xl text-content">Before you start</h2>
@@ -254,7 +261,7 @@ export function ScenarioWizard({
             )}
           </div>
         ) : null}
-      </div>
+      </fieldset>
 
       <div className="mt-7 flex items-center justify-between border-t border-line pt-5">
         <button type="button" onClick={goBack} disabled={stepIndex === 0} className={navButtonClass}>

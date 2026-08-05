@@ -115,6 +115,12 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
   const chartDimensions = { width: 760, height: 120, padding: 6, minBaseline: isDebt ? 0 : undefined };
   const path = points.length >= 2 ? seriesToPath(points, chartDimensions) : null;
   const segments = points.length >= 2 ? seriesToSegments(points, chartDimensions) : [];
+  // Same posture as `NetWorthHero.tsx`: a dashed segment (carried-forward, not a
+  // fresh figure) gets the same explanatory caption there does — this page reused the
+  // same charting component and picked up the same dashed rendering, but not
+  // previously the caption explaining what it means, leaving an unexplained visual
+  // distinction on a chart whose whole point is honesty about carried-forward data.
+  const hasStaleSegment = segments.some((segment) => segment.stale);
   // Same posture as `NetWorthHero.tsx`: only plain numbers and pre-formatted strings
   // cross to `InteractiveTrendChart`, never the raw `bigint` pence.
   const coordinates = points.length >= 2 ? pointPixelCoordinates(points, chartDimensions) : [];
@@ -247,6 +253,12 @@ export default async function AccountDetailPage({ params }: { params: { id: stri
               {isDebt ? (
                 <p className="mt-1.5 text-[11px] text-sage">
                   A falling line here is progress — it means the balance is coming down.
+                </p>
+              ) : null}
+              {hasStaleSegment ? (
+                <p className="mt-1.5 text-[11px] text-content-faint">
+                  A dashed section means that period’s figure was carried forward from an
+                  older update, not freshly recorded.
                 </p>
               ) : null}
             </>

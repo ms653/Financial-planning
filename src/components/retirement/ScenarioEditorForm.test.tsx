@@ -417,6 +417,54 @@ describe('ScenarioEditorForm', () => {
       await waitFor(() => expect(startSimulationRun).toHaveBeenCalledWith(42));
     });
 
+    it('locks fields while this tab\'s own run is in flight, same as the direct form — regression for a real gap found by independent review, where the guided wizard only disabled the Review step\'s "Run simulation" button, leaving every field on every step (reachable via Back) fully editable mid-run, with the Review step then silently summarising the edited values instead of the ones actually being computed', async () => {
+      const user = userEvent.setup();
+      const runningRow = {
+        id: 7,
+        scenarioId: 42,
+        status: 'running' as const,
+        seed: 1,
+        iterationCount: 2000,
+        result: null,
+        errorDetail: null,
+        createdAt: new Date().toISOString(),
+        completedAt: null,
+      };
+      createScenarioReturningId.mockResolvedValue({ ok: true, scenarioId: 42 });
+      startSimulationRun.mockResolvedValue(runningRow);
+      fetchSimulationRun.mockResolvedValue(runningRow);
+
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+
+      await user.click(screen.getByRole('button', { name: 'Guide me through this' }));
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> people
+      await selectPerson(user, 'Alex');
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> when
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> spending
+      await user.click(screen.getByRole('button', { name: 'Next' })); // -> strategy
+      await user.click(screen.getByRole('button', { name: 'Skip — use sensible defaults' })); // -> review
+
+      await user.click(screen.getAllByRole('button', { name: 'Run simulation' })[0]!);
+      await waitFor(() => expect(startSimulationRun).toHaveBeenCalledWith(42));
+      expect(await screen.findByText(/Running 2,000 simulations/i)).toBeInTheDocument();
+
+      // Navigate back to the "when" step (Back is still enabled — locking freezes
+      // field *values*, not step navigation) and confirm its field is disabled.
+      await user.click(screen.getByRole('button', { name: 'Back' })); // review -> strategy
+      await user.click(screen.getByRole('button', { name: 'Back' })); // strategy -> spending
+      await user.click(screen.getByRole('button', { name: 'Back' })); // spending -> when
+      const retirementAgeInput = screen.getByLabelText(/Alex's retirement age/i);
+      expect(retirementAgeInput).toBeDisabled();
+    });
+
     it('lets a scenario be named from the Review step — regression for a real gap where the wizard never rendered the name field at all, so a brand-new scenario could never be named while guided', async () => {
       const user = userEvent.setup();
       createScenarioReturningId.mockResolvedValue({ ok: true, scenarioId: 42 });
