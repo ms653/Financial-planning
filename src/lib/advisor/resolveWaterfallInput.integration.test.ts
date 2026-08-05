@@ -116,16 +116,22 @@ describe.skipIf(!connectionString)('resolveWaterfallInput against a real Postgre
     const lisa = await seedAccount(householdId, alex!.id, 'lisa', 500_00n);
     await db.insert(regularContributions).values({ accountId: lisa.id, amount: '1000.00' });
 
-    // A debt with full terms.
+    // A debt with full terms, including the overpayment/ERC fields the comparator
+    // needs — `waterfall.ts`'s own `DebtInput` has no use for these, so nothing
+    // asserted on them reaching the resolver's output until this test.
     const debtAccount = await seedAccount(householdId, alex!.id, 'debt', -2_000_00n);
     await db.insert(debtTerms).values({
       accountId: debtAccount.id,
       interestRate: '24.900',
       currentBalance: '2000.00',
       minimumPayment: '50.00',
+      overpaymentAllowancePct: '10.000',
+      overpaymentAllowanceBalanceBasis: 'current_balance',
+      ercRatePct: '2.000',
+      ercPeriodEnd: '2030-01-01',
     });
 
-    const { input, warnings } = await resolveWaterfallInput(householdId, 10_000_00n);
+    const { input, warnings, comparator } = await resolveWaterfallInput(householdId, 10_000_00n);
 
     expect(warnings).toEqual([]);
     expect(input.extraAmountPence).toBe(10_000_00n);
@@ -154,6 +160,33 @@ describe.skipIf(!connectionString)('resolveWaterfallInput against a real Postgre
     expect(resolvedAlex.pensionContributions).toEqual([
       { amountPence: 3_000_00n, method: 'salary_sacrifice', employerAmountPence: 1_500_00n },
     ]);
+
+    // No property account seeded in this household.
+    expect(comparator.householdOwnsProperty).toBe(false);
+    expect(comparator.debts).toHaveLength(1);
+    expect(comparator.debts[0]).toMatchObject({
+      name: 'Test debt',
+      personId: alex!.id,
+      balancePence: 2_000_00n,
+      interestRatePct: '24.900',
+      overpaymentAllowancePct: '10.000',
+      overpaymentAllowanceBalanceBasis: 'current_balance',
+      ercRatePct: '2.000',
+      ercPeriodEnd: '2030-01-01',
+    });
+  });
+
+  it('reports householdOwnsProperty true when a property account exists', async () => {
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    const householdId = household!.id;
+    const [alex] = await db
+      .insert(people)
+      .values({ householdId, name: 'Alex', dateOfBirth: '1985-04-12' })
+      .returning();
+    await seedAccount(householdId, alex!.id, 'property', 300_000_00n);
+
+    const { comparator } = await resolveWaterfallInput(householdId, 1_000_00n);
+    expect(comparator.householdOwnsProperty).toBe(true);
   });
 
   it('excludes a joint ISA/LISA account from every allowance total and flags it', async () => {

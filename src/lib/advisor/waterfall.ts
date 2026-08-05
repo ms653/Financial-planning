@@ -40,8 +40,8 @@ import {
 } from './taxStatus';
 import { currentUkTaxYearWindow, type UkTaxYearWindow } from './taxYear';
 
-const ISA_ALLOWANCE_PENCE = 20_000_00n;
-const LISA_SUBLIMIT_PENCE = 4_000_00n;
+export const ISA_ALLOWANCE_PENCE = 20_000_00n;
+export const LISA_SUBLIMIT_PENCE = 4_000_00n;
 const LISA_OPEN_MIN_AGE = 18;
 const LISA_OPEN_MAX_AGE = 39;
 const LISA_CONTRIBUTE_MAX_AGE = 50;
@@ -134,7 +134,11 @@ export interface WaterfallResult {
   taxYearWindow: UkTaxYearWindow;
 }
 
-function isLisaEligible(age: number, hasExistingLisa: boolean): boolean {
+/** Exported for `debtComparator.ts`, which needs the exact same eligibility test to
+ * decide whether LISA is offerable as an "investing instead" option — a second,
+ * independently-maintained copy of a hard-right-answer UK rule is how the LISA
+ * age-window bug (`docs/PROPOSAL.md`'s Fable-pass log) happened the first time. */
+export function isLisaEligible(age: number, hasExistingLisa: boolean): boolean {
   const canOpen = age >= LISA_OPEN_MIN_AGE && age <= LISA_OPEN_MAX_AGE;
   const canStillContribute = age < LISA_CONTRIBUTE_MAX_AGE;
   return (hasExistingLisa || canOpen) && canStillContribute;

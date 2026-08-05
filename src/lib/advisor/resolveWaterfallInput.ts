@@ -14,6 +14,14 @@
  * milestone — see the plan). Any `cash_isa`/`ss_isa`/`lisa` account with `personId:
  * null` is excluded from every per-person allowance total and surfaced in `warnings`
  * instead of silently included or crashed on.
+ *
+ * **Also resolves `debtComparator.ts`'s inputs**, alongside (not instead of) the
+ * waterfall's own `debts: DebtInput[]` — `getDebtAccountsWithTerms` already fetches
+ * the full `debt_terms` row (overpayment allowance, ERC rate/period), which used to be
+ * fetched and thrown away since `waterfall.ts`'s own `DebtInput` has no use for it.
+ * `DebtInput`/`WaterfallInput` are deliberately NOT widened to carry these fields —
+ * they're exactly the narrow contract `waterfall.ts` and its own test fixtures already
+ * expect, and the comparator's needs are a superset that belongs next to it instead.
  */
 
 import { eq, inArray } from 'drizzle-orm';
@@ -23,6 +31,7 @@ import { getAccountsWithBalances, getDebtAccountsWithTerms, getPeopleWithPension
 import { numericToPence } from '@/lib/money';
 import { todayIso } from '@/lib/accounts/validation';
 import { meanNominalEquityReturnPct } from '@/lib/retirement/returns/ukHistoricalReturns';
+import type { DebtComparatorDebtInput } from './debtComparator';
 import type { DebtInput, PersonWaterfallInput, WaterfallInput } from './waterfall';
 
 const ISA_TYPE_SET = new Set(['cash_isa', 'ss_isa', 'lisa']);
@@ -33,6 +42,12 @@ export interface ResolvedWaterfallInput {
    * — distinct from `computeContributionWaterfall`'s own `dataQualityWarnings`
    * (which only sees already-resolved per-person totals), so a caller combines both. */
   warnings: string[];
+  comparator: {
+    /** Only signal available for "does this household already own a home": no
+     * dedicated boolean field exists, so a `property`-type account stands in. */
+    householdOwnsProperty: boolean;
+    debts: DebtComparatorDebtInput[];
+  };
 }
 
 /**
@@ -152,6 +167,20 @@ export async function resolveWaterfallInput(
     interestRatePct: debt.terms?.interestRate ?? null,
   }));
 
+  const comparatorDebts: DebtComparatorDebtInput[] = debts.map((debt) => ({
+    accountId: debt.accountId,
+    name: debt.accountName,
+    personId: debt.personId,
+    balancePence: debt.terms?.currentBalance ? numericToPence(debt.terms.currentBalance) : 0n,
+    interestRatePct: debt.terms?.interestRate ?? null,
+    overpaymentAllowancePct: debt.terms?.overpaymentAllowancePct ?? null,
+    overpaymentAllowanceBalanceBasis: debt.terms?.overpaymentAllowanceBalanceBasis ?? null,
+    ercRatePct: debt.terms?.ercRatePct ?? null,
+    ercPeriodEnd: debt.terms?.ercPeriodEnd ?? null,
+  }));
+
+  const householdOwnsProperty = accountsWithBalances.some((account) => account.type === 'property');
+
   return {
     input: {
       todayIso: today,
@@ -165,5 +194,9 @@ export async function resolveWaterfallInput(
       people: resolvedPeople,
     },
     warnings,
+    comparator: {
+      householdOwnsProperty,
+      debts: comparatorDebts,
+    },
   };
 }
