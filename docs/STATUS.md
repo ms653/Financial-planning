@@ -2399,6 +2399,72 @@ milestone as shipped and the three remaining pieces (employer-match + taper-resc
 follow-up; debt-vs-save comparator + avalanche/snowball; the Advisor page itself).
 `docs/PROPOSAL.md`'s generated table re-synced.
 
+## Four-way independent review, and fixing everything it found
+
+Household-requested: an independent review of everything shipped since the last one
+(Phase 3 Milestone 9's own review — see "Independent Fable review" above), covering
+five phases of work in between. Too large for one pass, so it ran as four parallel
+Opus reviews, each scoped to one area, each instructed to verify a suspected bug with
+an actual reproduction (a throwaway test or script with hand-computed expected values)
+before reporting it rather than reading-and-guessing — the same bar this codebase's
+own Fable reviews have always been held to.
+
+**Scope**: Phase 3 M9 polish (person-picker, guided wizard) + net worth charts + the
+Roadmap tab; the whole Phase 4 stock workbench; Phase 4.4's retirement accumulation
+engine + its follow-up; Phase 4.5 Milestones 1–2 (the newest, least-reviewed code —
+flagged for the highest scrutiny of the four). 32 findings reported, all real, none
+dismissed as false positives. Fixed in four commits, one per review area, each with
+its own tests and a full `tsc`/`eslint`/`vitest`/`build` pass:
+
+- **Cash Allocation Advisor** (my own most recent code): ISA/LISA allowance
+  double-counted between the LISA and remaining-ISA waterfall steps; relief-at-source
+  pension contributions not grossed up consistently with `taxStatus.ts`; the
+  100%-of-earnings pension cap wrongly including employer contributions; the
+  high-interest-debt benchmark comparing a nominal APR against a *real* (inflation-
+  adjusted) return, understating the true threshold — added `meanNominalEquityReturnPct()`
+  via the Fisher relation; a rationale claiming the 2027 Cash ISA sub-limit was
+  enforced when it wasn't; a non-numeric benchmark override and a debt with no balance
+  both silently producing no step; a joint ISA/LISA account with no contribution row
+  skipped with no warning; the emergency-fund target read ignoring its own
+  `householdId` parameter.
+- **Retirement accumulation engine**: archived accounts' regular contributions
+  counted in the results-page disclosure but not simulated; the account-type
+  eligibility check bypassable by editing an account's type *after* a contribution
+  existed on it; the "Before retirement" card disappearing entirely for a household
+  with joint contributions but no personal ones, hiding that the engine was still
+  simulating them.
+- **Stock workbench**: a crash on any pre-Milestone-3 cache row (missing
+  `ratios`/`keyMetrics`/`peers` keys); the DCF growth-rate suggestion computing its
+  year-span from the count of surviving periods instead of the real calendar gap; the
+  "% below/above intrinsic value" delta dividing by market price instead of intrinsic
+  value; no guard against a currency mismatch between a ticker's statements and its
+  always-USD quote; peer P/E and EV/EBITDA averages including negative (loss-making)
+  multiples; the debt/equity checklist item passing negative equity; a ~42-FMP-call
+  worst case per cold ticker page (peers now fetch only the 2 fields they use, not the
+  full 7); the `stale` flag computed but never reaching the UI; a fetch failure with
+  no cache indistinguishable from a confirmed not-found ticker; a transient partial
+  failure cached as permanent "no data"; first-visit DCF inputs bypassing the
+  `terminalGrowthRate < discountRate` validator; duplicate regular-contribution rows
+  under-reported on the portfolio table. Also documented (not fixed — genuine scope
+  beyond a bug fix) that the DCF discounts FMP's levered free cash flow as if it were
+  unlevered FCFF, double-counting net debt for leveraged companies.
+- **Wizard, roadmap tab, charts**: the guided scenario wizard only disabling the
+  Review step's own button, not the fields, while a simulation ran; `saveRoadmapOrder`'s
+  check-then-act race on the singleton row (fixed the same way `createHousehold`
+  already solved the identical race, catching the unique-constraint conflict rather
+  than pre-checking); a malformed reorder payload throwing instead of returning
+  `ok: false`; a stale-tab reorder's error message not suggesting a reload;
+  `RoadmapBoard`'s revert-on-failure reading a `useState` that could be stale across
+  overlapping drags — now a `useRef`; the account-detail chart missing the net worth
+  dashboard's own explanatory caption for its dashed stale-gap segments.
+
+873 tests passing (up from 855), all four `tsc`/`eslint`/`vitest`/`build` passes
+clean. The two fixes with no automated-test path (the wizard's field-locking, and the
+account chart's caption) were verified in a live browser, light and dark, against a
+throwaway dev server and scratch Postgres; the roadmap reorder race fix was verified
+both by a real concurrent-request integration test and by a live drag-and-reload in
+the browser.
+
 ## Next steps
 
 1. On the deploy machine: run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`), then §4 (backup key, remote, cron). Confirm the in-app indicator goes from "No backup yet" to "Backup healthy". **Also do the second-device login test** — open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost`. Still outstanding since Phase 1; Phase 2 didn't touch deployment mechanics.
