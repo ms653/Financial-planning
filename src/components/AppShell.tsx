@@ -68,7 +68,7 @@ export async function AppShell({
     <div className="min-h-screen bg-paper lg:flex">
       <aside
         aria-label="Primary"
-        className="hidden border-r border-line bg-paper-sunken lg:flex lg:w-60 lg:shrink-0 lg:flex-col lg:justify-between"
+        className="hidden border-r border-line bg-paper-sunken lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-60 lg:shrink-0 lg:flex-col lg:justify-between lg:overflow-y-auto"
       >
         <div>
           <div className="flex items-center gap-3 px-5 py-6">
