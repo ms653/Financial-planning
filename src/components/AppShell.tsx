@@ -21,7 +21,9 @@ import { BackupWarningStrip } from '@/components/BackupWarningStrip';
  * across several UI-less milestones the way Retirement's engine milestones did.
  * Roadmap is new, unreserved from the start — not a phase from `docs/PROPOSAL.md`'s
  * own Phased Delivery table, but a household-facing view of that same table (see
- * `src/lib/roadmap/data.ts`).
+ * `src/lib/roadmap/data.ts`). Advisor is unreserved as of Phase 4.5's completion —
+ * like Stocks, this is the first commit for its slot (no `comingIn: 'Phase 4.5'`
+ * placeholder existed here to delete).
  *
  * What is deliberately *not* here is the connectivity badge. The design spec puts one in the
  * top chrome of every screen, but its three states (Connected / Offline / Syncing) only mean
@@ -44,6 +46,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { href: '/portfolio', label: 'Portfolio' },
   { href: '/retirement', label: 'Retirement' },
   { href: '/stocks', label: 'Stocks' },
+  { href: '/advisor', label: 'Advisor' },
   { href: '/roadmap', label: 'Roadmap' },
   { href: '/settings', label: 'Settings' },
 ];
