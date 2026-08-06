@@ -42,8 +42,19 @@ export const ROADMAP_ITEMS: readonly RoadmapItem[] = [
     summary:
       'The app itself: household login, automated backups, and the deployment setup that keeps everything running on your own laptop.',
     detail:
-      'Repo scaffold, docker-compose, Drizzle schema + migration tooling, GitHub Actions CI (typecheck/test/lint), deploy runbook script (pull → build → dump → migrate → up), **Tailscale Serve HTTPS** (pulled forward from Phase 6 — session cookies need it from day one), passphrase auth gate per the full Security notes spec (argon2id, session cookie, brute-force lockout, CSRF), automated backup (pg_dump + encrypted off-machine copy) **with a visible in-app staleness indicator and a quarterly restore-test in the definition of done**.',
+      'Repo scaffold, docker-compose, Drizzle schema + migration tooling, GitHub Actions CI (typecheck/test/lint), deploy runbook script (pull → build → dump → migrate → up), **Tailscale Serve HTTPS** (pulled forward from Phase 6 — session cookies need it from day one), passphrase auth gate per the full Security notes spec (argon2id, session cookie, brute-force lockout, CSRF), automated backup (pg_dump + encrypted off-machine copy) **with a visible in-app staleness indicator and a quarterly restore-test in the definition of done**. The Tailscale Serve HTTPS code shipped here; the operational step of actually running it against a real tailnet has not — see `phase-0-tailscale-verification` below.',
     status: 'done',
+  },
+  {
+    id: 'phase-0-tailscale-verification',
+    phaseLabel: '0 (follow-up)',
+    title: 'Tailscale Serve verification & phone access',
+    summary:
+      'Confirm the app is actually reachable and logs in correctly from a phone over Tailscale — the code shipped in Phase 0, but nobody has run the real second-device check yet.',
+    detail:
+      'Operational, not code: on the real deploy machine, run through `docs/DEPLOYMENT.md` §1–2 (env, `docker compose up`, `tailscale serve`) and confirm `tailscale serve` is actually fronting the app. **The second-device login test**: open the app from a phone on the tailnet and confirm the redirect to `/login` lands on the tailnet hostname, not `localhost` — this is the specific failure mode `SERVER_ACTIONS_ALLOWED_ORIGINS` (`.env`) exists to prevent, and it has never been exercised against a real phone/tailnet, only reasoned about. Still outstanding since Phase 1; no later phase touched deployment mechanics enough to have closed it incidentally. Not phase-blocking — the app works fine on the deploy machine itself in the meantime — but it is the one thing standing between "built" and "actually usable from a phone," which is a stated goal of this whole project.',
+    status: 'queued',
+    dependsOn: ['phase-0-foundations'],
   },
   {
     id: 'phase-1-accounts-net-worth',
@@ -60,9 +71,20 @@ export const ROADMAP_ITEMS: readonly RoadmapItem[] = [
     title: 'Portfolio tracking',
     summary: 'Live prices for your holdings, and a portfolio view showing what you actually own across accounts.',
     detail:
-      'Portfolio tracking + market data provider (FMP/Finnhub, or EODHD/Twelve Data if LSE coverage is needed), with a `quote_cache` (or last-fetched columns on `holding`) respecting each provider\'s free-tier rate limits and doubling as the offline "cached reads" source. **Blocking verification task**: confirm the chosen provider returns the correct LSE GBP line (not a USD-denominated cross-listing) and correctly labels/normalizes pence (GBX) vs. pounds (GBP) — see Mobile/tablet access below for why this is the single most likely correctness bug in this phase.',
+      'Portfolio tracking + market data provider (FMP/Finnhub, or EODHD/Twelve Data if LSE coverage is needed), with a `quote_cache` (or last-fetched columns on `holding`) respecting each provider\'s free-tier rate limits and doubling as the offline "cached reads" source. **Blocking verification task**: confirm the chosen provider returns the correct LSE GBP line (not a USD-denominated cross-listing) and correctly labels/normalizes pence (GBX) vs. pounds (GBP) — see Mobile/tablet access below for why this is the single most likely correctness bug in this phase. **Known gap, not fixed here**: holdings and account balance don\'t sync — see `phase-2-holdings-balance-sync` below.',
     status: 'done',
     dependsOn: ['phase-1-accounts-net-worth'],
+  },
+  {
+    id: 'phase-2-holdings-balance-sync',
+    phaseLabel: '2 (follow-up)',
+    title: 'Holdings-to-balance sync',
+    summary:
+      'Adding or updating a holding should keep the account\'s own balance in step with it — right now they can silently drift apart.',
+    detail:
+      'Flagged by the household after using Phase 2 live: `addHolding`/`updateHolding` (`src/lib/household/actions.ts`) only write to the `holding` table, never to `balance_snapshot` — the only thing that actually moves an account\'s balance and the net worth total. Add a holding worth £5,388 and the account still shows whatever it last did until "Update balance" is used separately. **A real design decision, not just a schema change, has to be made first**: does a holdings-derived balance ever get a `balance_snapshot` of its own — and if so, does that conflict with the "one balance, one source of truth per day" append-only model the rest of this schema is built around (the `debt_terms.current_balance` precedent in Phase 1, and DESIGN_SPEC.md\'s own "Update balance" flow) — or is this better as a one-tap "sync balance to current holdings value" action the household triggers deliberately, rather than an automatic write on every holding edit? Not phase-blocking, but a real gap in already-shipped Phase 2 scope, not a new feature — worth resolving the design question and building before it\'s forgotten.',
+    status: 'queued',
+    dependsOn: ['phase-2-portfolio'],
   },
   {
     id: 'phase-3-retirement-engine',
