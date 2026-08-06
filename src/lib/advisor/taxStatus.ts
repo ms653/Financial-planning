@@ -173,6 +173,34 @@ export function computeAnnualAllowanceStatus(hasFlexiblyAccessedPension: boolean
   };
 }
 
+/**
+ * How much further pension contribution a person has room for, the lesser of two
+ * independent limits — neither is "member + employer combined against income": the
+ * annual allowance (MPAA-restricted where it applies) tests member+employer
+ * together, but the 100%-of-relevant-earnings limit tests the *member's own*
+ * contribution only, since employer contributions aren't limited by the member's
+ * earnings. No carry-forward modelled either way. Extracted from `waterfall.ts`'s own
+ * further-pension step so `taperRescue.ts` can cap its own recommendation against the
+ * exact same headroom rather than re-deriving it — this module already owns every
+ * other piece the calculation composes (`computeAnnualAllowanceStatus`,
+ * `memberGrossContributionPence`, `pensionAllowanceConsumedPence`).
+ */
+export function pensionContributionHeadroomPence(
+  grossIncomePence: bigint,
+  contributions: readonly PensionContributionInput[],
+  hasFlexiblyAccessedPension: boolean,
+): bigint {
+  const annualAllowance = computeAnnualAllowanceStatus(hasFlexiblyAccessedPension);
+  const memberGrossContributedPence = contributions.reduce(
+    (sum, c) => sum + memberGrossContributionPence(c),
+    0n,
+  );
+  const allowanceConsumedPence = contributions.reduce((sum, c) => sum + pensionAllowanceConsumedPence(c), 0n);
+  const earningsHeadroom = grossIncomePence - memberGrossContributedPence;
+  const allowanceHeadroom = annualAllowance.effectiveAllowancePence - allowanceConsumedPence;
+  return earningsHeadroom < allowanceHeadroom ? earningsHeadroom : allowanceHeadroom;
+}
+
 // Re-exported so callers of this module don't need a second import from
 // taxYearConfig.ts just to read the ceiling used above.
 export { personalAllowanceTaperCeilingPence };

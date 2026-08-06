@@ -36,7 +36,13 @@
 import type { OverpaymentAllowanceBasisValue } from '@/lib/db/schema';
 import { parseScaledDecimal, roundDiv } from '@/lib/portfolio/valuation';
 import { ageAsOf } from '@/lib/retirement/personAge';
-import { ISA_ALLOWANCE_PENCE, isLisaEligible, LISA_SUBLIMIT_PENCE, type PersonWaterfallInput } from './waterfall';
+import {
+  ISA_ALLOWANCE_PENCE,
+  isHighInterestDebt,
+  isLisaEligible,
+  LISA_SUBLIMIT_PENCE,
+  type PersonWaterfallInput,
+} from './waterfall';
 
 function minBigint(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
@@ -291,7 +297,9 @@ export function compareDebtVsSave(input: DebtComparatorInput): DebtComparatorOut
       });
       continue;
     }
-    if (debtRate > benchmark) continue; // waterfall.ts's high-interest-debt step already covers this one.
+    // waterfall.ts's high-interest-debt step already covers this one — shared
+    // predicate, not a re-derived copy of "rate > benchmark".
+    if (isHighInterestDebt(debt.interestRatePct, input.debtBenchmarkRatePct)) continue;
 
     const warnings: string[] = [];
     const allowanceAndErc = computeAllowanceAndErc(debt, input.extraAmountPence, input.todayIso, warnings);

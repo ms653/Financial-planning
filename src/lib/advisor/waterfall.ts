@@ -34,8 +34,7 @@
 import { ageAsOf } from '@/lib/retirement/personAge';
 import {
   computeAnnualAllowanceStatus,
-  memberGrossContributionPence,
-  pensionAllowanceConsumedPence,
+  pensionContributionHeadroomPence,
   type PensionContributionInput,
 } from './taxStatus';
 import { currentUkTaxYearWindow, type UkTaxYearWindow } from './taxYear';
@@ -144,6 +143,20 @@ export function isLisaEligible(age: number, hasExistingLisa: boolean): boolean {
   return (hasExistingLisa || canOpen) && canStillContribute;
 }
 
+/** Exported so `debtComparator.ts` (the inverse: debts NOT flagged here) and
+ * `taperRescue.ts` (which compares against the same high-interest debts this step
+ * already targets) share one definition of "high-interest" rather than each
+ * re-deriving "rate > benchmark" — the same third-copy risk `isLisaEligible`'s own
+ * doc comment already names. A non-finite `benchmarkPct` or null `interestRatePct`
+ * is never high-interest (both make every comparison false, never true). */
+export function isHighInterestDebt(interestRatePct: string | null, benchmarkPct: string): boolean {
+  if (interestRatePct === null) return false;
+  const rate = Number(interestRatePct);
+  const benchmark = Number(benchmarkPct);
+  if (!Number.isFinite(rate) || !Number.isFinite(benchmark)) return false;
+  return rate > benchmark;
+}
+
 export function computeContributionWaterfall(input: WaterfallInput): WaterfallResult {
   let remaining = input.extraAmountPence;
   const steps: WaterfallStepResult[] = [];
@@ -179,7 +192,7 @@ export function computeContributionWaterfall(input: WaterfallInput): WaterfallRe
     );
   } else {
     const highInterestDebts = input.debts
-      .filter((debt) => debt.interestRatePct !== null && Number(debt.interestRatePct) > benchmark)
+      .filter((debt) => isHighInterestDebt(debt.interestRatePct, input.debtBenchmarkRatePct))
       .sort((a, b) => Number(b.interestRatePct) - Number(a.interestRatePct));
     for (const debt of highInterestDebts) {
       if (debt.balancePence <= 0n) {
@@ -260,17 +273,11 @@ export function computeContributionWaterfall(input: WaterfallInput): WaterfallRe
       continue;
     }
     const annualAllowance = computeAnnualAllowanceStatus(person.hasFlexiblyAccessedPension);
-    const memberGrossContributedPence = person.pensionContributions.reduce(
-      (sum, c) => sum + memberGrossContributionPence(c),
-      0n,
+    const headroom = pensionContributionHeadroomPence(
+      person.grossIncomePence,
+      person.pensionContributions,
+      person.hasFlexiblyAccessedPension,
     );
-    const allowanceConsumedPence = person.pensionContributions.reduce(
-      (sum, c) => sum + pensionAllowanceConsumedPence(c),
-      0n,
-    );
-    const earningsHeadroom = person.grossIncomePence - memberGrossContributedPence;
-    const allowanceHeadroom = annualAllowance.effectiveAllowancePence - allowanceConsumedPence;
-    const headroom = minBigint(earningsHeadroom, allowanceHeadroom);
     allocate(
       'further_pension',
       person.personId,
