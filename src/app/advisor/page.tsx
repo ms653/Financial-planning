@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { compareDebtVsSave } from '@/lib/advisor/debtComparator';
 import { orderDebts, type DebtOrderingMode, type OrderableDebt } from '@/lib/advisor/debtOrdering';
 import { resolveWaterfallInput } from '@/lib/advisor/resolveWaterfallInput';
+import { computeTaperRescueRecommendations } from '@/lib/advisor/taperRescue';
 import { computeContributionWaterfall } from '@/lib/advisor/waterfall';
 import { AppShell } from '@/components/AppShell';
 import { DebtOrderToggle, type DebtOrderRowView } from '@/components/advisor/DebtOrderToggle';
@@ -33,8 +34,16 @@ function orderableFromComparatorDebts(
     personId: debt.personId,
     balancePence: debt.balancePence,
     interestRatePct: debt.interestRatePct,
-    minimumPaymentPence: null,
+    minimumPaymentPence: debt.minimumPaymentPence,
   }));
+}
+
+function formatMonths(months: number): string {
+  if (months < 12) return `${months} month${months === 1 ? '' : 's'}`;
+  const years = Math.floor(months / 12);
+  const remainder = months % 12;
+  const yearsPart = `${years} year${years === 1 ? '' : 's'}`;
+  return remainder === 0 ? yearsPart : `${yearsPart} ${remainder} month${remainder === 1 ? '' : 's'}`;
 }
 
 function toOrderRowView(debts: OrderableDebt[]): DebtOrderRowView[] {
@@ -67,6 +76,15 @@ export default async function AdvisorPage({
     householdOwnsProperty: resolved.comparator.householdOwnsProperty,
     debts: resolved.comparator.debts,
     people: resolved.input.people,
+  });
+
+  const taperRescueResult = computeTaperRescueRecommendations({
+    extraAmountPence,
+    debtBenchmarkRatePct: resolved.input.debtBenchmarkRatePct,
+    emergencyFundTargetPence: resolved.input.emergencyFundTargetPence,
+    emergencyFundCurrentPence: resolved.input.emergencyFundCurrentPence,
+    people: resolved.input.people,
+    debts: resolved.comparator.debts,
   });
 
   const orderable = orderableFromComparatorDebts(resolved.comparator.debts);
@@ -143,6 +161,82 @@ export default async function AdvisorPage({
             </div>
           </details>
         </div>
+
+        {taperRescueResult.people.length > 0 ? (
+          <div className="space-y-4">
+            <h2 className="font-serif text-lg text-content">Worth weighing separately</h2>
+            {taperRescueResult.people.map((person) => {
+              const alreadyRecommendedPence =
+                waterfallResult.steps.find((s) => s.id === 'further_pension' && s.personId === person.personId)
+                  ?.amountPence ?? 0n;
+              const remainingGrossPence = person.recommendedGrossContributionPence - alreadyRecommendedPence;
+
+              return (
+                <div
+                  key={person.personId}
+                  className="rounded-card border border-brass/40 bg-brass/10 p-5 shadow-card sm:p-6"
+                >
+                  <h3 className="font-serif text-base text-content">
+                    {person.personName}: pulling income back under £100,000
+                  </h3>
+                  <p className="mt-2 text-sm text-content">
+                    {person.personName}&rsquo;s income for tax purposes is {formatMoney(person.adjustedNetIncomePence)}
+                    , inside the £100,000–£125,140 band where the personal allowance withdraws at £1 per £2 —
+                    an effective ~60% marginal rate on that slice. A pension contribution here is a one-off
+                    uplift, not a recurring return like a debt&rsquo;s interest rate, so it&rsquo;s worth
+                    weighing against the steps above rather than assumed to win automatically.
+                  </p>
+                  <p className="mt-2 text-sm text-content">
+                    Contributing {formatMoney(person.excessPence)} more (gross) would clear the taper
+                    entirely
+                    {person.recommendedGrossContributionPence < person.excessPence ? (
+                      <>
+                        , but headroom and the amount you have to allocate cap what&rsquo;s realistic right
+                        now at {formatMoney(person.recommendedGrossContributionPence)}
+                      </>
+                    ) : null}
+                    . Paid via relief-at-source, that&rsquo;s about {formatMoney(person.recommendedNetPaymentPence)}{' '}
+                    from take-home pay — the scheme tops up the rest.
+                    {alreadyRecommendedPence > 0n ? (
+                      <>
+                        {' '}
+                        The order above already puts {formatMoney(alreadyRecommendedPence)} toward{' '}
+                        {person.personName}&rsquo;s pension;
+                        {remainingGrossPence > 0n
+                          ? ` up to ${formatMoney(remainingGrossPence)} more (of your total extra amount) would fully clear the threshold.`
+                          : ' that already covers the recommended amount above.'}
+                      </>
+                    ) : null}
+                  </p>
+
+                  {person.debtComparisons.length > 0 ? (
+                    <ul className="mt-3 space-y-1 text-sm text-content-muted">
+                      {person.debtComparisons.map((cmp) => (
+                        <li key={cmp.accountId}>
+                          Versus {cmp.name} at {cmp.aprPct}% APR: paying that off instead would cost about{' '}
+                          {formatMoney(cmp.totalInterestPence)} in interest over {formatMonths(cmp.months)}.
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+
+                  {!taperRescueResult.emergencyFundOnTrack ? (
+                    <p className="mt-3 text-xs text-content-faint">
+                      Your emergency fund isn&rsquo;t at target yet — the order above already prioritises
+                      that first.
+                    </p>
+                  ) : null}
+                  <p className="mt-2 text-xs text-content-faint">
+                    Assumes you can keep servicing any debt minimum payments from your regular income — this
+                    tool doesn&rsquo;t track a monthly budget to verify that. Doesn&rsquo;t account for the
+                    Tax-Free Childcare / 30-funded-hours cliff at £100k ANI, which can make this move even
+                    more valuable for parents relying on either — not modeled here.
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
 
         {comparatorResult.comparable.length > 0 ? (
           <div className="space-y-4">
