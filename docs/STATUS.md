@@ -1,6 +1,13 @@
 # Project Status
 
-Last updated: 2026-08-03 (**Phase 3 is fully closed out** — see "Phase 3 reference-tool
+Last updated: 2026-08-06 (**Phase 4.5 (Cash Allocation Advisor) is now fully complete**,
+including a household-requested fast-follow — the debt-vs-save comparator,
+avalanche/snowball ordering, the Advisor page, and a personal-allowance-taper-rescue
+recommendation are all shipped; see "Phase 4.5, Milestones 3–4" and "Phase 4.5
+fast-follow: personal-allowance-taper rescue" below. 917 tests passing. Committed,
+pushed, and deployed to the live stack.
+
+Earlier: **Phase 3 is fully closed out** — see "Phase 3 reference-tool
 validation" below for the closing Trinity study methodology and results. **Phase 4
 (stock analysis workbench) is now fully complete**: Milestone 1 (schema, the FMP fundamentals
 provider boundary, a watchlist) shipped, committed, pushed, and deployed to the live
@@ -2464,6 +2471,96 @@ account chart's caption) were verified in a live browser, light and dark, agains
 throwaway dev server and scratch Postgres; the roadmap reorder race fix was verified
 both by a real concurrent-request integration test and by a live drag-and-reload in
 the browser.
+
+## Phase 4.5, Milestones 3–4: debt-vs-save comparator, avalanche/snowball, the Advisor page
+
+Closed out Phase 4.5. `src/lib/advisor/debtComparator.ts`: for debt below the
+high-interest benchmark (the classic UK case — a mortgage), compares its APR against
+GIA/ISA, LISA, and relief-at-source pension alternatives as a this-year snapshot (not
+a multi-year projection — deliberately, to avoid duplicating the real Phase 3 Monte
+Carlo engine with a second, less-rigorous deterministic projector), costing the amount
+under consideration against the penalty-free overpayment allowance and, separately,
+the ERC rate on any excess. LISA is flagged with its 25% early-withdrawal net-loss
+warning whenever the household already owns a home (a `property`-type account is the
+only signal available — no dedicated boolean exists). `src/lib/advisor/
+debtOrdering.ts`: avalanche/snowball ordering across every household debt,
+independent of the comparator's own below-benchmark filter. `resolveWaterfallInput.ts`
+now also resolves the comparator's inputs (previously-fetched `debt_terms` fields that
+were fetched and thrown away) without widening `waterfall.ts`'s own narrow `DebtInput`
+contract. `src/app/advisor/page.tsx`: a plain GET form (not a Server Action — nothing
+here is worth persisting) parameterizes the page via `?extra=`, matching `retirement/
+compare/page.tsx`'s existing read-only-view-by-query-string pattern. Caught in manual
+verification: the new page wasn't wrapped in `AppShell`, so the sidebar silently
+didn't render — fixed before shipping. 904 tests passing (up from 873).
+`ROADMAP_ITEMS`' Phase 4.5 entry marked `done` — the employer-match/taper-rescue
+deferral was already explicit, disclosed scope-narrowing before this pass started, the
+same posture Phase 3 and 4.4 both shipped `done` under.
+
+Also this session: the sidebar was a normal flex child, so scrolling any long page
+scrolled it out of view with the content — made `position: sticky` instead
+(`AppShell.tsx`). And a real, previously-logged bug fixed: `next dev`'s dotenv-expand
+mangling `APP_PASSPHRASE_HASH` (see "Next steps" below, formerly item 24) — Compose
+and `next dev` need opposite escaping for a `$`-heavy value, so
+`scripts/hash-passphrase.ts` now prints both a raw line (`.env`/Compose) and a
+backslash-escaped line (`.env.local`/`next dev`), generated correctly once at the
+source rather than hand-escaped by whoever sets up local dev each time
+(`escapeForDotenvExpand`, `src/lib/auth/passphrase.ts`, unit-tested by actually
+round-tripping a hash through the real `@next/env` loader in a temp dir).
+
+## Phase 4.5 fast-follow: personal-allowance-taper rescue
+
+Household-requested, looking at real Advisor output: pension sat last in the
+waterfall's step order even for income in the £100,000–£125,140 personal-allowance-
+taper band, where a pension contribution carries an effective ~60% marginal benefit —
+arguably the single highest-value move available. This was already named in
+`docs/PROPOSAL.md`'s own spec and explicitly deferred when Phase 4.5 shipped; the
+tax-status calculation it needs (`computePersonalAllowanceTaperStatus`) was already
+built and tested, so the deferral was never a hard blocker, just unbuilt.
+
+`src/lib/advisor/taperRescue.ts`: a **gate, not a cap** — a recommendation only fires
+when ANI sits strictly within `(£100,000, £125,140]`, since `inTaperZone` alone means
+"was affected by the taper," not "still losing allowance on the margin," and the ~60%
+framing only holds for that specific band. Shows both the gross ANI-reduction figure
+and the relief-at-source net payment (ceiling-divided, never rounded down — an
+undershoot by a penny would leave the household still technically in the taper zone
+despite following the advice), capped by remaining annual-allowance headroom and by
+the amount available to allocate. Compares against the household's own high-interest
+debt via a new `src/lib/advisor/loanPayoff.ts` — no amortization math existed
+anywhere in this codebase before; an iterative month-by-month bigint simulation
+(disclosed as a flat, non-compounding monthly-rate estimate, not an authoritative
+schedule) rather than a closed-form log formula, to stay in exact fixed-point
+arithmetic the whole way. Two shared predicates extracted to avoid a third
+independently-maintained copy of a hard-right-answer UK rule (the same risk
+`isLisaEligible`'s own doc comment already names): `isHighInterestDebt`
+(`waterfall.ts`) and `pensionContributionHeadroomPence` (`taxStatus.ts`, composing
+functions that module already owned) — both refactored into their own former call
+sites as pure extractions, no behavior change.
+
+Presented as its own "worth weighing separately" section on the Advisor page (`border-
+brass/40 bg-brass/10`, the codebase's existing "positive, not error" callout style),
+not interleaved into the ordinary step list — reinforces "a candidate to weigh," not
+an automatic reorder. The page composes a sentence diffing against whatever the
+ordinary waterfall's own further-pension step already recommended for the same
+person, so the two don't read as double-counted new money.
+
+**Two disclosed gaps, not silent omissions**, both named directly in the callout's own
+copy: "servicing debt minimums while affording this" is only half-verifiable (the
+emergency-fund half is checked; this app has no income/expense/cash-flow model at all,
+so the debt-minimums half can't be); and the Tax-Free Childcare / 30-funded-hours
+cliff at exactly £100k ANI — the spec's own "strongest version of this recommendation"
+— isn't modeled, since no children/dependents schema exists anywhere in this app.
+
+Tests: `loanPayoff.test.ts` (5 cases, hand-verified via a throwaway script before
+trusting them, including one that exercises `roundDiv`'s actual rounding, not just
+exact division), `taperRescue.test.ts` (13 cases — the band gate at both ends, headroom-
+capped, extraAmountPence-capped, emergency-fund-not-on-track still returning an entry
+rather than hiding it, debt comparisons including a jointly-owned debt deliberately
+included, unlike LISA/pension attribution). `resolveWaterfallInput.integration.test.ts`
+extended for the newly-threaded `minimumPaymentPence` (falls back to `null`, not `0n`
+— a real, previously-invisible gap: this field was already fetched from `debt_terms`
+and thrown away, hardcoded to `null` in the page). Full suite green, typecheck/lint/
+build clean, manually verified in a live browser (light and dark) with a seeded
+household inside the band.
 
 ## Next steps
 
