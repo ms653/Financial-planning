@@ -173,6 +173,26 @@ describe.skipIf(!connectionString)('resolveWaterfallInput against a real Postgre
       overpaymentAllowanceBalanceBasis: 'current_balance',
       ercRatePct: '2.000',
       ercPeriodEnd: '2030-01-01',
+      minimumPaymentPence: 50_00n,
+    });
+  });
+
+  it('reports minimumPaymentPence as null (not 0n) when no debt_terms row exists at all', async () => {
+    const [household] = await db.insert(households).values({ name: 'Test household' }).returning();
+    const householdId = household!.id;
+    const [alex] = await db
+      .insert(people)
+      .values({ householdId, name: 'Alex', dateOfBirth: '1985-04-12' })
+      .returning();
+    // A debt account with no debt_terms row at all — a real state (the account exists,
+    // its terms haven't been entered yet).
+    await seedAccount(householdId, alex!.id, 'debt', -1_000_00n);
+
+    const { comparator } = await resolveWaterfallInput(householdId, 1_000_00n);
+    expect(comparator.debts).toHaveLength(1);
+    expect(comparator.debts[0]).toMatchObject({
+      balancePence: 0n, // no debt_terms row means no currentBalance either — the resolver's own existing behavior.
+      minimumPaymentPence: null,
     });
   });
 

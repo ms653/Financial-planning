@@ -17,11 +17,17 @@
  *
  * **Also resolves `debtComparator.ts`'s inputs**, alongside (not instead of) the
  * waterfall's own `debts: DebtInput[]` — `getDebtAccountsWithTerms` already fetches
- * the full `debt_terms` row (overpayment allowance, ERC rate/period), which used to be
- * fetched and thrown away since `waterfall.ts`'s own `DebtInput` has no use for it.
- * `DebtInput`/`WaterfallInput` are deliberately NOT widened to carry these fields —
- * they're exactly the narrow contract `waterfall.ts` and its own test fixtures already
- * expect, and the comparator's needs are a superset that belongs next to it instead.
+ * the full `debt_terms` row (overpayment allowance, ERC rate/period, minimum payment),
+ * which used to be fetched and thrown away since `waterfall.ts`'s own `DebtInput` has
+ * no use for it. `DebtInput`/`WaterfallInput` are deliberately NOT widened to carry
+ * these fields — they're exactly the narrow contract `waterfall.ts` and its own test
+ * fixtures already expect, and the comparator's (and `taperRescue.ts`'s) needs are a
+ * superset that belongs next to them instead. `comparator.debts` is typed as
+ * `ComparatorDebtInput[]` (this module's own export, `DebtComparatorDebtInput` plus
+ * `minimumPaymentPence`) rather than widening `debtComparator.ts`'s own type — the
+ * comparator's math still doesn't need a minimum payment, only `taperRescue.ts`'s
+ * payoff-duration comparison does, and TS's structural typing already lets this wider
+ * shape flow anywhere a `DebtComparatorDebtInput[]` is expected with no cast.
  */
 
 import { eq, inArray } from 'drizzle-orm';
@@ -36,6 +42,11 @@ import type { DebtInput, PersonWaterfallInput, WaterfallInput } from './waterfal
 
 const ISA_TYPE_SET = new Set(['cash_isa', 'ss_isa', 'lisa']);
 
+/** `DebtComparatorDebtInput` plus the minimum payment `taperRescue.ts` needs for its
+ * payoff-duration estimate — see this module's own doc comment for why this lives
+ * here rather than widening `debtComparator.ts`'s own narrower type. */
+export type ComparatorDebtInput = DebtComparatorDebtInput & { minimumPaymentPence: bigint | null };
+
 export interface ResolvedWaterfallInput {
   input: WaterfallInput;
   /** Data-quality issues found while resolving (e.g. a joint ISA account excluded)
@@ -46,7 +57,7 @@ export interface ResolvedWaterfallInput {
     /** Only signal available for "does this household already own a home": no
      * dedicated boolean field exists, so a `property`-type account stands in. */
     householdOwnsProperty: boolean;
-    debts: DebtComparatorDebtInput[];
+    debts: ComparatorDebtInput[];
   };
 }
 
@@ -167,7 +178,7 @@ export async function resolveWaterfallInput(
     interestRatePct: debt.terms?.interestRate ?? null,
   }));
 
-  const comparatorDebts: DebtComparatorDebtInput[] = debts.map((debt) => ({
+  const comparatorDebts: ComparatorDebtInput[] = debts.map((debt) => ({
     accountId: debt.accountId,
     name: debt.accountName,
     personId: debt.personId,
@@ -177,6 +188,10 @@ export async function resolveWaterfallInput(
     overpaymentAllowanceBalanceBasis: debt.terms?.overpaymentAllowanceBalanceBasis ?? null,
     ercRatePct: debt.terms?.ercRatePct ?? null,
     ercPeriodEnd: debt.terms?.ercPeriodEnd ?? null,
+    // Unlike currentBalance, a missing minimum payment falls back to null (unknown),
+    // not 0n (a genuine zero payment) — the two mean very different things to
+    // taperRescue.ts's payoff-duration estimate.
+    minimumPaymentPence: debt.terms?.minimumPayment ? numericToPence(debt.terms.minimumPayment) : null,
   }));
 
   const householdOwnsProperty = accountsWithBalances.some((account) => account.type === 'property');
