@@ -41,6 +41,7 @@ function scenario(overrides: Partial<ResolvedScenario> = {}): ResolvedScenario {
     people: [person({ personId: 1 })],
     startingBalancesPence: {},
     jointAnnualContributionsPence: {},
+    oneOffEvents: [],
     ...overrides,
   };
 }

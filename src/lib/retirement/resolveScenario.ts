@@ -194,5 +194,10 @@ export async function resolveScenario(
     people: resolvedPeople,
     startingBalancesPence,
     jointAnnualContributionsPence,
+    oneOffEvents: (assumptions.oneOffEvents ?? []).map((event) => ({
+      personId: event.personId,
+      age: event.age,
+      amountPence: numericToPence(event.amount),
+    })),
   };
 }

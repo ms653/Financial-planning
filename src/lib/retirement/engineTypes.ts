@@ -129,6 +129,12 @@ export interface ResolvedScenario {
    * household-wide instead — while `!householdFullyRetired` (`deterministicCore.ts`),
    * not tied to any one person's own working/retired state. */
   jointAnnualContributionsPence: Partial<Record<DrawdownAccountType, bigint>>;
+  /** A one-off cash event at a specific person's age — Phase 4.6. `id`/`label` are
+   * display-only (`ScenarioAssumptionsV1`'s own `OneOffEventV1`) and deliberately
+   * dropped here; the engine only ever needs who, when, and how much. Positive
+   * `amountPence` is an injection, negative an expense — see
+   * `deterministicCore.ts`'s own doc comment for how each is applied. */
+  oneOffEvents: Array<{ personId: number; age: number; amountPence: bigint }>;
 }
 
 /** One simulated year, within one simulated path. */

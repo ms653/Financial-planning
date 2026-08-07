@@ -198,6 +198,7 @@ function buildScenario(withdrawalRatePercent: bigint, equityAllocationRate: bigi
     ],
     startingBalancesPence: { gia: STARTING_BALANCE_PENCE },
     jointAnnualContributionsPence: {},
+    oneOffEvents: [],
   };
 }
 

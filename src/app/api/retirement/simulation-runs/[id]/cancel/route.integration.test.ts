@@ -46,6 +46,7 @@ function fixtureScenario(scenarioId: number): ResolvedScenario {
     ],
     startingBalancesPence: { gia: 50_000_000n },
     jointAnnualContributionsPence: {},
+    oneOffEvents: [],
   };
 }
 
