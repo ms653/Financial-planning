@@ -44,6 +44,27 @@ export interface ScenarioAssumptionsPersonV1 {
   planEndAge: number;
 }
 
+/**
+ * A one-off cash event at a specific age — "house purchase" and "major expense" from
+ * `docs/PROPOSAL.md`'s Phase 4.6 spec are both just this, signed: a positive `amount`
+ * is an injection (windfall/gift), a negative one an expense. No "which wrapper"
+ * field — an expense is folded into that year's ordinary shortfall and drawn through
+ * `wrapperWithdrawalOrder` exactly like normal spending; an injection lands directly
+ * in `cash` (see `deterministicCore.ts`'s own doc comment for why that's hardcoded
+ * rather than reusing `wrapperWithdrawalOrder[0]`).
+ */
+export interface OneOffEventV1 {
+  /** Client-generated (`crypto.randomUUID()`) — a list-editing key only, never read
+   * by the engine and not meaningful across scenarios (see `scenarioDiff.ts`). */
+  id: string;
+  label: string;
+  /** Must be a member of this same scenario's own `people[]`. */
+  personId: number;
+  age: number;
+  /** Signed decimal pounds string; must be non-zero. */
+  amount: string;
+}
+
 export interface ScenarioAssumptionsV1 {
   schemaVersion: 1;
   /** Real (inflation-adjusted) annual household spending while both people are alive,
@@ -74,6 +95,12 @@ export interface ScenarioAssumptionsV1 {
    * an undocumented early arrival of wrapper-sequencing optimisation. */
   wrapperWithdrawalOrder: DrawdownAccountType[];
   people: ScenarioAssumptionsPersonV1[];
+  /** Optional — a new `schemaVersion: 1` field, not a version bump. The parser
+   * already ignores unknown keys and this one defaults to absent, so both directions
+   * (old code reading a new scenario; new code reading an old one) are safe with no
+   * migration — the same category of addition `pclsAge`/`survivorAnnualSpending`
+   * already are. */
+  oneOffEvents?: OneOffEventV1[];
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -184,6 +211,33 @@ function parsePersonV1(raw: unknown, index: number): ScenarioAssumptionsPersonV1
   };
 }
 
+/** Membership against `validPersonIds` is a structural/referential check — the same
+ * category `wrapperWithdrawalOrder`'s own enum check already is — so it belongs here,
+ * not deferred to `scenarioFormValidation.ts` (which owns business-judgment cross-field
+ * checks like age ordering, not "does this id exist at all"). */
+function parseOneOffEventV1(raw: unknown, index: number, validPersonIds: ReadonlySet<number>): OneOffEventV1 {
+  if (!isPlainObject(raw)) {
+    throw new ScenarioAssumptionsParseError(`oneOffEvents[${index}] must be an object`);
+  }
+  const personId = requirePersonId(raw.personId, `oneOffEvents[${index}].personId`);
+  if (!validPersonIds.has(personId)) {
+    throw new ScenarioAssumptionsParseError(
+      `oneOffEvents[${index}].personId (${personId}) is not one of this scenario's own people`,
+    );
+  }
+  const amount = requireDecimalString(raw.amount, `oneOffEvents[${index}].amount`);
+  if (numericToPence(amount) === 0n) {
+    throw new ScenarioAssumptionsParseError(`oneOffEvents[${index}].amount must not be zero`);
+  }
+  return {
+    id: requireString(raw.id, `oneOffEvents[${index}].id`),
+    label: requireString(raw.label, `oneOffEvents[${index}].label`),
+    personId,
+    age: requireAge(raw.age, `oneOffEvents[${index}].age`),
+    amount,
+  };
+}
+
 /**
  * Parse and validate a `retirement_scenario.assumptions` JSONB value. Throws
  * `ScenarioAssumptionsParseError` on anything malformed or on an unrecognised
@@ -230,6 +284,16 @@ export function parseScenarioAssumptions(raw: unknown): ScenarioAssumptionsV1 {
         );
       }
 
+      const personIds = new Set(people.map((p) => p.personId));
+      const oneOffEventsRaw = raw.oneOffEvents;
+      let oneOffEvents: OneOffEventV1[] | undefined;
+      if (oneOffEventsRaw !== undefined) {
+        if (!Array.isArray(oneOffEventsRaw)) {
+          throw new ScenarioAssumptionsParseError('oneOffEvents must be an array');
+        }
+        oneOffEvents = oneOffEventsRaw.map((e, i) => parseOneOffEventV1(e, i, personIds));
+      }
+
       return {
         schemaVersion: 1,
         annualSpending: requireDecimalString(raw.annualSpending, 'annualSpending'),
@@ -243,6 +307,7 @@ export function parseScenarioAssumptions(raw: unknown): ScenarioAssumptionsV1 {
         }),
         wrapperWithdrawalOrder: wrapperWithdrawalOrderRaw as DrawdownAccountType[],
         people,
+        oneOffEvents,
       };
     }
     default:

@@ -150,4 +150,60 @@ describe('parseScenarioAssumptions', () => {
     payload.people = [{ personId: 0, retirementAge: 65, planEndAge: 95 }];
     expect(() => parseScenarioAssumptions(payload)).toThrow(ScenarioAssumptionsParseError);
   });
+
+  describe('oneOffEvents', () => {
+    it('is undefined when absent — a pre-Phase-4.6 scenario, not an empty list', () => {
+      const result = parseScenarioAssumptions(validSinglePersonPayload());
+      expect(result.oneOffEvents).toBeUndefined();
+    });
+
+    it('parses a valid expense (negative amount) and injection (positive amount)', () => {
+      const payload = {
+        ...validSinglePersonPayload(),
+        oneOffEvents: [
+          { id: 'a', label: 'House deposit', personId: 1, age: 45, amount: '-50000' },
+          { id: 'b', label: 'Inheritance', personId: 1, age: 50, amount: '20000' },
+        ],
+      };
+      const result = parseScenarioAssumptions(payload);
+      expect(result.oneOffEvents).toEqual([
+        { id: 'a', label: 'House deposit', personId: 1, age: 45, amount: '-50000' },
+        { id: 'b', label: 'Inheritance', personId: 1, age: 50, amount: '20000' },
+      ]);
+    });
+
+    it('rejects a zero amount', () => {
+      const payload = {
+        ...validSinglePersonPayload(),
+        oneOffEvents: [{ id: 'a', label: 'Nothing', personId: 1, age: 45, amount: '0' }],
+      };
+      expect(() => parseScenarioAssumptions(payload)).toThrow(ScenarioAssumptionsParseError);
+    });
+
+    it('rejects a personId that is not one of this scenario’s own people', () => {
+      const payload = {
+        ...validSinglePersonPayload(),
+        oneOffEvents: [{ id: 'a', label: 'House deposit', personId: 999, age: 45, amount: '-50000' }],
+      };
+      expect(() => parseScenarioAssumptions(payload)).toThrow(ScenarioAssumptionsParseError);
+    });
+
+    it('rejects a non-array oneOffEvents', () => {
+      const payload = { ...validSinglePersonPayload(), oneOffEvents: 'not an array' };
+      expect(() => parseScenarioAssumptions(payload)).toThrow(ScenarioAssumptionsParseError);
+    });
+
+    it('rejects an event missing a required field', () => {
+      const payload = {
+        ...validSinglePersonPayload(),
+        oneOffEvents: [{ id: 'a', label: 'House deposit', personId: 1, amount: '-50000' }],
+      };
+      expect(() => parseScenarioAssumptions(payload)).toThrow(ScenarioAssumptionsParseError);
+    });
+
+    it('accepts an empty oneOffEvents array', () => {
+      const result = parseScenarioAssumptions({ ...validSinglePersonPayload(), oneOffEvents: [] });
+      expect(result.oneOffEvents).toEqual([]);
+    });
+  });
 });
