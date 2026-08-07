@@ -327,6 +327,123 @@ describe('ScenarioEditorForm', () => {
     expect(startSimulationRun).not.toHaveBeenCalled();
   });
 
+  describe('one-off events', () => {
+    it('adds and removes an event row', async () => {
+      const user = userEvent.setup();
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+      await selectPerson(user, 'Alex');
+      await user.click(screen.getByRole('button', { name: /Strategy/ }));
+
+      expect(screen.queryByLabelText('Label')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Add event' }));
+      expect(screen.getByLabelText('Label')).toBeInTheDocument();
+      expect(screen.getByLabelText('Age')).toBeInTheDocument();
+      expect(screen.getByLabelText('Amount')).toBeInTheDocument();
+
+      await user.type(screen.getByLabelText('Label'), 'House deposit');
+      await user.type(screen.getByLabelText('Age'), '45');
+      await user.type(screen.getByLabelText('Amount'), '50000');
+      expect(screen.getByLabelText('Label')).toHaveValue('House deposit');
+
+      await user.click(screen.getByRole('button', { name: /Remove/ }));
+      expect(screen.queryByLabelText('Label')).not.toBeInTheDocument();
+    });
+
+    it('defaults to "Expense" and switches to "Windfall" on toggle', async () => {
+      const user = userEvent.setup();
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+      await selectPerson(user, 'Alex');
+      await user.click(screen.getByRole('button', { name: /Strategy/ }));
+      await user.click(screen.getByRole('button', { name: 'Add event' }));
+
+      expect(screen.getByRole('radio', { name: 'Expense' })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByRole('radio', { name: 'Windfall' })).toHaveAttribute('aria-checked', 'false');
+
+      await user.click(screen.getByRole('radio', { name: 'Windfall' }));
+      expect(screen.getByRole('radio', { name: 'Windfall' })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByRole('radio', { name: 'Expense' })).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('shows a field error for a non-numeric age at submit time', async () => {
+      const user = userEvent.setup();
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+      await selectPerson(user, 'Alex');
+      await user.click(screen.getByRole('button', { name: /Strategy/ }));
+      await user.click(screen.getByRole('button', { name: 'Add event' }));
+      await user.type(screen.getByLabelText('Label'), 'House deposit');
+      await user.type(screen.getByLabelText('Age'), 'abc');
+      await user.type(screen.getByLabelText('Amount'), '50000');
+
+      await user.click(screen.getByRole('button', { name: 'Run simulation' }));
+
+      expect(await screen.findByText('Enter a whole number of years.')).toBeInTheDocument();
+      expect(createScenarioReturningId).not.toHaveBeenCalled();
+    });
+
+    it('hides the whole section until at least one person is selected', async () => {
+      const user = userEvent.setup();
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+      await user.click(screen.getByRole('button', { name: /Strategy/ }));
+      // Nobody selected yet — the whole "One-off events" section is hidden, same as
+      // the per-person Strategy fields (PCLS age, State Pension override) already are.
+      expect(screen.queryByText('One-off events')).not.toBeInTheDocument();
+
+      await selectPerson(user, 'Alex');
+      expect(screen.getByText('One-off events')).toBeInTheDocument();
+    });
+
+    it('does not show a person selector for a single-person scenario', async () => {
+      const user = userEvent.setup();
+      render(
+        <ScenarioEditorForm
+          people={PEOPLE}
+          scenarioId={null}
+          initialName="Baseline"
+          initialIsBaseline={false}
+          initialAssumptions={baseAssumptions()}
+        />,
+      );
+      await selectPerson(user, 'Alex');
+      await user.click(screen.getByRole('button', { name: /Strategy/ }));
+      await user.click(screen.getByRole('button', { name: 'Add event' }));
+
+      expect(screen.queryByLabelText('Person')).not.toBeInTheDocument();
+    });
+  });
+
   describe('guided wizard', () => {
     it('is not shown by default — only the direct form renders on first paint', () => {
       render(

@@ -21,6 +21,7 @@ function baseValues(overrides: Partial<ScenarioFormValues> = {}): ScenarioFormVa
         planEndAge: '90',
       },
     ],
+    oneOffEvents: [],
     ...overrides,
   };
 }
@@ -118,5 +119,57 @@ describe('validateScenarioForm', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected failure');
     expect(result.errors.form).toMatch(/survivorAnnualSpending/);
+  });
+
+  describe('oneOffEvents', () => {
+    it('converts an expense to a negative amount and an injection to a positive one', () => {
+      const result = validateScenarioForm(
+        baseValues({
+          oneOffEvents: [
+            { id: 'a', label: 'House deposit', personId: 1, age: '45', amount: '50000', direction: 'expense' },
+            { id: 'b', label: 'Inheritance', personId: 1, age: '50', amount: '20000', direction: 'injection' },
+          ],
+        }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected ok');
+      expect(result.value.oneOffEvents).toEqual([
+        { id: 'a', label: 'House deposit', personId: 1, age: 45, amount: '-50000' },
+        { id: 'b', label: 'Inheritance', personId: 1, age: 50, amount: '20000' },
+      ]);
+    });
+
+    it('omits oneOffEvents entirely from the parsed result when the list is empty', () => {
+      const result = validateScenarioForm(baseValues({ oneOffEvents: [] }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected ok');
+      expect(result.value.oneOffEvents).toBeUndefined();
+    });
+
+    it('flags a non-numeric event age as a field error, keyed by index', () => {
+      const result = validateScenarioForm(
+        baseValues({
+          oneOffEvents: [
+            { id: 'a', label: 'House deposit', personId: 1, age: 'not a number', amount: '50000', direction: 'expense' },
+          ],
+        }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('expected failure');
+      expect(result.errors['oneOffEvents.0.age']).toBe('Enter a whole number of years.');
+    });
+
+    it('defers amount format/range checks to parseScenarioAssumptions', () => {
+      const result = validateScenarioForm(
+        baseValues({
+          oneOffEvents: [
+            { id: 'a', label: 'House deposit', personId: 1, age: '45', amount: 'not a number', direction: 'expense' },
+          ],
+        }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('expected failure');
+      expect(result.errors.form).toBeDefined();
+    });
   });
 });

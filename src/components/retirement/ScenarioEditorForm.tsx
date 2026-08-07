@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { DEFAULT_WRAPPER_WITHDRAWAL_ORDER } from '@/lib/retirement/scenarioFormDefaults';
 import {
   validateScenarioForm,
+  type ScenarioFormOneOffEventValues,
   type ScenarioFormPersonValues,
   type ScenarioFormValues,
 } from '@/lib/retirement/scenarioFormValidation';
@@ -80,6 +81,14 @@ function toFormValues(people: ScenarioEditorPerson[], assumptions: ScenarioAssum
         planEndAge: saved ? String(saved.planEndAge) : '',
       };
     }),
+    oneOffEvents: (assumptions.oneOffEvents ?? []).map((event) => ({
+      id: event.id,
+      label: event.label,
+      personId: event.personId,
+      age: String(event.age),
+      amount: event.amount.replace(/^-/, ''),
+      direction: event.amount.startsWith('-') ? 'expense' : 'injection',
+    })),
   };
 }
 
@@ -178,6 +187,10 @@ export function ScenarioEditorForm({
   }
 
   const personNames = useMemo(() => new Map(people.map((p) => [p.personId, p.name])), [people]);
+  const selectedPeople = useMemo(
+    () => people.filter((p) => selectedPersonIds.has(p.personId)),
+    [people, selectedPersonIds],
+  );
 
   // Snapshots {name, isBaseline, values, selection} as they were at the *last
   // successful run* — not the original `initial*` props, which never change again
@@ -196,9 +209,15 @@ export function ScenarioEditorForm({
 
   // Only the selected people are ever validated or saved — an unselected person's
   // blank/default fields (e.g. a child nobody has touched) must never block
-  // submission or leak into the error list.
+  // submission or leak into the error list. One-off events get the same treatment:
+  // an event still attached to a person who's since been deselected would otherwise
+  // fail `parseScenarioAssumptions`'s own personId-membership check.
   const filteredValues: ScenarioFormValues = useMemo(
-    () => ({ ...values, people: values.people.filter((p) => selectedPersonIds.has(p.personId)) }),
+    () => ({
+      ...values,
+      people: values.people.filter((p) => selectedPersonIds.has(p.personId)),
+      oneOffEvents: values.oneOffEvents.filter((e) => selectedPersonIds.has(e.personId)),
+    }),
     [values, selectedPersonIds],
   );
 
@@ -229,6 +248,51 @@ export function ScenarioEditorForm({
       [order[index], order[target]] = [order[target]!, order[index]!];
       return { ...current, wrapperWithdrawalOrder: order };
     });
+  }
+
+  function addOneOffEvent(defaultPersonId: number) {
+    setValues((current) => ({
+      ...current,
+      oneOffEvents: [
+        ...current.oneOffEvents,
+        {
+          id: crypto.randomUUID(),
+          label: '',
+          personId: defaultPersonId,
+          age: '',
+          amount: '',
+          direction: 'expense',
+        },
+      ],
+    }));
+  }
+
+  function removeOneOffEvent(id: string) {
+    setValues((current) => ({
+      ...current,
+      oneOffEvents: current.oneOffEvents.filter((event) => event.id !== id),
+    }));
+  }
+
+  function setOneOffEventField(id: string, field: 'label' | 'age' | 'amount', value: string) {
+    setValues((current) => ({
+      ...current,
+      oneOffEvents: current.oneOffEvents.map((event) => (event.id === id ? { ...event, [field]: value } : event)),
+    }));
+  }
+
+  function setOneOffEventPerson(id: string, personId: number) {
+    setValues((current) => ({
+      ...current,
+      oneOffEvents: current.oneOffEvents.map((event) => (event.id === id ? { ...event, personId } : event)),
+    }));
+  }
+
+  function setOneOffEventDirection(id: string, direction: ScenarioFormOneOffEventValues['direction']) {
+    setValues((current) => ({
+      ...current,
+      oneOffEvents: current.oneOffEvents.map((event) => (event.id === id ? { ...event, direction } : event)),
+    }));
   }
 
   async function handleRunSimulation() {
@@ -549,6 +613,117 @@ export function ScenarioEditorForm({
             ))}
           </ol>
         </div>
+
+        {selectedPeople.length > 0 ? (
+          <div>
+            <p className="text-sm font-medium text-content">One-off events</p>
+            <p className="mt-0.5 text-xs text-content-faint">
+              A house purchase, a major expense, or a windfall at a specific age — modelled as a single event, not
+              ongoing spending.
+            </p>
+            <div className="mt-2.5 space-y-3">
+              {values.oneOffEvents.map((event, index) => (
+                <div key={event.id} className="rounded-lg border border-line bg-paper p-3">
+                  <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                    <Field
+                      label="Label"
+                      htmlFor={`oneOffLabel-${event.id}`}
+                      error={errorFor(`oneOffEvents.${index}.label`)}
+                    >
+                      <input
+                        id={`oneOffLabel-${event.id}`}
+                        value={event.label}
+                        onChange={(e) => setOneOffEventField(event.id, 'label', e.target.value)}
+                        onBlur={() => blur(`oneOffEvents.${index}.label`)}
+                        placeholder="e.g. House deposit"
+                        className={inputClass}
+                      />
+                    </Field>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${event.label || 'this event'}`}
+                      onClick={() => removeOneOffEvent(event.id)}
+                      className="min-h-[44px] min-w-[44px] self-end rounded-lg border border-line-strong text-content-muted transition hover:border-clay hover:text-clay"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    {selectedPeople.length > 1 ? (
+                      <Field label="Person" htmlFor={`oneOffPerson-${event.id}`}>
+                        <select
+                          id={`oneOffPerson-${event.id}`}
+                          value={event.personId}
+                          onChange={(e) => setOneOffEventPerson(event.id, Number(e.target.value))}
+                          className={inputClass}
+                        >
+                          {selectedPeople.map((person) => (
+                            <option key={person.personId} value={person.personId}>
+                              {person.name}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    ) : null}
+                    <Field
+                      label="Age"
+                      htmlFor={`oneOffAge-${event.id}`}
+                      error={errorFor(`oneOffEvents.${index}.age`)}
+                    >
+                      <input
+                        id={`oneOffAge-${event.id}`}
+                        inputMode="numeric"
+                        value={event.age}
+                        onChange={(e) => setOneOffEventField(event.id, 'age', e.target.value)}
+                        onBlur={() => blur(`oneOffEvents.${index}.age`)}
+                        className={inputClass}
+                      />
+                    </Field>
+                    <Field
+                      label="Amount"
+                      htmlFor={`oneOffAmount-${event.id}`}
+                      error={errorFor(`oneOffEvents.${index}.amount`)}
+                    >
+                      <input
+                        id={`oneOffAmount-${event.id}`}
+                        inputMode="decimal"
+                        value={event.amount}
+                        onChange={(e) => setOneOffEventField(event.id, 'amount', e.target.value)}
+                        onBlur={() => blur(`oneOffEvents.${index}.amount`)}
+                        className={inputClass}
+                      />
+                    </Field>
+                  </div>
+                  <div role="radiogroup" aria-label={`${event.label || 'Event'} type`} className="mt-3 flex gap-2">
+                    {(['expense', 'injection'] as const).map((direction) => (
+                      <button
+                        key={direction}
+                        type="button"
+                        role="radio"
+                        aria-checked={event.direction === direction}
+                        onClick={() => setOneOffEventDirection(event.id, direction)}
+                        className={`min-h-[36px] rounded-full border px-3.5 text-xs font-medium transition ${
+                          event.direction === direction
+                            ? 'border-brass bg-brass/10 text-content'
+                            : 'border-line-strong text-content-muted hover:border-brass'
+                        }`}
+                      >
+                        {direction === 'expense' ? 'Expense' : 'Windfall'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => addOneOffEvent(selectedPeople[0]!.personId)}
+              className="mt-3 text-xs font-medium text-content-muted underline underline-offset-2 hover:text-content"
+            >
+              Add event
+            </button>
+          </div>
+        ) : null}
 
         <button
           type="button"

@@ -35,6 +35,18 @@ export interface ScenarioFormPersonValues {
   planEndAge: string;
 }
 
+/** One one-off event's raw form input (Phase 4.6). `amount` is the unsigned
+ * magnitude the household typed; `direction` is a same-row Expense/Windfall toggle
+ * that supplies the sign, rather than asking the household to type a minus sign. */
+export interface ScenarioFormOneOffEventValues {
+  id: string;
+  label: string;
+  personId: number;
+  age: string;
+  amount: string;
+  direction: 'expense' | 'injection';
+}
+
 export interface ScenarioFormValues {
   annualSpending: string;
   /** Empty string = omit (single-person household, or not yet entered). */
@@ -45,6 +57,7 @@ export interface ScenarioFormValues {
   flatEffectiveTaxRatePct: string;
   wrapperWithdrawalOrder: DrawdownAccountType[];
   people: ScenarioFormPersonValues[];
+  oneOffEvents: ScenarioFormOneOffEventValues[];
 }
 
 const MIN_RETIREMENT_AGE_CONTEXT = 100;
@@ -103,6 +116,26 @@ export function validateScenarioForm(values: ScenarioFormValues): Validated<Scen
     };
   });
 
+  // Age needs client-side parsing (a number, not a string) before the final parse can
+  // run at all — the same reason retirementAge/planEndAge are parsed above, not left
+  // to parseScenarioAssumptions. The signed amount string, by contrast, is left for
+  // parseScenarioAssumptions's own requireDecimalString to validate — same posture as
+  // every other decimal field here (annualSpending, inflationPct, ...), which get no
+  // pre-validation of their own and surface a format error as a generic form message.
+  const parsedOneOffEvents = values.oneOffEvents.map((event, index) => {
+    const age = parseWholeNumber(event.age);
+    if (age === null) {
+      errors[`oneOffEvents.${index}.age`] = 'Enter a whole number of years.';
+    }
+    return {
+      id: event.id,
+      label: event.label.trim(),
+      personId: event.personId,
+      age: age ?? 0,
+      amount: event.direction === 'expense' ? `-${event.amount.trim()}` : event.amount.trim(),
+    };
+  });
+
   if (Object.keys(errors).length > 0) {
     return { ok: false, errors };
   }
@@ -117,6 +150,7 @@ export function validateScenarioForm(values: ScenarioFormValues): Validated<Scen
     flatEffectiveTaxRatePct: values.flatEffectiveTaxRatePct.trim(),
     wrapperWithdrawalOrder: values.wrapperWithdrawalOrder,
     people: parsedPeople,
+    oneOffEvents: parsedOneOffEvents.length > 0 ? parsedOneOffEvents : undefined,
   };
 
   try {
