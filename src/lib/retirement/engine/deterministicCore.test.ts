@@ -34,6 +34,7 @@ function scenario(overrides: Partial<ResolvedScenario> = {}): ResolvedScenario {
     people: [person({ personId: 1 })],
     startingBalancesPence: {},
     jointAnnualContributionsPence: {},
+    oneOffEvents: [],
     ...overrides,
   };
 }
@@ -445,6 +446,77 @@ describe('runDeterministicPath — tax treatment', () => {
     const outcome = runDeterministicPath(s, pct(0));
     expect(outcome.path[0]!.balancesByWrapperPence.gia).toBe(50_000_000n); // untouched
     expect(outcome.path[0]!.depleted).toBe(true);
+  });
+});
+
+describe('runDeterministicPath — Phase 4.6, one-off events', () => {
+  it('an expense fires during accumulation, not gated by householdFullyRetired', () => {
+    // Regression test for the highest-risk detail in this feature: spendingPence is
+    // unconditionally zero pre-retirement, but a one-off expense (a house purchase is
+    // one of this feature's own two named examples) must still be payable before
+    // retirement. Person retires at 70, event fires at 65 — ordinary drawdown is
+    // correctly zero that year, but the balance must still drop by exactly the event
+    // amount.
+    const s = scenario({
+      annualSpendingPence: 500_000n, // would be drawn if retired — isolates the gate
+      wrapperWithdrawalOrder: ['gia'],
+      startingBalancesPence: { gia: 10_000_000n },
+      people: [person({ personId: 1, currentAge: 65, retirementAge: 70, planEndAge: 71 })],
+      oneOffEvents: [{ personId: 1, age: 65, amountPence: -300_000n }], // £3,000 expense
+    });
+
+    const outcome = runDeterministicPath(s, pct(0));
+    // Age 65: still working (65 < 70), so ordinary spending is correctly zero — the
+    // balance drop must be exactly the event amount, nothing more.
+    expect(outcome.path[0]!.totalBalancePence).toBe(10_000_000n - 300_000n);
+  });
+
+  it('an injection lands directly in cash, independent of wrapperWithdrawalOrder', () => {
+    const s = scenario({
+      annualSpendingPence: 0n,
+      wrapperWithdrawalOrder: ['gia', 'cash'], // cash deliberately not first
+      startingBalancesPence: {},
+      people: [person({ personId: 1, currentAge: 65, planEndAge: 66 })],
+      oneOffEvents: [{ personId: 1, age: 65, amountPence: 500_000n }], // £5,000 windfall
+    });
+
+    const outcome = runDeterministicPath(s, pct(0));
+    expect(outcome.path[0]!.balancesByWrapperPence.cash).toBe(500_000n);
+    expect(outcome.path[0]!.balancesByWrapperPence.gia ?? 0n).toBe(0n);
+  });
+
+  it('an expense is grossed up through the same tax formula as ordinary shortfall — no second tax path', () => {
+    const s = scenario({
+      annualSpendingPence: 0n,
+      flatEffectiveTaxRate: pct(20),
+      wrapperWithdrawalOrder: ['gia'],
+      startingBalancesPence: { gia: 50_000_000n },
+      people: [person({ personId: 1, currentAge: 65, planEndAge: 66 })],
+      oneOffEvents: [{ personId: 1, age: 65, amountPence: -800_000n }], // £8,000 net expense
+    });
+
+    const outcome = runDeterministicPath(s, pct(0));
+    // £8,000 net at 20% tax needs a gross withdrawal of £10,000 — the exact same
+    // formula the ordinary-shortfall tax test above uses.
+    expect(outcome.path[0]!.balancesByWrapperPence.gia).toBe(50_000_000n - 1_000_000n);
+  });
+
+  it('same-year PCLS lands in cash before an expense event drains it, so the expense is met tax-free', () => {
+    const s = scenario({
+      annualSpendingPence: 0n,
+      flatEffectiveTaxRate: pct(20), // would matter if the expense fell through to gia
+      wrapperWithdrawalOrder: ['cash', 'gia'],
+      startingBalancesPence: { sipp_pension: 40_000_000n, gia: 50_000_000n },
+      people: [person({ personId: 1, currentAge: 65, planEndAge: 66, pclsAge: 65 })],
+      oneOffEvents: [{ personId: 1, age: 65, amountPence: -5_000_000n }], // £50,000 expense
+    });
+
+    const outcome = runDeterministicPath(s, pct(0));
+    // PCLS: 25% of £400,000 pension = £100,000 moves to cash before the expense event
+    // runs. The £50,000 expense is met entirely from that tax-free cash, not gia.
+    expect(outcome.path[0]!.balancesByWrapperPence.cash).toBe(10_000_000n - 5_000_000n);
+    expect(outcome.path[0]!.balancesByWrapperPence.gia).toBe(50_000_000n); // untouched
+    expect(outcome.path[0]!.balancesByWrapperPence.sipp_pension).toBe(30_000_000n);
   });
 });
 

@@ -59,9 +59,14 @@
  * the (post-growth, post-contribution) `sipp_pension` balance into `cash`, tax-free —
  * a one-off transfer between wrappers, not a direct offset against spending, so
  * unspent PCLS proceeds correctly remain on the balance sheet (as cash) rather than
- * silently vanishing from `totalBalancePence`; (5) the remaining shortfall (spending,
- * itself zero unless every alive person has reached their `retirementAge`, minus State
- * Pension income) is drawn from wrappers in `wrapperWithdrawalOrder`, literally,
+ * silently vanishing from `totalBalancePence`; (4.5) any one-off event(s) due this
+ * year (Phase 4.6 — a house purchase or major expense/windfall at a specific age) are
+ * applied: an injection lands directly in `cash`, an expense is folded into this
+ * year's shortfall, computed *after* the ordinary pre-retirement spending gate so a
+ * one-off expense before retirement isn't silently zeroed along with it; (5) the
+ * remaining shortfall (ordinary spending, itself zero unless every alive person has
+ * reached their `retirementAge`, minus State Pension income, plus any one-off expense
+ * from step 4.5) is drawn from wrappers in `wrapperWithdrawalOrder`, literally,
  * stopping once met. All amounts are bigint pence throughout; rates are
  * `RATE_SCALE`-scaled fractions (`percentStringToScaledFraction`).
  */
@@ -216,6 +221,30 @@ export function simulatePath(
       }
     }
 
+    // 4.5. One-off events (Phase 4.6) due this year — a person's age this year matches
+    // the event's `age`. An injection lands directly in `cash`, hardcoded rather than
+    // `wrapperWithdrawalOrder[0]`: the withdrawal order is the household's own
+    // withdrawal-*priority* choice, and conflating it with "where windfalls land"
+    // would make reordering that priority silently relocate every injection too, with
+    // nothing in the scenario diff to hint at the coupling. An expense is folded into
+    // `oneOffShortfallPence` below and drawn through the same `wrapperWithdrawalOrder`
+    // loop as ordinary spending — no separate tax treatment, deliberately: the drain
+    // loop below already only applies `flatEffectiveTaxRate` uniformly, and giving a
+    // one-off expense its own tax logic would be an undocumented, asymmetric
+    // enhancement over how ordinary spending is taxed today.
+    let oneOffShortfallPence = 0n;
+    for (const person of scenario.people) {
+      const age = person.currentAge + yearIndex;
+      for (const event of scenario.oneOffEvents) {
+        if (event.personId !== person.personId || event.age !== age) continue;
+        if (event.amountPence > 0n) {
+          balances.set('cash', (balances.get('cash') ?? 0n) + event.amountPence);
+        } else if (event.amountPence < 0n) {
+          oneOffShortfallPence += -event.amountPence;
+        }
+      }
+    }
+
     const spendingPence = !anyoneAlive || !householdFullyRetired
       ? 0n
       : allOriginalPeopleAlive || scenario.people.length === 1
@@ -225,8 +254,15 @@ export function simulatePath(
           // this null in practice, but kept explicit rather than a silent `!`.
           (scenario.survivorAnnualSpendingPence ?? scenario.annualSpendingPence);
 
-    let shortfallPence = spendingPence - statePensionIncomePence;
-    if (shortfallPence < 0n) shortfallPence = 0n; // surplus guaranteed income isn't invested in M3.
+    // Ordinary shortfall is clamped BEFORE the one-off expense is added, not after —
+    // critical: `spendingPence` is unconditionally zero pre-retirement
+    // (`!householdFullyRetired`), but a one-off expense (a house purchase is one of
+    // this feature's own two named examples) must still be payable before retirement.
+    // Folding `oneOffShortfallPence` in ahead of this clamp, or into `spendingPence`
+    // itself, would silently zero it out in exactly that case.
+    let ongoingShortfallPence = spendingPence - statePensionIncomePence;
+    if (ongoingShortfallPence < 0n) ongoingShortfallPence = 0n; // surplus guaranteed income isn't invested in M3.
+    let shortfallPence = ongoingShortfallPence + oneOffShortfallPence;
 
     // 5. Draw the remaining shortfall from wrappers in the scenario's literal order.
     // Money in a wrapper the order omits is simply never touched — the documented
