@@ -135,8 +135,8 @@ export const ROADMAP_ITEMS: readonly RoadmapItem[] = [
     title: 'Scenario planning',
     summary: 'Side-by-side what-if comparisons — early retirement, a house purchase, a major expense.',
     detail:
-      "Scenario planning (broader what-if comparisons: early retirement, house purchase, major expense) — reuses the Phase 3 engine and Phase 4.5's account-aware logic.",
-    status: 'queued',
+      "Scenario planning (broader what-if comparisons: early retirement, house purchase, major expense) — reuses the Phase 3 engine and Phase 4.5's account-aware logic. Early retirement was already fully covered by the existing retirement-age field plus the existing pairwise `/retirement/compare` page — no new work needed there. The one genuine gap, closed this phase: the engine had no concept of a one-off lump-sum event at a point in time (only flat ongoing spending, a permanent survivor step-change, and PCLS, which moves money sideways between wrappers, never off the balance sheet). `OneOffEventV1` (`scenarioAssumptions.ts`) models both a house purchase/major expense and a windfall/injection as one signed-amount mechanism at a specific person's age — no new `schemaVersion`, the same optional-field-within-v1 category `pclsAge` already is. `deterministicCore.ts` applies it as a new year-loop step: an injection lands directly in `cash` (not `wrapperWithdrawalOrder[0]`, to avoid coupling withdrawal-priority reordering to where windfalls silently land), an expense is folded into that year's shortfall and drawn through the existing `wrapperWithdrawalOrder` loop exactly like ordinary spending — computed *after* the pre-retirement spending gate specifically so a one-off expense before retirement isn't silently zeroed along with ordinary drawdown. No new N-way/batch comparison UI built — a scenario with an event is just compared pairwise via the existing `/retirement/compare` page, which now also diffs `oneOffEvents` as a single row and names a differing count in the delta callout.",
+    status: 'done',
     dependsOn: ['phase-3-retirement-engine', 'phase-4-5-cash-allocation'],
   },
   {

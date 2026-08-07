@@ -1,13 +1,18 @@
 # Project Status
 
-Last updated: 2026-08-06 (**Phase 4.5 (Cash Allocation Advisor) is now fully complete**,
-including a household-requested fast-follow — the debt-vs-save comparator,
-avalanche/snowball ordering, the Advisor page, and a personal-allowance-taper-rescue
-recommendation are all shipped; see "Phase 4.5, Milestones 3–4" and "Phase 4.5
-fast-follow: personal-allowance-taper rescue" below. 917 tests passing. Committed,
-pushed, and deployed to the live stack.
+Last updated: 2026-08-07 (**Phase 4.6 (Scenario planning) is now fully complete** — a
+one-off lump-sum event (house purchase, major expense, or a windfall) at a specific
+person's age, reusing the existing pairwise scenario-compare UI rather than a new
+batch-comparison surface; see "Phase 4.6: one-off events for Scenario planning"
+below. Full suite green. Committed, pushed, and deployed to the live stack.
 
-Earlier: **Phase 3 is fully closed out** — see "Phase 3 reference-tool
+Earlier: **Phase 4.5 (Cash Allocation Advisor) is now fully complete**, including a
+household-requested fast-follow — the debt-vs-save comparator, avalanche/snowball
+ordering, the Advisor page, and a personal-allowance-taper-rescue recommendation are
+all shipped; see "Phase 4.5, Milestones 3–4" and "Phase 4.5 fast-follow:
+personal-allowance-taper rescue" below. 917 tests passing.
+
+Earlier still: **Phase 3 is fully closed out** — see "Phase 3 reference-tool
 validation" below for the closing Trinity study methodology and results. **Phase 4
 (stock analysis workbench) is now fully complete**: Milestone 1 (schema, the FMP fundamentals
 provider boundary, a watchlist) shipped, committed, pushed, and deployed to the live
@@ -2561,6 +2566,80 @@ extended for the newly-threaded `minimumPaymentPence` (falls back to `null`, not
 and thrown away, hardcoded to `null` in the page). Full suite green, typecheck/lint/
 build clean, manually verified in a live browser (light and dark) with a seeded
 household inside the band.
+
+## Phase 4.6: one-off events for Scenario planning
+
+Investigation before building anything: `docs/PROPOSAL.md`'s Phase 4.6 spec is one
+paragraph — "side-by-side what-if comparisons (early retirement, house purchase,
+major expense) reusing the Monte Carlo engine, broader than Phase 3's
+retirement-timing-only comparison." Confirmed "early retirement" was already fully
+covered — `/retirement/compare` already lets a household pick any two named scenarios
+and see a diff table plus a delta callout, and retirement age is already a per-person
+field. The one genuine gap: the engine had no concept of a one-off lump-sum event at
+a point in time — only flat ongoing spending, a permanent survivor step-change, and
+PCLS (which moves money sideways between wrappers, never off the balance sheet). No
+further spec detail existed beyond the one paragraph in either `docs/PROPOSAL.md` or
+`docs/DESIGN_SPEC.md` — the scope decisions below were made fresh, not looked up.
+
+`OneOffEventV1` (`src/lib/retirement/scenarioAssumptions.ts`): one generic mechanism,
+not separate house-purchase/expense data shapes — a labelled, signed amount at a
+specific person's age (positive = injection/windfall, negative = expense). New
+optional field within `schemaVersion: 1`, no version bump — the parser already
+ignores unknown keys and defaults absent ones, the same safe-both-directions category
+`pclsAge`/`survivorAnnualSpending` already are. Personal-id membership is validated
+in the parser itself (a structural/referential check, same tier as
+`wrapperWithdrawalOrder`'s own enum check), not deferred to form validation.
+
+`deterministicCore.ts`'s year loop gets a new step 4.5, between PCLS and the ordinary
+shortfall calc. Two placement decisions mattered and got their own regression tests:
+an injection lands directly in `cash`, hardcoded rather than
+`wrapperWithdrawalOrder[0]` — the withdrawal order is the household's own
+withdrawal-*priority* choice, and conflating it with "where windfalls land" would
+make reordering that priority silently relocate every injection too, invisibly. An
+expense is added to `shortfallPence` *after* the existing pre-retirement spending
+gate (`spendingPence` is unconditionally zeroed while `!householdFullyRetired`) —
+folding it in before that gate, or into `spendingPence` itself, would have silently
+zeroed a pre-retirement house purchase, exactly one of the feature's own two named
+examples. No new tax logic: an expense is blended into the same shortfall the
+ordinary drain loop already taxes uniformly via `flatEffectiveTaxRate`, inheriting
+that existing simplification rather than getting an undocumented, asymmetric
+enhancement over how ordinary spending is treated.
+
+`scenarioDiff.ts` treats `oneOffEvents` as one row (same "render both full sides, no
+item-level diff" treatment `wrapperWithdrawalOrder` already gets — there's no
+reliable cross-scenario key to match individual events by), now exporting
+`oneOffEventsDiffCount` (multiset-aware — two identical events on one side vs. one on
+the other counts as a real difference, not "unchanged") so `scenarioDeltaCallout.ts`
+and `/retirement/compare/page.tsx` can both reuse the same comparison rather than a
+second copy. The delta callout gets a compact `"also models N one-off events
+differently"` clause — deliberately not naming the specific differing event; the
+diff table beside it already shows full detail, and generating natural-language event
+descriptions is real scope a compact callout doesn't need.
+
+UI: a new "One-off events" repeatable list inside the Scenario Editor's existing
+Strategy disclosure (same section that already holds the reorderable withdrawal-order
+list), with a same-row Expense/Windfall toggle so the household never has to type a
+minus sign. Filtered by `selectedPersonIds` alongside `people` at the
+validate/submit boundary — an event still attached to a since-deselected person would
+otherwise fail the parser's own personId-membership check. `ScenarioWizard.tsx`
+needed no changes at all — it already renders `renderStrategyFields()` as a
+render-prop, so the new section appears there for free.
+
+Four test-vector engine cases (the isolation-from-the-retirement-gate case is the
+regression test for the highest-risk detail above), extended `scenarioDiff.test.ts`/
+`scenarioDeltaCallout.test.ts`/`scenarioAssumptions.test.ts`/
+`scenarioFormValidation.test.ts`, and new `ScenarioEditorForm.test.tsx` cases for
+add/remove-event-row behaviour and the direction toggle. 953 tests (up from 923: 755
+passing plus 198 DB-backed integration tests skipped without a live Postgres — both
+figures were already true before this phase, no integration coverage was skipped by
+choice here). Typecheck, lint, and build all clean. Manually verified in a live
+browser (light and dark, scratch Postgres + throwaway dev server): created a scenario
+with a pre-retirement house-purchase expense, confirmed it saved and ran, and
+confirmed the comparison page's diff row and delta callout both rendered correctly
+against a baseline scenario with no events.
+
+`ROADMAP_ITEMS`' Phase 4.6 entry marked `done`; `docs/PROPOSAL.md`'s generated table
+re-synced.
 
 ## Next steps
 
