@@ -56,4 +56,41 @@ describe('buildDeltaCallout', () => {
     });
     expect(result).toBeNull();
   });
+
+  it('adds a one-off-events clause, pluralized, when the two sides differ', () => {
+    const result = buildDeltaCallout({
+      label: 'Scenario B',
+      successRateFraction: 0.8,
+      otherSuccessRateFraction: 0.8,
+      retirementAge: 65,
+      otherRetirementAge: 65,
+      oneOffEventsDiffCount: 2,
+    });
+    expect(result).toBe('Scenario B: also models 2 one-off events differently');
+  });
+
+  it('singularizes the one-off-events clause for a single differing event', () => {
+    const result = buildDeltaCallout({
+      label: 'Scenario B',
+      successRateFraction: 0.8,
+      otherSuccessRateFraction: 0.8,
+      retirementAge: 65,
+      otherRetirementAge: 65,
+      oneOffEventsDiffCount: 1,
+    });
+    expect(result).toBe('Scenario B: also models 1 one-off event differently');
+  });
+
+  it('omits the one-off-events clause when the count is zero or undefined', () => {
+    expect(
+      buildDeltaCallout({
+        label: 'Scenario B',
+        successRateFraction: 0.8,
+        otherSuccessRateFraction: 0.8,
+        retirementAge: 65,
+        otherRetirementAge: 65,
+        oneOffEventsDiffCount: 0,
+      }),
+    ).toBeNull();
+  });
 });

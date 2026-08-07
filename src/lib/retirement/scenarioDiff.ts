@@ -5,12 +5,50 @@
  * `ScenarioAssumptionsV1` values.
  */
 
-import type { ScenarioAssumptionsV1 } from './scenarioAssumptions';
+import type { OneOffEventV1, ScenarioAssumptionsV1 } from './scenarioAssumptions';
 
 export interface AssumptionDiffRow {
   label: string;
   a: string;
   b: string;
+}
+
+/**
+ * Count of one-off events that differ between the two sides (side-A-only +
+ * side-B-only, by full content) — exported so `scenarioDeltaCallout.ts`'s caller can
+ * reuse this instead of a second copy of the same comparison. Order-independent,
+ * ignoring `id` (a client-generated list-editing key with no guaranteed
+ * correspondence between two independently-created scenarios — matching by
+ * label+age would invite both false-positive "unchanged" and false-negative
+ * "changed" reads, so this compares full event content instead of trying to pair
+ * items up). Treats each side as a multiset via a sorted-and-consumed match, not a
+ * plain set, so two identical £X events on one side vs. one on the other still count
+ * as a real difference.
+ */
+export function oneOffEventsDiffCount(a: OneOffEventV1[] = [], b: OneOffEventV1[] = []): number {
+  const key = (e: OneOffEventV1) => `${e.personId}|${e.age}|${e.amount}|${e.label}`;
+  const bKeysRemaining = b.map(key);
+  let aOnly = 0;
+  for (const aEvent of a) {
+    const index = bKeysRemaining.indexOf(key(aEvent));
+    if (index === -1) {
+      aOnly++;
+    } else {
+      bKeysRemaining.splice(index, 1);
+    }
+  }
+  return aOnly + bKeysRemaining.length;
+}
+
+/** No item-level diffing — see `oneOffEventsDiffCount`'s own comment for why. Renders
+ * both full sides, the same "readable string, not a smart diff" treatment
+ * `wrapperWithdrawalOrder` already gets below. */
+function formatOneOffEvents(events: OneOffEventV1[] = []): string {
+  if (events.length === 0) return 'None';
+  return events
+    .map((e) => `${e.label} (age ${e.age}): ${e.amount}`)
+    .sort()
+    .join('; ');
 }
 
 const SCALAR_FIELDS: Array<{ key: keyof ScenarioAssumptionsV1; label: string; suffix?: string }> = [
@@ -49,6 +87,14 @@ export function diffAssumptions(
       label: 'Withdrawal order',
       a: a.wrapperWithdrawalOrder.join(' → '),
       b: b.wrapperWithdrawalOrder.join(' → '),
+    });
+  }
+
+  if (oneOffEventsDiffCount(a.oneOffEvents, b.oneOffEvents) > 0) {
+    rows.push({
+      label: 'One-off events',
+      a: formatOneOffEvents(a.oneOffEvents),
+      b: formatOneOffEvents(b.oneOffEvents),
     });
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { diffAssumptions } from './scenarioDiff';
+import { diffAssumptions, oneOffEventsDiffCount } from './scenarioDiff';
 import type { ScenarioAssumptionsV1 } from './scenarioAssumptions';
 
 function assumptions(overrides: Partial<ScenarioAssumptionsV1> = {}): ScenarioAssumptionsV1 {
@@ -72,5 +72,78 @@ describe('diffAssumptions', () => {
     const b = assumptions({ people: [{ personId: 1, retirementAge: 65, planEndAge: 90 }] });
     const rows = diffAssumptions(a, b, new Map([[1, 'Alex']]));
     expect(rows).toEqual([{ label: "Alex's State Pension override", a: '10000.00', b: 'Default' }]);
+  });
+
+  describe('one-off events', () => {
+    it('shows no row when both scenarios have no events — including one absent, one empty', () => {
+      const a = assumptions();
+      const b = assumptions({ oneOffEvents: [] });
+      expect(diffAssumptions(a, b, new Map())).toEqual([]);
+    });
+
+    it('diffs a single event, formatted with its label and age', () => {
+      const a = assumptions();
+      const b = assumptions({
+        oneOffEvents: [{ id: 'x', label: 'House deposit', personId: 1, age: 45, amount: '-50000' }],
+      });
+      const rows = diffAssumptions(a, b, new Map());
+      expect(rows).toEqual([{ label: 'One-off events', a: 'None', b: 'House deposit (age 45): -50000' }]);
+    });
+
+    it('is order-independent and ignores the client-generated id', () => {
+      const a = assumptions({
+        oneOffEvents: [
+          { id: 'a', label: 'Windfall', personId: 1, age: 50, amount: '20000' },
+          { id: 'b', label: 'House deposit', personId: 1, age: 45, amount: '-50000' },
+        ],
+      });
+      const b = assumptions({
+        oneOffEvents: [
+          // Same two events, different order and different ids — not a real change.
+          { id: 'z', label: 'House deposit', personId: 1, age: 45, amount: '-50000' },
+          { id: 'y', label: 'Windfall', personId: 1, age: 50, amount: '20000' },
+        ],
+      });
+      expect(diffAssumptions(a, b, new Map())).toEqual([]);
+    });
+
+    it('flags a change even when only the label differs', () => {
+      const a = assumptions({
+        oneOffEvents: [{ id: 'x', label: 'House deposit', personId: 1, age: 45, amount: '-50000' }],
+      });
+      const b = assumptions({
+        oneOffEvents: [{ id: 'x', label: 'Renamed event', personId: 1, age: 45, amount: '-50000' }],
+      });
+      expect(diffAssumptions(a, b, new Map())).toHaveLength(1);
+    });
+  });
+});
+
+describe('oneOffEventsDiffCount', () => {
+  const event = (overrides: { id?: string } = {}) => ({
+    id: overrides.id ?? 'x',
+    label: 'House deposit',
+    personId: 1,
+    age: 45,
+    amount: '-50000',
+  });
+
+  it('is 0 for identical single events, including default-vs-empty', () => {
+    expect(oneOffEventsDiffCount(undefined, [])).toBe(0);
+    expect(oneOffEventsDiffCount([event()], [event({ id: 'different-id' })])).toBe(0);
+  });
+
+  it('counts a multiset difference — two identical events on one side vs one on the other is a real change', () => {
+    // A plain set-based comparison would (wrongly) see "House deposit" present on
+    // both sides and call it unchanged; the second copy on side A is a genuine
+    // difference (side A models it twice) that must be counted.
+    expect(oneOffEventsDiffCount([event(), event({ id: 'y' })], [event()])).toBe(1);
+  });
+
+  it('counts both an addition and a removal', () => {
+    const shared = event();
+    const onlyOnA = event({ id: 'a-only' });
+    const onlyOnB = { ...event({ id: 'b-only' }), label: 'Different event' };
+    expect(oneOffEventsDiffCount([shared, onlyOnA], [shared, onlyOnB])).toBe(2);
   });
 });

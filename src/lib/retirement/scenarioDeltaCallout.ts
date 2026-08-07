@@ -14,6 +14,12 @@ export interface DeltaCalloutInput {
    * `fanChartData.ts` uses, so the two screens never disagree about "whose age"). */
   retirementAge: number;
   otherRetirementAge: number;
+  /** Count of one-off events differing between the two sides (side-A-only +
+   * side-B-only) — the caller diffs (`scenarioDiff.ts`'s `oneOffEventsEqual`-style
+   * comparison), this file only renders a count, not the events themselves; a
+   * compact callout isn't the place to narrate individual events, which the diff
+   * table beside it already shows in full. `undefined`/`0` = no clause. */
+  oneOffEventsDiffCount?: number;
 }
 
 function pluralize(count: number, noun: string): string {
@@ -35,6 +41,10 @@ export function buildDeltaCallout(input: DeltaCalloutInput): string | null {
   if (ageDiff !== 0) {
     const direction = ageDiff > 0 ? 'later' : 'earlier';
     clauses.push(`retires ${pluralize(Math.abs(ageDiff), 'year')} ${direction}`);
+  }
+
+  if (input.oneOffEventsDiffCount) {
+    clauses.push(`also models ${pluralize(input.oneOffEventsDiffCount, 'one-off event')} differently`);
   }
 
   if (clauses.length === 0) return null;

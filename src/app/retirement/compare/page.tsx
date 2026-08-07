@@ -5,7 +5,7 @@ import { ComparisonSide } from '@/components/retirement/ComparisonSide';
 import { getPeople, getSetupState } from '@/lib/household/queries';
 import { getScenarioWithLatestRun } from '@/lib/retirement/queries';
 import { parseScenarioAssumptions } from '@/lib/retirement/scenarioAssumptions';
-import { diffAssumptions } from '@/lib/retirement/scenarioDiff';
+import { diffAssumptions, oneOffEventsDiffCount } from '@/lib/retirement/scenarioDiff';
 import { buildDeltaCallout } from '@/lib/retirement/scenarioDeltaCallout';
 import { deserializeSimulationResult } from '@/lib/retirement/simulationResultCodec';
 import type { SimulationRunView } from '@/lib/retirement/simulationRunClient';
@@ -86,6 +86,7 @@ export default async function CompareScenariosPage({
       otherSuccessRateFraction: resultA.successRate,
       retirementAge: assumptionsB.people[0]!.retirementAge,
       otherRetirementAge: assumptionsA.people[0]!.retirementAge,
+      oneOffEventsDiffCount: oneOffEventsDiffCount(assumptionsA.oneOffEvents, assumptionsB.oneOffEvents),
     });
   }
 
